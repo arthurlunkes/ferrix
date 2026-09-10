@@ -3,6 +3,7 @@
 //! que um binário exporta (nada).
 
 pub mod admin;
+pub mod cache;
 pub mod config;
 pub mod health;
 pub mod metrics;

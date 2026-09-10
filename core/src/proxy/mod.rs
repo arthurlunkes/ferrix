@@ -9,7 +9,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{FromRequestParts, Request};
 use axum::http::header::{HeaderName, HeaderValue};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt};
@@ -20,9 +20,11 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::cache::ResponseCache;
 use crate::config::store::ConfigStore;
 use crate::config::{
-    NextUpstreamCondition, RouteRule, RouteTargetType, UpstreamConfig, UpstreamTarget, VirtualHost,
+    CacheConfig, NextUpstreamCondition, RouteRule, RouteTargetType, UpstreamConfig,
+    UpstreamTarget, VirtualHost,
 };
 use crate::health::HealthChecker;
 use crate::metrics::logger::RequestLog;
@@ -71,6 +73,7 @@ pub struct ProxyEngine {
     pub pool_manager: Arc<UpstreamPoolManager>,
     pub rate_limiter: Arc<RateLimiter>,
     pub conn_limiter: Arc<ConnLimiter>,
+    pub response_cache: Arc<ResponseCache>,
     clients: Arc<RwLock<HashMap<ClientKey, reqwest::Client>>>,
 }
 
@@ -96,6 +99,7 @@ impl ProxyEngine {
             pool_manager,
             rate_limiter,
             conn_limiter,
+            response_cache: ResponseCache::new(),
             clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -512,18 +516,56 @@ impl ProxyEngine {
                     }
                 }
 
-                let restored_req = Request::from_parts(parts, body);
-                self.proxy_http_request(
-                    compiled,
-                    route,
-                    upstream_name,
-                    upstream_cfg,
-                    targets,
-                    is_tls,
-                    client_ip,
-                    restored_req,
-                )
-                .await
+                // Cache só entra em jogo em GET/HEAD com `route.cache` configurado e sem
+                // bypass — `route.cache: None` (o padrão) mantém o caminho de hoje
+                // intacto, sem sequer olhar para a tabela. Fica como valor final do
+                // braço do `match` (não um `return`), para passar pelo mesmo pós-
+                // processamento das outras rotas: merge de headers e `access_log`.
+                let cacheable_method = parts.method == Method::GET || parts.method == Method::HEAD;
+                let cache_cfg = route
+                    .cache
+                    .as_ref()
+                    .filter(|_| cacheable_method)
+                    .filter(|cfg| !cache_bypass_matches(cfg, &parts));
+
+                if let Some(cfg) = cache_cfg {
+                    let key = cache_key_for(vhost, &parts);
+                    if let Some(cached) = self.response_cache.get(&key) {
+                        let mut r = build_cached_response(&cached);
+                        if let Some(v) = crate::cache::header_value("HIT") {
+                            r.headers_mut().insert("x-cache-status", v);
+                        }
+                        r
+                    } else {
+                        let restored_req = Request::from_parts(parts, body);
+                        let inner = self
+                            .proxy_http_request(
+                                compiled,
+                                route,
+                                upstream_name,
+                                upstream_cfg,
+                                targets,
+                                is_tls,
+                                client_ip,
+                                restored_req,
+                            )
+                            .await;
+                        self.store_if_cacheable(key, cfg, inner).await
+                    }
+                } else {
+                    let restored_req = Request::from_parts(parts, body);
+                    self.proxy_http_request(
+                        compiled,
+                        route,
+                        upstream_name,
+                        upstream_cfg,
+                        targets,
+                        is_tls,
+                        client_ip,
+                        restored_req,
+                    )
+                    .await
+                }
             }
         };
 
@@ -760,6 +802,140 @@ impl ProxyEngine {
                 .into_response()
         })
     }
+
+    /// Chamada só quando a rota passou pelo cache e não teve HIT — decide se a resposta
+    /// que acabou de vir do upstream vale a pena guardar, e sempre marca `X-Cache-Status`.
+    ///
+    /// Critérios para guardar: só 200, só com `Content-Length` conhecido e dentro do
+    /// teto (um corpo em streaming sem tamanho declarado não é bufferizado só para
+    /// descobrir que era grande demais), e nunca com `Set-Cookie` — o mesmo cuidado do
+    /// nginx para não vazar sessão de um cliente para outro.
+    async fn store_if_cacheable(&self, key: String, cfg: &CacheConfig, resp: Response) -> Response {
+        let status = resp.status();
+        let cacheable = status == StatusCode::OK
+            && !crate::cache::has_set_cookie(resp.headers())
+            && !crate::cache::upstream_forbids_cache(resp.headers())
+            && resp
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_some_and(|len| len <= crate::cache::MAX_CACHEABLE_BODY_BYTES);
+
+        if !cacheable {
+            let mut r = resp;
+            if let Some(v) = crate::cache::header_value("MISS") {
+                r.headers_mut().insert("x-cache-status", v);
+            }
+            return r;
+        }
+
+        let headers = crate::cache::cacheable_headers(resp.headers());
+        let (parts, body) = resp.into_parts();
+        match axum::body::to_bytes(body, crate::cache::MAX_CACHEABLE_BODY_BYTES as usize).await {
+            Ok(bytes) => {
+                self.response_cache.put(
+                    key,
+                    parts.status.as_u16(),
+                    headers,
+                    bytes.clone(),
+                    Duration::from_secs(cfg.valid_secs),
+                );
+                let mut r = Response::from_parts(parts, Body::from(bytes));
+                if let Some(v) = crate::cache::header_value("MISS") {
+                    r.headers_mut().insert("x-cache-status", v);
+                }
+                r
+            }
+            Err(_) => {
+                // O corpo falhou no meio da leitura (conexão caiu etc.) — não há mais
+                // stream para devolver, então o melhor que dá é reportar a falha.
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "502 Bad Gateway - Ferrix Proxy Error: falha ao ler a resposta do upstream",
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// `true` quando algum header/cookie/parâmetro de bypass configurado chegou não-vazio —
+/// equivalente a `proxy_cache_bypass $http_x $cookie_y $arg_z;` do nginx (cada variável
+/// truthy pula o cache). Bypass aqui pula leitura E gravação: mais simples que reproduzir
+/// a distinção fina do nginx entre `proxy_cache_bypass` (só leitura) e `proxy_no_cache`
+/// (só gravação), e seguro por padrão.
+fn cache_bypass_matches(cfg: &CacheConfig, parts: &axum::http::request::Parts) -> bool {
+    for name in &cfg.bypass_headers {
+        if let Some(v) = parts.headers.get(name.as_str()) {
+            if !v.is_empty() {
+                return true;
+            }
+        }
+    }
+
+    if !cfg.bypass_cookies.is_empty() {
+        if let Some(cookie_header) = parts.headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+            for name in &cfg.bypass_cookies {
+                let hit = cookie_header
+                    .split(';')
+                    .filter_map(|kv| kv.trim().split_once('='))
+                    .any(|(k, _)| k == name);
+                if hit {
+                    return true;
+                }
+            }
+        }
+    }
+
+    if !cfg.bypass_query_params.is_empty() {
+        if let Some(query) = parts.uri.query() {
+            for name in &cfg.bypass_query_params {
+                let hit = query
+                    .split('&')
+                    .filter_map(|kv| kv.split_once('='))
+                    .any(|(k, _)| k == name);
+                if hit {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Chave do cache: método (GET e HEAD não devem colidir), `Host` recebido do cliente, e
+/// caminho+query. Cai no nome do vhost quando não há `Host` — não deveria acontecer com
+/// HTTP/1.1, mas evita um caminho sem chave em vez de um `unwrap`.
+fn cache_key_for(vhost: &VirtualHost, parts: &axum::http::request::Parts) -> String {
+    let host = parts
+        .headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(&vhost.name);
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    crate::cache::cache_key(parts.method.as_str(), host, path_and_query)
+}
+
+fn build_cached_response(cached: &crate::cache::CachedResponse) -> Response {
+    let mut builder = Response::builder().status(cached.status);
+    for (k, v) in &cached.headers {
+        builder = builder.header(k, v);
+    }
+    builder
+        .body(Body::from(cached.body.clone()))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error",
+            )
+                .into_response()
+        })
 }
 
 /// Monta o caminho enviado ao upstream, aplicando `strip_prefix` e preservando a query.
@@ -1153,5 +1329,164 @@ mod tests {
         let collected = axum::body::to_bytes(streamed, usize::MAX).await.unwrap();
         assert_eq!(collected.len(), original.len());
         assert_eq!(&collected[..], &original[..]);
+    }
+
+    // -- cache -----------------------------------------------------------------
+
+    fn parts_full(uri: &str, headers: &[(&str, &str)]) -> axum::http::request::Parts {
+        let mut builder = Request::builder().uri(uri);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        builder.body(Body::empty()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn no_bypass_configured_never_bypasses() {
+        let cfg = crate::config::CacheConfig::default();
+        let parts = parts_full("/x", &[("cookie", "a=1"), ("upgrade", "websocket")]);
+        assert!(!cache_bypass_matches(&cfg, &parts));
+    }
+
+    #[test]
+    fn a_non_empty_bypass_header_skips_the_cache() {
+        let cfg = crate::config::CacheConfig {
+            bypass_headers: vec!["Upgrade".to_string()],
+            ..Default::default()
+        };
+        let with = parts_full("/x", &[("upgrade", "websocket")]);
+        assert!(cache_bypass_matches(&cfg, &with));
+
+        let without = parts_full("/x", &[]);
+        assert!(!cache_bypass_matches(&cfg, &without));
+    }
+
+    #[test]
+    fn a_matching_bypass_cookie_skips_the_cache() {
+        let cfg = crate::config::CacheConfig {
+            bypass_cookies: vec!["session".to_string()],
+            ..Default::default()
+        };
+        let with = parts_full("/x", &[("cookie", "theme=dark; session=abc123")]);
+        assert!(cache_bypass_matches(&cfg, &with));
+
+        let without = parts_full("/x", &[("cookie", "theme=dark")]);
+        assert!(!cache_bypass_matches(&cfg, &without));
+    }
+
+    #[test]
+    fn a_matching_bypass_query_param_skips_the_cache() {
+        let cfg = crate::config::CacheConfig {
+            bypass_query_params: vec!["nocache".to_string()],
+            ..Default::default()
+        };
+        let with = parts_full("/x?nocache=1", &[]);
+        assert!(cache_bypass_matches(&cfg, &with));
+
+        let without = parts_full("/x?other=1", &[]);
+        assert!(!cache_bypass_matches(&cfg, &without));
+    }
+
+    #[test]
+    fn cache_key_distinguishes_method_host_and_path() {
+        let vhost = VirtualHost {
+            id: "v".into(),
+            name: "fallback".into(),
+            server_names: vec!["*".into()],
+            listen_port: 80,
+            headers: HashMap::new(),
+            rate_limit: None,
+            limit_conn: None,
+            allowed_ips: Vec::new(),
+            denied_ips: Vec::new(),
+            basic_auth: None,
+            satisfy: crate::config::Satisfy::All,
+            tls: None,
+            routes: Vec::new(),
+        };
+        let get_x = parts_full("/x", &[("host", "a.com")]);
+        let head_x = Request::builder()
+            .uri("/x")
+            .method("HEAD")
+            .header("host", "a.com")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0;
+        let get_y = parts_full("/y", &[("host", "a.com")]);
+        let get_x_other_host = parts_full("/x", &[("host", "b.com")]);
+
+        assert_ne!(cache_key_for(&vhost, &get_x), cache_key_for(&vhost, &head_x));
+        assert_ne!(cache_key_for(&vhost, &get_x), cache_key_for(&vhost, &get_y));
+        assert_ne!(
+            cache_key_for(&vhost, &get_x),
+            cache_key_for(&vhost, &get_x_other_host)
+        );
+    }
+
+    #[tokio::test]
+    async fn store_if_cacheable_tags_miss_and_skips_storage_without_content_length() {
+        let store = ConfigStore::new(crate::config::FerrixConfig::default(), "test.json");
+        let metrics = MetricsCollector::new(10);
+        let health = Arc::new(HealthChecker::new());
+        let engine = ProxyEngine::new(Arc::new(store), metrics, health);
+
+        let resp = Response::builder()
+            .status(200)
+            .body(Body::from_stream(futures_util::stream::iter([
+                Ok::<_, std::io::Error>(Bytes::from_static(b"chunk")),
+            ])))
+            .unwrap();
+        let cfg = crate::config::CacheConfig::default();
+
+        let out = engine.store_if_cacheable("k".to_string(), &cfg, resp).await;
+        assert_eq!(out.headers().get("x-cache-status").unwrap(), "MISS");
+        assert!(engine.response_cache.get("k").is_none());
+    }
+
+    #[tokio::test]
+    async fn store_if_cacheable_stores_and_replays_a_small_response_with_content_length() {
+        let store = ConfigStore::new(crate::config::FerrixConfig::default(), "test.json");
+        let metrics = MetricsCollector::new(10);
+        let health = Arc::new(HealthChecker::new());
+        let engine = ProxyEngine::new(Arc::new(store), metrics, health);
+
+        let body_bytes = b"hello cache".to_vec();
+        let resp = Response::builder()
+            .status(200)
+            .header(header::CONTENT_LENGTH, body_bytes.len())
+            .body(Body::from(body_bytes.clone()))
+            .unwrap();
+        let cfg = crate::config::CacheConfig::default();
+
+        let out = engine
+            .store_if_cacheable("k2".to_string(), &cfg, resp)
+            .await;
+        assert_eq!(out.headers().get("x-cache-status").unwrap(), "MISS");
+
+        let cached = engine.response_cache.get("k2").expect("deveria ter guardado");
+        assert_eq!(&cached.body[..], &body_bytes[..]);
+        let replayed = build_cached_response(&cached);
+        assert_eq!(replayed.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn store_if_cacheable_never_stores_a_response_with_set_cookie() {
+        let store = ConfigStore::new(crate::config::FerrixConfig::default(), "test.json");
+        let metrics = MetricsCollector::new(10);
+        let health = Arc::new(HealthChecker::new());
+        let engine = ProxyEngine::new(Arc::new(store), metrics, health);
+
+        let body_bytes = b"secret".to_vec();
+        let resp = Response::builder()
+            .status(200)
+            .header(header::CONTENT_LENGTH, body_bytes.len())
+            .header(header::SET_COOKIE, "sess=abc")
+            .body(Body::from(body_bytes))
+            .unwrap();
+        let cfg = crate::config::CacheConfig::default();
+
+        engine.store_if_cacheable("k3".to_string(), &cfg, resp).await;
+        assert!(engine.response_cache.get("k3").is_none());
     }
 }

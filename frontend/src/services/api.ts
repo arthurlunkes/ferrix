@@ -235,7 +235,7 @@ export interface ValidationReport {
   summary: string;
 }
 
-export type MigrationNoteLevel = "converted" | "partial" | "unsupported";
+export type MigrationNoteLevel = "converted" | "partial" | "unsupported" | "ignored";
 
 export interface MigrationNote {
   level: MigrationNoteLevel;

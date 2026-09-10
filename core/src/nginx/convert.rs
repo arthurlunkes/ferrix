@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use super::parser::{parse, Directive, ParseError};
 use super::report::{MigrationReport, NoteLevel};
 use crate::config::{
-    BasicAuthConfig, FerrixConfig, LimitConnConfig, LoadBalanceAlgorithm, NextUpstreamCondition,
-    ProxyNextUpstreamConfig, RateLimitConfig, RateLimitMode, RealIpHeader, RouteMatchType,
-    RouteRule, RouteTargetType, Satisfy, TlsConfig, UpstreamConfig, UpstreamTarget, VirtualHost,
+    BasicAuthConfig, CacheConfig, FerrixConfig, LimitConnConfig, LoadBalanceAlgorithm,
+    NextUpstreamCondition, ProxyNextUpstreamConfig, RateLimitConfig, RateLimitMode, RealIpHeader,
+    RouteMatchType, RouteRule, RouteTargetType, Satisfy, TlsConfig, UpstreamConfig,
+    UpstreamTarget, VirtualHost,
 };
 
 pub struct ImportResult {
@@ -71,6 +72,11 @@ struct Converter {
     /// Contador para nomear upstreams criados a partir de um `proxy_pass` direto.
     synthetic_upstreams: usize,
     route_seq: usize,
+    /// `add_header` visto no nível `http`, aplicado como ponto de partida de todo vhost
+    /// criado depois — nginx também propaga assim, na ausência do override quirk (se o
+    /// server redefine `add_header`, o Ferrix soma em vez de substituir a lista inteira,
+    /// mais previsível do que replicar esse detalhe).
+    http_headers: HashMap<String, String>,
 }
 
 impl Converter {
@@ -92,6 +98,7 @@ impl Converter {
             limit_conn_zones: HashSet::new(),
             synthetic_upstreams: 0,
             route_seq: 0,
+            http_headers: HashMap::new(),
         }
     }
 
@@ -390,6 +397,23 @@ impl Converter {
                 self.config.real_ip.recursive = d.arg(0) == Some("on");
             }
 
+            "add_header" => {
+                let mut headers = std::mem::take(&mut self.http_headers);
+                self.apply_add_header(d, &mut headers);
+                self.http_headers = headers;
+            }
+
+            "proxy_cache_path" => self.report.note(
+                NoteLevel::Converted,
+                &self.file,
+                d.line,
+                "proxy_cache_path",
+                &d.source(),
+                "o Ferrix não separa por zona nem grava em disco — toda rota com \
+                 'proxy_cache' divide uma única tabela em memória; veja a nota em cada \
+                 location que usa esta zona",
+            ),
+
             _ => self.note_unsupported(d),
         }
     }
@@ -594,7 +618,7 @@ impl Converter {
             name: String::new(),
             server_names: Vec::new(),
             listen_port: 80,
-            headers: HashMap::new(),
+            headers: self.http_headers.clone(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),
@@ -658,11 +682,7 @@ impl Converter {
                     vhost.basic_auth =
                         Some(self.placeholder_basic_auth(item, auth_realm.as_deref()));
                 }
-                "add_header" => {
-                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
-                        vhost.headers.insert(k.to_string(), v.to_string());
-                    }
-                }
+                "add_header" => self.apply_add_header(item, &mut vhost.headers),
                 "limit_req" => {
                     vhost.rate_limit = self.parse_limit_req(item);
                 }
@@ -957,6 +977,131 @@ impl Converter {
         }
     }
 
+    /// `add_header X-Cache-Status $upstream_cache_status;` é como o nginx expõe se a
+    /// resposta veio do cache. O Ferrix já expõe exatamente isso sozinho — todo `HIT`/
+    /// `MISS` de uma rota com `proxy_cache` sai no header `X-Cache-Status` — então guardar
+    /// o valor literal aqui sobrescreveria esse header de verdade com o texto cru
+    /// "$upstream_cache_status", que não significa nada fora do nginx.
+    fn apply_add_header(&mut self, item: &Directive, target: &mut HashMap<String, String>) {
+        let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else { return };
+        if k.eq_ignore_ascii_case("x-cache-status") && v == "$upstream_cache_status" {
+            self.report.note(
+                NoteLevel::Converted,
+                &self.file,
+                item.line,
+                "add_header",
+                &item.source(),
+                "o Ferrix já expõe X-Cache-Status (HIT/MISS) sozinho em toda rota com \
+                 cache; este add_header não precisa ser repetido",
+            );
+            return;
+        }
+        target.insert(k.to_string(), v.to_string());
+    }
+
+    /// `proxy_cache <zona>` liga o cache em memória desta rota. O Ferrix não separa por
+    /// zona nem grava em disco — uma tabela só, compartilhada, diferenciada pela própria
+    /// chave (método+host+caminho) — então o nome da zona só serve para saber que o
+    /// cache foi pedido; `proxy_cache_path` (nível `http`) é só anotado, sem efeito.
+    fn apply_cache(
+        &mut self,
+        zone_item: &Directive,
+        valid_items: &[&Directive],
+        bypass_items: &[&Directive],
+        route: &mut RouteRule,
+    ) {
+        let mut cfg = CacheConfig::default();
+
+        // Pode haver um `proxy_cache_valid` por grupo de status ("200 30s", "404 10s",
+        // "any 5s"); o Ferrix só cacheia 200 e só tem uma duração, então usa a entrada
+        // que fala de "200" (ou "any", se não houver uma específica) e avisa quando
+        // sobra alguma diferença não capturada.
+        if let Some(chosen) = valid_items
+            .iter()
+            .find(|it| it.args.iter().any(|a| a == "200"))
+            .or_else(|| valid_items.iter().find(|it| it.args.iter().any(|a| a == "any")))
+            .or_else(|| valid_items.first())
+        {
+            match chosen.args.last().and_then(|s| parse_time_ms(s)) {
+                Some(ms) => cfg.valid_secs = (ms / 1000).max(1),
+                None => self.report.partial(
+                    &self.file,
+                    chosen.line,
+                    "proxy_cache_valid",
+                    &chosen.source(),
+                    format!(
+                        "não entendi a duração; usando o padrão do Ferrix de {}s",
+                        cfg.valid_secs
+                    ),
+                ),
+            }
+            let codes = &chosen.args[..chosen.args.len().saturating_sub(1)];
+            if !codes.is_empty() && !codes.iter().any(|c| c == "200" || c == "any") {
+                self.report.partial(
+                    &self.file,
+                    chosen.line,
+                    "proxy_cache_valid",
+                    &chosen.source(),
+                    "o Ferrix só guarda respostas 200; os demais códigos desta diretiva não têm efeito",
+                );
+            }
+            if valid_items.len() > 1 {
+                self.report.partial(
+                    &self.file,
+                    chosen.line,
+                    "proxy_cache_valid",
+                    &chosen.source(),
+                    format!(
+                        "havia {} diretivas 'proxy_cache_valid' nesta location, uma por \
+                         código de status; o Ferrix usa uma única duração para tudo (aqui, \
+                         {}s), sem diferenciar por status",
+                        valid_items.len(),
+                        cfg.valid_secs
+                    ),
+                );
+            }
+        }
+
+        for item in bypass_items {
+            let mut all_recognized = true;
+            for arg in &item.args {
+                if let Some(name) = arg.strip_prefix("$http_") {
+                    cfg.bypass_headers.push(name.replace('_', "-"));
+                } else if let Some(name) = arg.strip_prefix("$cookie_") {
+                    cfg.bypass_cookies.push(name.to_string());
+                } else if let Some(name) = arg.strip_prefix("$arg_") {
+                    cfg.bypass_query_params.push(name.to_string());
+                } else {
+                    all_recognized = false;
+                }
+            }
+            if !all_recognized {
+                self.report.partial(
+                    &self.file,
+                    item.line,
+                    "proxy_cache_bypass",
+                    &item.source(),
+                    "só variáveis '$http_*', '$cookie_*' e '$arg_*' são reconhecidas; as \
+                     demais desta diretiva foram ignoradas",
+                );
+            }
+        }
+
+        route.cache = Some(cfg.clone());
+        self.report.note(
+            NoteLevel::Converted,
+            &self.file,
+            zone_item.line,
+            "proxy_cache",
+            &zone_item.source(),
+            format!(
+                "cache em memória ligado nesta rota, válido por {}s — o Ferrix usa uma \
+                 tabela única compartilhada entre rotas, sem zona nem disco",
+                cfg.valid_secs
+            ),
+        );
+    }
+
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
         let (match_type, pattern) = parse_location_args(&d.args)?;
 
@@ -992,6 +1137,15 @@ impl Converter {
         // não é garantida: um `add_header Cache-Control` explícito pode vir antes OU
         // depois dele, e só dá para decidir mesclar ou não depois de ver os dois.
         let mut expires: Option<&Directive> = None;
+        // Mesma lógica do `expires`: a ordem entre `proxy_cache`, `proxy_cache_valid` e
+        // `proxy_cache_bypass` não é garantida, e só dá para montar a `CacheConfig`
+        // depois de ver todo mundo.
+        let mut cache_zone: Option<&Directive> = None;
+        // `proxy_cache_valid` pode aparecer várias vezes, uma por grupo de status (ex.:
+        // "200 30s", "404 10s", "any 5s") — o Ferrix usa uma duração só, então todas são
+        // coletadas para `apply_cache` escolher a mais representativa e avisar da perda.
+        let mut cache_valid: Vec<&Directive> = Vec::new();
+        let mut cache_bypass: Vec<&Directive> = Vec::new();
 
         for item in block {
             match item.name.as_str() {
@@ -1046,11 +1200,7 @@ impl Converter {
                         }
                     }
                 }
-                "add_header" => {
-                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
-                        route.add_headers.insert(k.to_string(), v.to_string());
-                    }
-                }
+                "add_header" => self.apply_add_header(item, &mut route.add_headers),
                 "allow" => {
                     if let Some(v) = item.arg(0) {
                         route.allowed_ips.push(v.to_string());
@@ -1115,6 +1265,13 @@ impl Converter {
                 }
                 "access_log" => self.apply_access_log(item, &mut route),
                 "expires" => expires = Some(item),
+                "proxy_cache" => {
+                    if item.arg(0) != Some("off") {
+                        cache_zone = Some(item);
+                    }
+                }
+                "proxy_cache_valid" => cache_valid.push(item),
+                "proxy_cache_bypass" => cache_bypass.push(item),
                 _ => self.note_unsupported(item),
             }
         }
@@ -1146,6 +1303,29 @@ impl Converter {
 
         if let Some(item) = expires {
             self.apply_expires(item, &mut route);
+        }
+
+        if let Some(zone_item) = cache_zone {
+            self.apply_cache(zone_item, &cache_valid, &cache_bypass, &mut route);
+        } else {
+            for item in &cache_valid {
+                self.report.unsupported(
+                    &self.file,
+                    item.line,
+                    "proxy_cache_valid",
+                    &item.source(),
+                    "sem um 'proxy_cache' nesta location, não há cache para validar",
+                );
+            }
+            for item in &cache_bypass {
+                self.report.unsupported(
+                    &self.file,
+                    item.line,
+                    "proxy_cache_bypass",
+                    &item.source(),
+                    "sem um 'proxy_cache' nesta location, não há cache para pular",
+                );
+            }
         }
 
         Some(route)
@@ -1466,6 +1646,29 @@ impl Converter {
                 return;
             }
         }
+        // `ssl_ciphers`, `ssl_protocols`, `ssl_dhparam` e companhia não são um gap — o
+        // rustls decide essas escolhas sozinho, de propósito, e não existe (nem vai
+        // existir) um jeito de sobrescrever. `Ignored` sinaliza isso na UI como uma
+        // diferença de design permanente, não como uma pendência de fase futura.
+        //
+        // Nem todo `ssl_*` se encaixa aqui: `ssl_client_certificate`/`ssl_verify_client`
+        // (mTLS) e `ssl_stapling*` (OCSP) são recursos que o Ferrix de fato ainda não tem
+        // — um gap real, não uma escolha — então continuam `Unsupported`.
+        const RUSTLS_PERMANENT_DEFAULTS: [&str; 8] = [
+            "ssl_protocols",
+            "ssl_ciphers",
+            "ssl_prefer_server_ciphers",
+            "ssl_ecdh_curve",
+            "ssl_dhparam",
+            "ssl_session_cache",
+            "ssl_session_timeout",
+            "ssl_session_tickets",
+        ];
+        if RUSTLS_PERMANENT_DEFAULTS.contains(&d.name.as_str()) {
+            self.report
+                .ignored(&self.file, d.line, &d.name, &d.source(), reason_for(&d.name));
+            return;
+        }
         self.report.unsupported(
             &self.file,
             d.line,
@@ -1497,13 +1700,24 @@ fn reason_for(name: &str) -> String {
         n if n.starts_with("gzip") || n == "brotli" => {
             "compressão está planejada para a próxima fase do Ferrix"
         }
-        n if n.starts_with("proxy_cache") => "cache de conteúdo está planejado para a próxima fase",
-        n if n.starts_with("ssl_") => {
+        "ssl_protocols" | "ssl_ciphers" | "ssl_prefer_server_ciphers" | "ssl_ecdh_curve"
+        | "ssl_dhparam" | "ssl_session_cache" | "ssl_session_timeout" | "ssl_session_tickets" => {
             "o rustls (biblioteca de TLS do Ferrix) já escolhe protocolos, cifras e parâmetros \
-             seguros automaticamente; não existe — e não está planejado — ajuste manual de \
-             coisas como ssl_ciphers, ssl_protocols ou ssl_dhparam: é uma limitação definitiva \
-             da biblioteca, não um item de fase futura"
+             seguros automaticamente; não existe — e não está planejado — ajuste manual \
+             disso: é uma limitação definitiva da biblioteca, não um item de fase futura"
         }
+        n if n.starts_with("ssl_client_certificate")
+            || n.starts_with("ssl_verify_client")
+            || n.starts_with("ssl_verify_depth")
+            || n.starts_with("ssl_trusted_certificate")
+            || n.starts_with("ssl_stapling")
+            || n.starts_with("ssl_crl") =>
+        {
+            "autenticação por certificado de cliente (mTLS) e OCSP stapling ainda não existem \
+             no Ferrix — diferente de ssl_ciphers/ssl_protocols, isto é um recurso que falta \
+             construir, não uma escolha definitiva"
+        }
+        n if n.starts_with("ssl_") => "ajuste de TLS sem equivalente no Ferrix",
         "http3" => "HTTP/3 não existe no Ferrix",
         n if n.starts_with("otel_") => "tracing com OpenTelemetry não existe no Ferrix",
         n if n.starts_with("js_") => "njs (JavaScript dentro do servidor) não existe no Ferrix",
@@ -2281,13 +2495,13 @@ mod tests {
                 gzip on;
                 server {
                     listen 80;
-                    location / { proxy_pass http://a:1; proxy_cache zona; }
+                    location / { proxy_pass http://a:1; proxy_no_cache $cookie_nocache; }
                 }
             }"#,
         );
         let names = r.report.unsupported_directives();
         assert!(names.contains(&"gzip".to_string()));
-        assert!(names.contains(&"proxy_cache".to_string()));
+        assert!(names.contains(&"proxy_no_cache".to_string()));
 
         let gzip = r
             .report
@@ -2827,8 +3041,127 @@ mod tests {
             .iter()
             .find(|n| n.directive == "ssl_ciphers")
             .expect("nota esperada");
-        assert_eq!(note.level, NoteLevel::Unsupported);
+        assert_eq!(note.level, NoteLevel::Ignored);
         assert!(!note.reason.contains("próxima fase"));
         assert!(note.reason.contains("definitiva"));
+    }
+
+    // -- proxy_cache -------------------------------------------------------------
+
+    #[test]
+    fn proxy_cache_enables_route_cache_with_the_declared_duration() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    proxy_cache conteudo;
+                    proxy_cache_valid 200 30s;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        let cfg = route.cache.as_ref().expect("cache deveria estar ligado");
+        assert_eq!(cfg.valid_secs, 30);
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "proxy_cache" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn proxy_cache_valid_without_proxy_cache_stays_unsupported() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    proxy_cache_valid 200 30s;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.cache.is_none());
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "proxy_cache_valid" && n.level == NoteLevel::Unsupported));
+    }
+
+    #[test]
+    fn multiple_proxy_cache_valid_picks_the_200_entry_and_reports_the_loss() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    proxy_cache conteudo;
+                    proxy_cache_valid 200 30s;
+                    proxy_cache_valid 404 10s;
+                    proxy_cache_valid any 5s;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert_eq!(route.cache.as_ref().unwrap().valid_secs, 30);
+        assert!(r.report.notes.iter().any(|n| n.directive == "proxy_cache_valid"
+            && n.level == NoteLevel::Partial
+            && n.reason.contains("3 diretivas")));
+    }
+
+    #[test]
+    fn proxy_cache_bypass_maps_http_cookie_and_arg_variables() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    proxy_cache conteudo;
+                    proxy_cache_bypass $http_x_purge_cache $cookie_sessao $arg_nocache;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        let cfg = route.cache.as_ref().unwrap();
+        assert_eq!(cfg.bypass_headers, vec!["x-purge-cache".to_string()]);
+        assert_eq!(cfg.bypass_cookies, vec!["sessao".to_string()]);
+        assert_eq!(cfg.bypass_query_params, vec!["nocache".to_string()]);
+    }
+
+    #[test]
+    fn proxy_cache_path_at_http_level_is_converted() {
+        let r = convert(
+            r#"http {
+                proxy_cache_path /var/cache/nginx keys_zone=conteudo:10m;
+                server {
+                    listen 80;
+                    location / { proxy_pass http://x:1; }
+                }
+            }"#,
+        );
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "proxy_cache_path" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn add_header_x_cache_status_upstream_variable_is_not_stored_literally() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                add_header X-Cache-Status $upstream_cache_status always;
+                location / { proxy_pass http://x:1; }
+            } }"#,
+        );
+        assert!(!r.config.vhosts[0].headers.contains_key("X-Cache-Status"));
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "add_header" && n.level == NoteLevel::Converted));
     }
 }

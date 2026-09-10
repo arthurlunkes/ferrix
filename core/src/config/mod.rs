@@ -486,6 +486,42 @@ impl Default for ProxyNextUpstreamConfig {
     }
 }
 
+/// Cache de resposta por rota, equivalente a `proxy_cache` + `proxy_cache_valid` +
+/// `proxy_cache_bypass`. Só GET/HEAD com status 200 e sem `Set-Cookie` são guardados —
+/// ver `cache::ResponseCache`. Uma tabela em memória compartilhada por todo o processo,
+/// sem zona nem disco: o efeito prático (menos ida ao upstream) é o que importa aqui.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Quanto tempo uma resposta guardada continua válida.
+    #[serde(default = "default_cache_valid_secs")]
+    pub valid_secs: u64,
+    /// Bypassa o cache (nem lê nem grava) quando um destes headers de requisição chega
+    /// não-vazio — equivalente a `proxy_cache_bypass $http_<nome>`.
+    #[serde(default)]
+    pub bypass_headers: Vec<String>,
+    /// Idem, para cookies (`$cookie_<nome>`).
+    #[serde(default)]
+    pub bypass_cookies: Vec<String>,
+    /// Idem, para parâmetros de query (`$arg_<nome>`).
+    #[serde(default)]
+    pub bypass_query_params: Vec<String>,
+}
+
+fn default_cache_valid_secs() -> u64 {
+    60
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            valid_secs: default_cache_valid_secs(),
+            bypass_headers: Vec::new(),
+            bypass_cookies: Vec::new(),
+            bypass_query_params: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteRule {
     pub id: String,
@@ -545,6 +581,11 @@ pub struct RouteRule {
     /// milhares de linhas sem dizer nada de interessante.
     #[serde(default = "default_true")]
     pub access_log: bool,
+
+    /// `None` (o padrão) é exatamente o comportamento de hoje, sem overhead: cada
+    /// requisição vai direto ao upstream. `Some` liga o cache em memória desta rota.
+    #[serde(default)]
+    pub cache: Option<CacheConfig>,
 }
 
 fn default_true() -> bool {
@@ -592,6 +633,7 @@ impl Default for RouteRule {
             proxy_send_timeout_ms: None,
             proxy_next_upstream: None,
             access_log: true,
+            cache: None,
         }
     }
 }

@@ -14,8 +14,13 @@ pub enum NoteLevel {
     Converted,
     /// Convertido, mas com diferença de comportamento que precisa ser conferida.
     Partial,
-    /// Sem equivalente no Ferrix. Continua valendo no nginx e some na migração.
+    /// Sem equivalente no Ferrix. Continua valendo no nginx e some na migração — um gap de
+    /// verdade, candidato a fase futura.
     Unsupported,
+    /// Não faz nada de propósito, não por falta de tempo: a diretiva ajusta algo que o
+    /// Ferrix decidiu não expor (ex.: `ssl_dhparam` — o rustls não implementa DHE
+    /// clássico). Diferente de `Unsupported`, não é um item pendente.
+    Ignored,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +92,17 @@ impl MigrationReport {
         self.note(NoteLevel::Partial, file, line, directive, source, reason);
     }
 
+    pub fn ignored(
+        &mut self,
+        file: &str,
+        line: usize,
+        directive: &str,
+        source: &str,
+        reason: impl Into<String>,
+    ) {
+        self.note(NoteLevel::Ignored, file, line, directive, source, reason);
+    }
+
     pub fn count(&self, level: NoteLevel) -> usize {
         self.notes.iter().filter(|n| n.level == level).count()
     }
@@ -125,12 +141,14 @@ impl MigrationReport {
              | Rotas criadas | {} |\n\
              | Upstreams criados | {} |\n\
              | Diretivas migradas com ressalva | {} |\n\
-             | Diretivas **não** migradas | {} |\n",
+             | Diretivas **não** migradas | {} |\n\
+             | Diretivas ignoradas por design (permanente, não é pendência) | {} |\n",
             self.vhosts_created,
             self.routes_created,
             self.upstreams_created,
             self.count(NoteLevel::Partial),
             self.count(NoteLevel::Unsupported),
+            self.count(NoteLevel::Ignored),
         ));
 
         let unsupported = self.unsupported_directives();
@@ -156,6 +174,13 @@ impl MigrationReport {
                 NoteLevel::Partial,
                 "Migrado com ressalva",
                 "Convertido, mas com alguma diferença de comportamento que vale conferir.",
+            ),
+            (
+                NoteLevel::Ignored,
+                "Ignorado por design",
+                "Estas diretivas não têm efeito no Ferrix de propósito, não por falta de \
+                 tempo — geralmente porque o Ferrix já toma essa decisão sozinha, de forma \
+                 mais segura. Não é uma pendência.",
             ),
             (
                 NoteLevel::Converted,

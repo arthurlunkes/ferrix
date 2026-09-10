@@ -140,8 +140,9 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_upstreams: 0,
         // ssl_certificate/ssl_certificate_key agora são capturados (ver o teste dedicado
         // abaixo) e http2 já liga sozinho por ALPN; ssl_ciphers/ssl_protocols/etc. são uma
-        // limitação definitiva do rustls (ver reason_for), não um item de fase futura.
-        expected_unsupported: &["ssl_ciphers", "ssl_protocols"],
+        // limitação definitiva do rustls (ver reason_for) — reportada como `Ignored`, não
+        // `Unsupported`, porque não é um item de fase futura, então não entra nesta lista.
+        expected_unsupported: &[],
     },
     ExampleExpectation {
         dir_contains: "9-loadbalance_multitenant",
@@ -160,8 +161,10 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         dir_contains: "11-cache",
         min_vhosts: 1,
         min_upstreams: 1,
-        // Cache é a Fase 2.
-        expected_unsupported: &["proxy_cache", "proxy_cache_path"],
+        // proxy_cache/proxy_cache_path/proxy_cache_valid/proxy_cache_bypass já convertem
+        // (ver o teste dedicado abaixo); o ajuste fino (lock, background_update, chave
+        // customizada, use_stale) ainda não tem equivalente.
+        expected_unsupported: &["proxy_cache_lock", "proxy_cache_key", "proxy_no_cache"],
     },
     ExampleExpectation {
         dir_contains: "12-compressao_estaticos_spa",

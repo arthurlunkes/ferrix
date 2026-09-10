@@ -25,11 +25,15 @@ server {
 
 const LEVEL_META: Record<
   MigrationNote["level"],
-  { label: string; tone: "danger" | "warning" | "info" }
+  { label: string; tone: "danger" | "warning" | "info" | "neutral" }
 > = {
   unsupported: { label: "Não migrado", tone: "danger" },
   partial: { label: "Migrado com ressalva", tone: "warning" },
   converted: { label: "Convertido", tone: "info" },
+  // Não é uma pendência: o Ferrix decidiu de propósito não expor este ajuste (ex.:
+  // ssl_ciphers — o rustls já escolhe cifras seguras sozinho). Tom neutro para não
+  // parecer um erro a corrigir.
+  ignored: { label: "Ignorado por design", tone: "neutral" },
 };
 
 interface ImportNginxProps {
@@ -109,6 +113,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
     ? {
         unsupported: result.report.notes.filter((n) => n.level === "unsupported"),
         partial: result.report.notes.filter((n) => n.level === "partial"),
+        ignored: result.report.notes.filter((n) => n.level === "ignored"),
       }
     : null;
 
@@ -175,7 +180,10 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
                 </div>
               )}
 
-              {notesByLevel && (notesByLevel.unsupported.length > 0 || notesByLevel.partial.length > 0) && (
+              {notesByLevel &&
+                (notesByLevel.unsupported.length > 0 ||
+                  notesByLevel.partial.length > 0 ||
+                  notesByLevel.ignored.length > 0) && (
                 <div className="rounded-xl border border-border overflow-hidden max-h-64 overflow-y-auto">
                   <table className="w-full text-xs">
                     <thead className="bg-surface-2 text-content-muted sticky top-0">
@@ -187,7 +195,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-subtle">
-                      {[...notesByLevel.unsupported, ...notesByLevel.partial].map((n, i) => {
+                      {[...notesByLevel.unsupported, ...notesByLevel.partial, ...notesByLevel.ignored].map((n, i) => {
                         const meta = LEVEL_META[n.level];
                         return (
                           <tr key={i} className="align-top">
