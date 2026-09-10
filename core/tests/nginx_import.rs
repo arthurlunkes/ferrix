@@ -139,8 +139,9 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 0,
         // ssl_certificate/ssl_certificate_key agora são capturados (ver o teste dedicado
-        // abaixo); HTTP/2 continua fora — o Ferrix ainda só fala HTTP/1.1.
-        expected_unsupported: &["http2"],
+        // abaixo) e http2 já liga sozinho por ALPN; ssl_ciphers/ssl_protocols/etc. são uma
+        // limitação definitiva do rustls (ver reason_for), não um item de fase futura.
+        expected_unsupported: &["ssl_ciphers", "ssl_protocols"],
     },
     ExampleExpectation {
         dir_contains: "9-loadbalance_multitenant",

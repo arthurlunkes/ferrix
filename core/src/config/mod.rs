@@ -539,6 +539,12 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub proxy_next_upstream: Option<ProxyNextUpstreamConfig>,
+
+    /// `false` tira esta rota do buffer de requisições em memória e do stream ao vivo —
+    /// equivalente a `access_log off`. Útil para health checks e assets que gerariam
+    /// milhares de linhas sem dizer nada de interessante.
+    #[serde(default = "default_true")]
+    pub access_log: bool,
 }
 
 fn default_true() -> bool {
@@ -585,6 +591,7 @@ impl Default for RouteRule {
             proxy_read_timeout_ms: None,
             proxy_send_timeout_ms: None,
             proxy_next_upstream: None,
+            access_log: true,
         }
     }
 }

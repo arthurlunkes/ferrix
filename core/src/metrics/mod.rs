@@ -82,7 +82,13 @@ impl MetricsCollector {
         self.total_bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub fn record_request(&self, log: RequestLog) {
+    /// `log_line` distingue as métricas agregadas (sempre atualizadas) de aparecer no
+    /// buffer de logs recentes e no stream ao vivo. `access_log: false` numa rota — para
+    /// health checks e assets que gerariam ruído sem dizer nada — usa `false` aqui: RPS,
+    /// contagem de status e latência continuam contando a requisição, só a linha em si
+    /// que não aparece. É o mesmo corte que `access_log off` faz no nginx: `stub_status`
+    /// não deixa de contar, só o arquivo de log fica sem a linha.
+    pub fn record_request(&self, log: RequestLog, log_line: bool) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
         match log.status {
@@ -124,6 +130,10 @@ impl MetricsCollector {
                 latencies.pop_front();
             }
             latencies.push_back(log.latency_ms);
+        }
+
+        if !log_line {
+            return;
         }
 
         // Broadcast to SSE listeners
@@ -218,5 +228,62 @@ impl MetricsCollector {
 
     pub fn start_time_utc(&self) -> DateTime<Utc> {
         self.start_utc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_log(status: u16) -> RequestLog {
+        RequestLog {
+            id: "id".to_string(),
+            timestamp: Utc::now(),
+            client_ip: "127.0.0.1".to_string(),
+            method: "GET".to_string(),
+            uri: "/x".to_string(),
+            host: "exemplo.com".to_string(),
+            status,
+            latency_ms: 1.0,
+            bytes_sent: 10,
+            upstream: None,
+            user_agent: None,
+            is_websocket: false,
+            error: None,
+        }
+    }
+
+    /// `access_log: false` numa rota vira `log_line: false` aqui — a requisição some do
+    /// buffer de logs recentes, mas continua contando nos totais agregados. É o mesmo
+    /// corte que `access_log off` faz no nginx: `stub_status` não para de contar.
+    #[test]
+    fn log_line_false_still_counts_aggregate_metrics() {
+        let m = MetricsCollector::new(100);
+        m.record_request(sample_log(200), false);
+
+        let snap = m.get_metrics_snapshot();
+        assert_eq!(snap.total_requests, 1);
+        assert_eq!(snap.status_2xx, 1);
+        assert!(m.get_recent_logs(10, None, None).is_empty());
+    }
+
+    #[test]
+    fn log_line_true_appears_in_recent_logs() {
+        let m = MetricsCollector::new(100);
+        m.record_request(sample_log(200), true);
+
+        assert_eq!(m.get_metrics_snapshot().total_requests, 1);
+        assert_eq!(m.get_recent_logs(10, None, None).len(), 1);
+    }
+
+    #[test]
+    fn mixed_requests_only_silent_ones_are_hidden_from_the_log() {
+        let m = MetricsCollector::new(100);
+        m.record_request(sample_log(200), true);
+        m.record_request(sample_log(200), false);
+        m.record_request(sample_log(404), true);
+
+        assert_eq!(m.get_metrics_snapshot().total_requests, 3);
+        assert_eq!(m.get_recent_logs(10, None, None).len(), 2);
     }
 }

@@ -126,16 +126,11 @@ impl Converter {
         d: &Directive,
         depth: usize,
     ) -> Vec<Directive> {
-        // `mime.types` e afins não têm o que migrar: o Ferrix detecta o tipo pelo arquivo.
-        if pattern.ends_with("mime.types") {
-            self.report.note(
-                NoteLevel::Converted,
-                &self.file,
-                d.line,
-                "include",
-                &d.source(),
-                "tipos MIME são detectados automaticamente pelo Ferrix",
-            );
+        // Snippets sabidamente sem conteúdo para migrar (ver `safe_include_note`) — não
+        // precisa nem tentar ler o arquivo.
+        if let Some(reason) = safe_include_note(pattern) {
+            self.report
+                .note(NoteLevel::Converted, &self.file, d.line, "include", &d.source(), reason);
             return Vec::new();
         }
 
@@ -675,6 +670,19 @@ impl Converter {
                     vhost.limit_conn = self.parse_limit_conn(item);
                 }
                 "return" => server_return = Some(item),
+                "http2" => {
+                    if item.arg(0) != Some("off") {
+                        self.report.note(
+                            NoteLevel::Converted,
+                            &self.file,
+                            item.line,
+                            "http2",
+                            &item.source(),
+                            "HTTP/2 já liga sozinho por ALPN sempre que TLS está configurado \
+                             neste vhost — não existe (nem precisa) uma flag separada",
+                        );
+                    }
+                }
                 "index" => self.report.note(
                     NoteLevel::Converted,
                     &self.file,
@@ -706,7 +714,7 @@ impl Converter {
                         d.line,
                         "listen ssl",
                         &d.source(),
-                        "TLS habilitado com o certificado encontrado — HTTP/2 continua fora (próxima fase)",
+                        "TLS habilitado com o certificado encontrado — HTTP/2 já liga sozinho por ALPN",
                     );
                 }
             }
@@ -793,6 +801,15 @@ impl Converter {
                     &d.source(),
                     "UDP não existe no Ferrix",
                 ),
+                "http2" => self.report.note(
+                    NoteLevel::Converted,
+                    &self.file,
+                    d.line,
+                    "listen http2",
+                    &d.source(),
+                    "HTTP/2 já liga sozinho por ALPN sempre que TLS está configurado — não \
+                     precisa desta flag",
+                ),
                 _ => {}
             }
         }
@@ -834,6 +851,112 @@ impl Converter {
         Some(route)
     }
 
+    /// `access_log off;` — a única forma que o Ferrix consegue migrar de verdade, porque
+    /// ele só grava em memória. Um caminho de arquivo customizado não tem para onde ir.
+    fn apply_access_log(&mut self, d: &Directive, route: &mut RouteRule) {
+        if d.arg(0) == Some("off") {
+            route.access_log = false;
+            self.report.note(
+                NoteLevel::Converted,
+                &self.file,
+                d.line,
+                "access_log",
+                &d.source(),
+                "esta rota não aparece mais no buffer de logs nem no stream ao vivo — as \
+                 métricas agregadas (RPS, contagem de status) continuam contando ela",
+            );
+        } else {
+            self.report.unsupported(
+                &self.file,
+                d.line,
+                "access_log",
+                &d.source(),
+                "o Ferrix só grava em memória; um arquivo ou formato customizado não tem para onde ir",
+            );
+        }
+    }
+
+    /// `expires` vira `add_header Cache-Control` — o efeito prático que interessa. O
+    /// header `Expires` em si (uma data calculada a cada resposta) o Ferrix não gera,
+    /// mas todo navegador atual já prioriza `Cache-Control` quando os dois aparecem.
+    ///
+    /// Chamada só depois do resto da location já ter sido processada, para poder ver se
+    /// já existe um `add_header Cache-Control` explícito — não importa se ele veio antes
+    /// ou depois do `expires` no arquivo original.
+    fn apply_expires(&mut self, d: &Directive, route: &mut RouteRule) {
+        let Some(value) = d.arg(0) else { return };
+
+        if value == "off" {
+            // É o padrão do próprio Ferrix também — nada a converter.
+            return;
+        }
+
+        let computed = if value == "-1" || value == "epoch" {
+            "no-cache".to_string()
+        } else if let Some(ms) = parse_time_ms(value) {
+            format!("max-age={}", ms / 1000)
+        } else {
+            self.report.unsupported(
+                &self.file,
+                d.line,
+                "expires",
+                &d.source(),
+                format!(
+                    "não entendi o valor '{}' (entendo 'off', '-1', 'epoch' e durações como '7d')",
+                    value
+                ),
+            );
+            return;
+        };
+
+        match route.add_headers.get("Cache-Control").cloned() {
+            None => {
+                route.add_headers.insert("Cache-Control".to_string(), computed);
+                self.report.note(
+                    NoteLevel::Converted,
+                    &self.file,
+                    d.line,
+                    "expires",
+                    &d.source(),
+                    "convertido para add_header Cache-Control",
+                );
+            }
+            Some(existing) => {
+                let lower = existing.to_ascii_lowercase();
+                if lower.contains("max-age") || lower.contains("no-cache") || lower.contains("no-store") {
+                    // Já tem duração própria — é mais específico que o que expires pediria.
+                    // Nginx mandaria os dois headers (um bug documentado: o cliente escolhe
+                    // qual obedecer); aqui fica só o explícito, que é a escolha mais segura.
+                    self.report.partial(
+                        &self.file,
+                        d.line,
+                        "expires",
+                        &d.source(),
+                        format!(
+                            "esta rota já tem 'add_header Cache-Control: {}'; o expires foi \
+                             ignorado para não mandar dois Cache-Control (o nginx original \
+                             mandaria os dois, e o cliente escolhe qual obedecer)",
+                            existing
+                        ),
+                    );
+                } else {
+                    // O add_header explícito não define duração (ex.: só "public") — soma a
+                    // duração do expires, preservando as duas intenções.
+                    let merged = format!("{}, {}", existing, computed);
+                    route.add_headers.insert("Cache-Control".to_string(), merged);
+                    self.report.note(
+                        NoteLevel::Converted,
+                        &self.file,
+                        d.line,
+                        "expires",
+                        &d.source(),
+                        "somado ao add_header Cache-Control já existente, que não tinha duração própria",
+                    );
+                }
+            }
+        }
+    }
+
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
         let (match_type, pattern) = parse_location_args(&d.args)?;
 
@@ -865,6 +988,10 @@ impl Converter {
 
         let mut has_target = false;
         let mut auth_realm: Option<String> = None;
+        // `expires` só é aplicado depois do loop (ver abaixo), porque a ordem no arquivo
+        // não é garantida: um `add_header Cache-Control` explícito pode vir antes OU
+        // depois dele, e só dá para decidir mesclar ou não depois de ver os dois.
+        let mut expires: Option<&Directive> = None;
 
         for item in block {
             match item.name.as_str() {
@@ -986,6 +1113,8 @@ impl Converter {
                         "o Ferrix já usa HTTP/1.1 e repassa a resposta em streaming",
                     );
                 }
+                "access_log" => self.apply_access_log(item, &mut route),
+                "expires" => expires = Some(item),
                 _ => self.note_unsupported(item),
             }
         }
@@ -1013,6 +1142,10 @@ impl Converter {
                 );
                 return None;
             }
+        }
+
+        if let Some(item) = expires {
+            self.apply_expires(item, &mut route);
         }
 
         Some(route)
@@ -1322,6 +1455,17 @@ impl Converter {
     }
 
     fn note_unsupported(&mut self, d: &Directive) {
+        // Um `include` de snippet reconhecido (ver `safe_include_note`) é Converted mesmo
+        // ao colar texto na tela, sem acesso ao arquivo — `expand_include` cobre o mesmo
+        // caso quando o arquivo existe de verdade (`ferrix import --from`), mas aqui é a
+        // única chance: `import_str` nunca resolve includes.
+        if d.name == "include" {
+            if let Some(reason) = d.arg(0).and_then(safe_include_note) {
+                self.report
+                    .note(NoteLevel::Converted, &self.file, d.line, "include", &d.source(), reason);
+                return;
+            }
+        }
         self.report.unsupported(
             &self.file,
             d.line,
@@ -1332,6 +1476,21 @@ impl Converter {
     }
 }
 
+/// Padrões de `include` sem conteúdo para migrar, reconhecidos só pelo caminho — não
+/// precisa ler o arquivo (por isso funciona tanto colando texto quanto lendo do disco).
+fn safe_include_note(pattern: &str) -> Option<&'static str> {
+    if pattern.ends_with("mime.types") {
+        Some("tipos MIME são detectados automaticamente pelo Ferrix")
+    } else if pattern.ends_with("options-ssl-nginx.conf") {
+        Some(
+            "é o snippet de TLS do Certbot — o rustls já aplica protocolos e cifras seguros \
+             por padrão, sem precisar deste ajuste",
+        )
+    } else {
+        None
+    }
+}
+
 /// Explicação específica para as diretivas que sabemos não suportar.
 fn reason_for(name: &str) -> String {
     let reason = match name {
@@ -1339,9 +1498,13 @@ fn reason_for(name: &str) -> String {
             "compressão está planejada para a próxima fase do Ferrix"
         }
         n if n.starts_with("proxy_cache") => "cache de conteúdo está planejado para a próxima fase",
-        n if n.starts_with("ssl_") || n == "http2" || n == "http3" => {
-            "TLS e HTTP/2 estão planejados para a próxima fase"
+        n if n.starts_with("ssl_") => {
+            "o rustls (biblioteca de TLS do Ferrix) já escolhe protocolos, cifras e parâmetros \
+             seguros automaticamente; não existe — e não está planejado — ajuste manual de \
+             coisas como ssl_ciphers, ssl_protocols ou ssl_dhparam: é uma limitação definitiva \
+             da biblioteca, não um item de fase futura"
         }
+        "http3" => "HTTP/3 não existe no Ferrix",
         n if n.starts_with("otel_") => "tracing com OpenTelemetry não existe no Ferrix",
         n if n.starts_with("js_") => "njs (JavaScript dentro do servidor) não existe no Ferrix",
         n if n.starts_with("modsecurity") => "WAF não existe no Ferrix",
@@ -2451,5 +2614,221 @@ mod tests {
             } }"#,
         );
         assert!(r.report.notes.iter().any(|n| n.directive == "if"));
+    }
+
+    // -- access_log / expires -------------------------------------------------
+
+    #[test]
+    fn access_log_off_in_a_location_disables_the_route_log() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location /health {
+                    access_log off;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert!(!route.access_log);
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "access_log" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn access_log_with_a_custom_path_stays_unsupported() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    access_log /var/log/custom.log;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.access_log);
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "access_log" && n.level == NoteLevel::Unsupported));
+    }
+
+    #[test]
+    fn expires_duration_becomes_cache_control_max_age() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    expires 30d;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert_eq!(
+            route.add_headers.get("Cache-Control").map(String::as_str),
+            Some("max-age=2592000")
+        );
+    }
+
+    #[test]
+    fn expires_minus_one_becomes_no_cache() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    expires -1;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert_eq!(
+            route.add_headers.get("Cache-Control").map(String::as_str),
+            Some("no-cache")
+        );
+    }
+
+    #[test]
+    fn expires_off_leaves_no_cache_control_header() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    expires off;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.add_headers.get("Cache-Control").is_none());
+    }
+
+    #[test]
+    fn expires_merges_into_an_add_header_with_no_duration_of_its_own() {
+        // Ordem no arquivo original não deve importar: expires antes ou depois do
+        // add_header chega ao mesmo resultado.
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    add_header Cache-Control "public";
+                    expires 7d;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert_eq!(
+            route.add_headers.get("Cache-Control").map(String::as_str),
+            Some("public, max-age=604800")
+        );
+    }
+
+    #[test]
+    fn expires_defers_to_an_add_header_that_already_has_a_duration() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                location / {
+                    expires -1;
+                    add_header Cache-Control "no-cache, no-store, must-revalidate";
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert_eq!(
+            route.add_headers.get("Cache-Control").map(String::as_str),
+            Some("no-cache, no-store, must-revalidate")
+        );
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "expires" && n.level == NoteLevel::Partial));
+    }
+
+    // -- http2 / TLS ------------------------------------------------------------
+
+    #[test]
+    fn bare_http2_directive_is_converted_not_unsupported() {
+        let r = convert(
+            r#"http { server {
+                listen 443 ssl;
+                ssl_certificate /a.pem;
+                ssl_certificate_key /a.key;
+                http2 on;
+                location / { proxy_pass http://x:1; }
+            } }"#,
+        );
+        assert!(!r.report.notes.iter().any(|n| n.directive == "http2" && n.level == NoteLevel::Unsupported));
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "http2" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn listen_http2_flag_is_converted_not_silently_dropped() {
+        let r = convert(
+            r#"http { server {
+                listen 443 ssl http2;
+                ssl_certificate /a.pem;
+                ssl_certificate_key /a.key;
+                location / { proxy_pass http://x:1; }
+            } }"#,
+        );
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "listen http2" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn options_ssl_nginx_conf_include_is_converted_without_needing_the_file() {
+        let r = convert(
+            r#"http { server {
+                listen 443 ssl;
+                include /etc/letsencrypt/options-ssl-nginx.conf;
+                ssl_certificate /a.pem;
+                ssl_certificate_key /a.key;
+                location / { proxy_pass http://x:1; }
+            } }"#,
+        );
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "include" && n.level == NoteLevel::Converted));
+    }
+
+    #[test]
+    fn ssl_ciphers_reports_a_permanent_limitation_not_a_future_phase() {
+        let r = convert(
+            r#"http { server {
+                listen 443 ssl;
+                ssl_certificate /a.pem;
+                ssl_certificate_key /a.key;
+                ssl_ciphers HIGH:!aNULL;
+                location / { proxy_pass http://x:1; }
+            } }"#,
+        );
+        let note = r
+            .report
+            .notes
+            .iter()
+            .find(|n| n.directive == "ssl_ciphers")
+            .expect("nota esperada");
+        assert_eq!(note.level, NoteLevel::Unsupported);
+        assert!(!note.reason.contains("próxima fase"));
+        assert!(note.reason.contains("definitiva"));
     }
 }

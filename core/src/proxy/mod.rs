@@ -39,6 +39,12 @@ use websocket::WebSocketProxy;
 /// `connect_timeout` e `read_timeout` são propriedades do cliente, não da requisição, então
 /// não dá para variá-los por rota com um cliente só. Como as combinações distintas numa
 /// configuração real são poucas, um cliente por combinação sai barato — e cada um mantém
+/// Marcador colocado nas extensões da resposta por uma rota com `access_log: false`.
+/// `route_and_serve` verifica isso antes de gravar — nunca sai no fio, é invisível ao
+/// cliente, só existe dentro do processo.
+#[derive(Debug, Clone, Copy)]
+struct SkipAccessLog;
+
 /// seu próprio pool de conexões reaproveitadas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ClientKey {
@@ -218,6 +224,7 @@ impl ProxyEngine {
 
         let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
         let status_code = response.status().as_u16();
+        let skip_log = response.extensions().get::<SkipAccessLog>().is_some();
 
         let log = RequestLog {
             id: Uuid::new_v4().to_string(),
@@ -250,7 +257,7 @@ impl ProxyEngine {
             },
         };
 
-        self.metrics.record_request(log);
+        self.metrics.record_request(log, !skip_log);
         self.count_response_bytes(response)
     }
 
@@ -527,6 +534,13 @@ impl ProxyEngine {
             ) {
                 resp.headers_mut().insert(name, val);
             }
+        }
+
+        // Sinaliza para `route_and_serve` não gravar esta requisição no log — via
+        // extensão da resposta, não um retorno extra, para não encher a assinatura de
+        // toda a cadeia de chamada com mais um parâmetro. Extensões nunca vão para o fio.
+        if !route.access_log {
+            resp.extensions_mut().insert(SkipAccessLog);
         }
 
         resp
