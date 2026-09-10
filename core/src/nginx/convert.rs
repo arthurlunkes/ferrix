@@ -77,6 +77,20 @@ struct Converter {
     /// server redefine `add_header`, o Ferrix soma em vez de substituir a lista inteira,
     /// mais previsível do que replicar esse detalhe).
     http_headers: HashMap<String, String>,
+
+    // Estado herdado de `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` — desce de
+    // `http` para `server` para `location` como no nginx real: uma location que só tem
+    // `proxy_cache_bypass` (sem repetir `proxy_cache`) ainda está cacheada se um nível
+    // acima ligou o cache. `cache_enabled` é `false` até algum nível ligar uma zona que
+    // não seja "off"; os outros três só importam quando `cache_enabled` é `true`.
+    cache_enabled: bool,
+    cache_valid_secs: u64,
+    cache_bypass_headers: Vec<String>,
+    cache_bypass_cookies: Vec<String>,
+    cache_bypass_query: Vec<String>,
+    /// Snapshot do estado logo após o pré-passe do nível `http` — todo `server` reparte
+    /// daqui, não do que o `server` anterior deixou para trás.
+    http_cache_baseline: (bool, u64, Vec<String>, Vec<String>, Vec<String>),
 }
 
 impl Converter {
@@ -99,6 +113,12 @@ impl Converter {
             synthetic_upstreams: 0,
             route_seq: 0,
             http_headers: HashMap::new(),
+            cache_enabled: false,
+            cache_valid_secs: 60,
+            cache_bypass_headers: Vec::new(),
+            cache_bypass_cookies: Vec::new(),
+            cache_bypass_query: Vec::new(),
+            http_cache_baseline: (false, 60, Vec::new(), Vec::new(), Vec::new()),
         }
     }
 
@@ -235,6 +255,25 @@ impl Converter {
             }
         }
 
+        // Mesma ideia: `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` no nível
+        // `http` viram a base herdada por todo `server` — vistos antes de qualquer server
+        // ser processado, não importa se vêm antes ou depois deles no arquivo.
+        self.collect_http_cache_scope(directives);
+        for d in directives {
+            if d.name == "http" {
+                if let Some(block) = &d.block {
+                    self.collect_http_cache_scope(block);
+                }
+            }
+        }
+        self.http_cache_baseline = (
+            self.cache_enabled,
+            self.cache_valid_secs,
+            self.cache_bypass_headers.clone(),
+            self.cache_bypass_cookies.clone(),
+            self.cache_bypass_query.clone(),
+        );
+
         for d in directives {
             match d.name.as_str() {
                 "http" => {
@@ -325,11 +364,30 @@ impl Converter {
         }
     }
 
+    /// Junta todo `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` direto num nível
+    /// `http` (ou solto no topo, sem `http{}`) e fixa o resultado em `self.cache_*` — a
+    /// base que todo `server` vai herdar antes de processar o que é seu.
+    fn collect_http_cache_scope(&mut self, block: &[Directive]) {
+        let mut zone: Option<&Directive> = None;
+        let mut valid: Vec<&Directive> = Vec::new();
+        let mut bypass: Vec<&Directive> = Vec::new();
+        for d in block {
+            match d.name.as_str() {
+                "proxy_cache" => zone = Some(d),
+                "proxy_cache_valid" => valid.push(d),
+                "proxy_cache_bypass" => bypass.push(d),
+                _ => {}
+            }
+        }
+        self.finalize_cache_scope(zone, &valid, &bypass);
+    }
+
     /// Diretivas que valem tanto soltas no nível superior (arquivo de site sem `http{}`)
     /// quanto dentro de um bloco `http{}` de verdade.
     fn dispatch_top_level(&mut self, d: &Directive) {
         match d.name.as_str() {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {} // já coletados
+            "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {} // já coletados
             "server" => self.convert_server(d),
 
             "client_max_body_size" => {
@@ -612,6 +670,17 @@ impl Converter {
     fn convert_server(&mut self, d: &Directive) {
         let Some(block) = &d.block else { return };
 
+        // Cada server reparte do que `http` deixou herdado, não do que o server anterior
+        // deixou para trás — sem isto, o segundo `server{}` de um arquivo herdaria o
+        // cache ligado (ou a lista de bypass) do primeiro.
+        (
+            self.cache_enabled,
+            self.cache_valid_secs,
+            self.cache_bypass_headers,
+            self.cache_bypass_cookies,
+            self.cache_bypass_query,
+        ) = self.http_cache_baseline.clone();
+
         let index = self.config.vhosts.len();
         let mut vhost = VirtualHost {
             id: format!("vhost-{}", index + 1),
@@ -639,6 +708,9 @@ impl Converter {
         // ver `try_convert_certbot_https_redirect`. Substitui inteiramente o `if`/`return
         // 404` que o gerava, então o `return 404` de fallback não é reportado.
         let mut certbot_redirect: Option<RouteRule> = None;
+        let mut cache_zone: Option<&Directive> = None;
+        let mut cache_valid: Vec<&Directive> = Vec::new();
+        let mut cache_bypass: Vec<&Directive> = Vec::new();
 
         for item in block {
             match item.name.as_str() {
@@ -711,9 +783,21 @@ impl Converter {
                     &item.source(),
                     "o Ferrix serve index.html automaticamente em diretórios",
                 ),
+                "proxy_cache" => cache_zone = Some(item),
+                "proxy_cache_valid" => cache_valid.push(item),
+                "proxy_cache_bypass" => cache_bypass.push(item),
                 _ => self.note_unsupported(item),
             }
         }
+
+        self.finalize_cache_scope(cache_zone, &cache_valid, &cache_bypass);
+        let server_cache_state = (
+            self.cache_enabled,
+            self.cache_valid_secs,
+            self.cache_bypass_headers.clone(),
+            self.cache_bypass_cookies.clone(),
+            self.cache_bypass_query.clone(),
+        );
 
         if vhost.server_names.is_empty() {
             vhost.server_names.push("*".to_string());
@@ -759,6 +843,17 @@ impl Converter {
         // Agora as locations, que podem herdar o `root` do server.
         for item in block {
             if item.name == "location" {
+                // Cada location reparte do que este server deixou herdado — não do que a
+                // location anterior sobrescreveu, senão um `proxy_cache_bypass` numa
+                // location vazaria para a próxima que nunca pediu isso.
+                (
+                    self.cache_enabled,
+                    self.cache_valid_secs,
+                    self.cache_bypass_headers,
+                    self.cache_bypass_cookies,
+                    self.cache_bypass_query,
+                ) = server_cache_state.clone();
+
                 if let Some(route) = self.convert_location(item, server_root.as_deref()) {
                     vhost.routes.push(route);
                 }
@@ -999,18 +1094,36 @@ impl Converter {
         target.insert(k.to_string(), v.to_string());
     }
 
-    /// `proxy_cache <zona>` liga o cache em memória desta rota. O Ferrix não separa por
-    /// zona nem grava em disco — uma tabela só, compartilhada, diferenciada pela própria
-    /// chave (método+host+caminho) — então o nome da zona só serve para saber que o
-    /// cache foi pedido; `proxy_cache_path` (nível `http`) é só anotado, sem efeito.
-    fn apply_cache(
+    /// Processa `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` vistos num único
+    /// nível (http, server ou location) e atualiza o estado herdado (`self.cache_*`), que
+    /// quem chamou já deixou pré-carregado com o valor do nível pai — exatamente como o
+    /// nginx real: uma location só com `proxy_cache_bypass` continua cacheada se `http`
+    /// ou `server` já ligou `proxy_cache`, sem precisar repetir a diretiva.
+    ///
+    /// O Ferrix não separa por zona nem grava em disco — uma tabela só, compartilhada,
+    /// diferenciada pela própria chave (método+host+caminho) — então o nome da zona só
+    /// serve para saber que o cache foi pedido; `proxy_cache_path` (nível `http`) é só
+    /// anotado, sem efeito.
+    fn finalize_cache_scope(
         &mut self,
-        zone_item: &Directive,
+        zone_item: Option<&Directive>,
         valid_items: &[&Directive],
         bypass_items: &[&Directive],
-        route: &mut RouteRule,
     ) {
-        let mut cfg = CacheConfig::default();
+        if let Some(item) = zone_item {
+            self.cache_enabled = item.arg(0).is_some_and(|z| z != "off");
+            if self.cache_enabled {
+                self.report.note(
+                    NoteLevel::Converted,
+                    &self.file,
+                    item.line,
+                    "proxy_cache",
+                    &item.source(),
+                    "cache em memória ligado a partir daqui — o Ferrix usa uma tabela única \
+                     compartilhada entre rotas, sem zona nem disco",
+                );
+            }
+        }
 
         // Pode haver um `proxy_cache_valid` por grupo de status ("200 30s", "404 10s",
         // "any 5s"); o Ferrix só cacheia 200 e só tem uma duração, então usa a entrada
@@ -1023,7 +1136,7 @@ impl Converter {
             .or_else(|| valid_items.first())
         {
             match chosen.args.last().and_then(|s| parse_time_ms(s)) {
-                Some(ms) => cfg.valid_secs = (ms / 1000).max(1),
+                Some(ms) => self.cache_valid_secs = (ms / 1000).max(1),
                 None => self.report.partial(
                     &self.file,
                     chosen.line,
@@ -1031,7 +1144,7 @@ impl Converter {
                     &chosen.source(),
                     format!(
                         "não entendi a duração; usando o padrão do Ferrix de {}s",
-                        cfg.valid_secs
+                        self.cache_valid_secs
                     ),
                 ),
             }
@@ -1052,54 +1165,80 @@ impl Converter {
                     "proxy_cache_valid",
                     &chosen.source(),
                     format!(
-                        "havia {} diretivas 'proxy_cache_valid' nesta location, uma por \
-                         código de status; o Ferrix usa uma única duração para tudo (aqui, \
-                         {}s), sem diferenciar por status",
+                        "havia {} diretivas 'proxy_cache_valid' neste nível, uma por código \
+                         de status; o Ferrix usa uma única duração para tudo (aqui, {}s), \
+                         sem diferenciar por status",
                         valid_items.len(),
-                        cfg.valid_secs
+                        self.cache_valid_secs
                     ),
                 );
             }
         }
 
-        for item in bypass_items {
-            let mut all_recognized = true;
-            for arg in &item.args {
-                if let Some(name) = arg.strip_prefix("$http_") {
-                    cfg.bypass_headers.push(name.replace('_', "-"));
-                } else if let Some(name) = arg.strip_prefix("$cookie_") {
-                    cfg.bypass_cookies.push(name.to_string());
-                } else if let Some(name) = arg.strip_prefix("$arg_") {
-                    cfg.bypass_query_params.push(name.to_string());
-                } else {
-                    all_recognized = false;
+        if !bypass_items.is_empty() {
+            // Redefinir substitui a lista herdada inteira, não soma — mesmo critério do
+            // nginx para esta diretiva.
+            let mut headers = Vec::new();
+            let mut cookies = Vec::new();
+            let mut query = Vec::new();
+            for item in bypass_items {
+                let mut all_recognized = true;
+                for arg in &item.args {
+                    if let Some(name) = arg.strip_prefix("$http_") {
+                        headers.push(name.replace('_', "-"));
+                    } else if let Some(name) = arg.strip_prefix("$cookie_") {
+                        cookies.push(name.to_string());
+                    } else if let Some(name) = arg.strip_prefix("$arg_") {
+                        query.push(name.to_string());
+                    } else {
+                        all_recognized = false;
+                    }
+                }
+                if !all_recognized {
+                    self.report.partial(
+                        &self.file,
+                        item.line,
+                        "proxy_cache_bypass",
+                        &item.source(),
+                        "só variáveis '$http_*', '$cookie_*' e '$arg_*' são reconhecidas; as \
+                         demais desta diretiva foram ignoradas",
+                    );
                 }
             }
-            if !all_recognized {
-                self.report.partial(
+            self.cache_bypass_headers = headers;
+            self.cache_bypass_cookies = cookies;
+            self.cache_bypass_query = query;
+        }
+
+        if !self.cache_enabled {
+            for item in valid_items {
+                self.report.unsupported(
+                    &self.file,
+                    item.line,
+                    "proxy_cache_valid",
+                    &item.source(),
+                    "sem um 'proxy_cache' ativo (nem aqui, nem em http/server), não há cache para validar",
+                );
+            }
+            for item in bypass_items {
+                self.report.unsupported(
                     &self.file,
                     item.line,
                     "proxy_cache_bypass",
                     &item.source(),
-                    "só variáveis '$http_*', '$cookie_*' e '$arg_*' são reconhecidas; as \
-                     demais desta diretiva foram ignoradas",
+                    "sem um 'proxy_cache' ativo (nem aqui, nem em http/server), não há cache para pular",
                 );
             }
         }
+    }
 
-        route.cache = Some(cfg.clone());
-        self.report.note(
-            NoteLevel::Converted,
-            &self.file,
-            zone_item.line,
-            "proxy_cache",
-            &zone_item.source(),
-            format!(
-                "cache em memória ligado nesta rota, válido por {}s — o Ferrix usa uma \
-                 tabela única compartilhada entre rotas, sem zona nem disco",
-                cfg.valid_secs
-            ),
-        );
+    fn effective_cache_config(&self) -> Option<CacheConfig> {
+        self.cache_enabled.then(|| CacheConfig {
+            valid_secs: self.cache_valid_secs,
+            bypass_headers: self.cache_bypass_headers.clone(),
+            bypass_cookies: self.cache_bypass_cookies.clone(),
+            bypass_query_params: self.cache_bypass_query.clone(),
+        })
     }
 
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
@@ -1265,11 +1404,7 @@ impl Converter {
                 }
                 "access_log" => self.apply_access_log(item, &mut route),
                 "expires" => expires = Some(item),
-                "proxy_cache" => {
-                    if item.arg(0) != Some("off") {
-                        cache_zone = Some(item);
-                    }
-                }
+                "proxy_cache" => cache_zone = Some(item),
                 "proxy_cache_valid" => cache_valid.push(item),
                 "proxy_cache_bypass" => cache_bypass.push(item),
                 _ => self.note_unsupported(item),
@@ -1305,28 +1440,8 @@ impl Converter {
             self.apply_expires(item, &mut route);
         }
 
-        if let Some(zone_item) = cache_zone {
-            self.apply_cache(zone_item, &cache_valid, &cache_bypass, &mut route);
-        } else {
-            for item in &cache_valid {
-                self.report.unsupported(
-                    &self.file,
-                    item.line,
-                    "proxy_cache_valid",
-                    &item.source(),
-                    "sem um 'proxy_cache' nesta location, não há cache para validar",
-                );
-            }
-            for item in &cache_bypass {
-                self.report.unsupported(
-                    &self.file,
-                    item.line,
-                    "proxy_cache_bypass",
-                    &item.source(),
-                    "sem um 'proxy_cache' nesta location, não há cache para pular",
-                );
-            }
-        }
+        self.finalize_cache_scope(cache_zone, &cache_valid, &cache_bypass);
+        route.cache = self.effective_cache_config();
 
         Some(route)
     }
@@ -3146,6 +3261,106 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.directive == "proxy_cache_path" && n.level == NoteLevel::Converted));
+    }
+
+    /// O bug real reportado: `proxy_cache_bypass` numa location que não repete
+    /// `proxy_cache` (porque a zona já foi ligada lá no `server`) precisa continuar
+    /// cacheando, herdando do nível acima — como o nginx real faz.
+    #[test]
+    fn proxy_cache_at_server_level_is_inherited_by_a_location_with_only_bypass() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                proxy_cache conteudo;
+                proxy_cache_valid 200 30s;
+                location /api/ {
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        let cfg = route.cache.as_ref().expect("deveria herdar o cache do server");
+        assert_eq!(cfg.valid_secs, 30);
+        assert_eq!(cfg.bypass_headers, vec!["upgrade".to_string()]);
+        assert!(!r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "proxy_cache_bypass" && n.level == NoteLevel::Unsupported));
+    }
+
+    #[test]
+    fn proxy_cache_at_http_level_is_inherited_by_every_server() {
+        let r = convert(
+            r#"http {
+                proxy_cache conteudo;
+                proxy_cache_valid 200 45s;
+                server {
+                    listen 80;
+                    location / { proxy_pass http://x:1; }
+                }
+                server {
+                    listen 81;
+                    location / { proxy_pass http://y:1; }
+                }
+            }"#,
+        );
+        assert_eq!(r.config.vhosts.len(), 2);
+        for vhost in &r.config.vhosts {
+            let cfg = vhost.routes[0]
+                .cache
+                .as_ref()
+                .expect("os dois vhosts deveriam herdar o cache do http");
+            assert_eq!(cfg.valid_secs, 45);
+        }
+    }
+
+    /// Uma location que redefine o bypass não pode vazar essa lista para a próxima
+    /// location irmã, que nunca pediu isso — cada location reparte do que o server
+    /// deixou, não do que a location anterior deixou.
+    #[test]
+    fn one_location_bypass_override_does_not_leak_into_the_next_sibling() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                proxy_cache conteudo;
+
+                location /a {
+                    proxy_cache_bypass $cookie_sessao;
+                    proxy_pass http://x:1;
+                }
+                location /b {
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let vhost = &r.config.vhosts[0];
+        let route_a = vhost.routes.iter().find(|r| r.path_prefix == "/a").unwrap();
+        let route_b = vhost.routes.iter().find(|r| r.path_prefix == "/b").unwrap();
+
+        assert_eq!(
+            route_a.cache.as_ref().unwrap().bypass_cookies,
+            vec!["sessao".to_string()]
+        );
+        assert!(route_b.cache.as_ref().unwrap().bypass_cookies.is_empty());
+    }
+
+    #[test]
+    fn proxy_cache_off_in_a_location_disables_an_inherited_cache() {
+        let r = convert(
+            r#"http { server {
+                listen 80;
+                proxy_cache conteudo;
+
+                location /sem-cache {
+                    proxy_cache off;
+                    proxy_pass http://x:1;
+                }
+            } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.cache.is_none());
     }
 
     #[test]
