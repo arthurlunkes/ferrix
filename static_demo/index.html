@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ferrix Static File Demo</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0b0f19;
+        color: #f3f4f6;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 16px;
+        padding: 32px;
+        max-width: 500px;
+        text-align: center;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      }
+      h1 {
+        color: #10b981;
+        margin-top: 0;
+      }
+      p {
+        color: #9ca3af;
+        line-height: 1.6;
+      }
+      .badge {
+        display: inline-block;
+        background: #064e3b;
+        color: #34d399;
+        padding: 4px 12px;
+        border-radius: 9999px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="badge">Nginx clone in Rust</div>
+      <h1>Hello from Ferrix Static Files!</h1>
+      <p>
+        This HTML file is being served directly by Ferrix's asynchronous static
+        file engine with MIME detection and Range support.
+      </p>
+    </div>
+  </body>
+</html>

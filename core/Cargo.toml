@@ -1,0 +1,37 @@
+[package]
+name = "ferrix"
+version = "0.1.0"
+edition = "2021"
+authors = ["Arthur Lunkes"]
+description = "High-performance standalone Nginx clone in Rust (Proxy Engine & Control Plane)"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace", "set-header"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+arc-swap = "1.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+mime_guess = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+regex = "1.10"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+base64 = "0.22"
+tokio-tungstenite = "0.29"
+url = "2.5"
+ipnet = { version = "2.10", features = ["serde"] }
+libc = "0.2"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+rustls-pemfile = "2"
+rustls = { version = "0.23", features = ["ring"] }
+
