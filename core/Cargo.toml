@@ -3,6 +3,8 @@ name = "ferrix"
 version = "0.1.0"
 edition = "2021"
 authors = ["Arthur Lunkes"]
+license = "MIT"
+repository = "https://github.com/arthurlunkes/ferrix"
 description = "High-performance standalone Nginx clone in Rust (Proxy Engine & Control Plane)"
 
 [dependencies]

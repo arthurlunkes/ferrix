@@ -92,7 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setTokenInput(e.target.value);
                 setError(null);
               }}
-              placeholder="ex: 9f5c43dad9c341e6ac88e452d953f27b"
+              placeholder="token do campo token no ferrix.json"
               className="w-full px-3.5 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               autoFocus
             />

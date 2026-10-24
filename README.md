@@ -1,121 +1,122 @@
-# Ferrix — High-Performance Nginx Clone in Rust
+# Ferrix — A high-performance web server and reverse proxy in Rust, inspired by Nginx
 
-**Ferrix** é um servidor web e reverse proxy assíncrono de alto desempenho construído em **Rust** (usando Tokio, Hyper e Axum), acompanhado de uma interface web administrativa moderna em **React + Tailwind CSS** e **API REST** para configuração dinâmica sem reinicialização (_zero-downtime hot-reload_), métricas em tempo real e inspeção de requisições ao vivo via Server-Sent Events (SSE).
+**Ferrix** is an asynchronous web server and reverse proxy built in **Rust** (Tokio, Hyper and Axum). It comes with a modern admin web UI in **React + Tailwind CSS** and a **REST API** for dynamic configuration without restarts (_zero-downtime hot-reload_), real-time metrics and live request inspection via Server-Sent Events (SSE).
 
----
-
-## 🚀 Principais Funcionalidades
-
-1. **Reverse Proxy com Suporte a WebSockets**:
-   - Túnel assíncrono full-duplex transparente para conexões `Upgrade: websocket`.
-   - Repasse de cabeçalhos de proxy (`Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`, cabeçalhos customizados).
-   - Suporte a streaming de dados e Server-Sent Events sem bufferizar tudo em memória.
-
-2. **Load Balancing & Alta Disponibilidade**:
-   - **Algoritmos Suportados**:
-     - `round_robin`: Distribuição cíclica uniforme.
-     - `weighted_round_robin`: Distribuição proporcional por pesos definidos por servidor.
-     - `least_conn`: Encaminhamento para o servidor com menor número de conexões ativas.
-     - `ip_hash`: Sessão persistente baseada no IP de origem do cliente.
-     - `random`: Seleção aleatória entre nós saudáveis.
-   - **Health Checks Ativos & Passivos**:
-     - Monitoramento periódico de saúde dos backends em background (path, intervalo e status esperado).
-     - Failover automático (_proxy_next_upstream_): se um nó retornar 502/504 ou timeout, o Ferrix retenta instantaneamente no próximo servidor do pool.
-
-3. **Arquivos Estáticos & Roteamento SPA**:
-   - Entrega rápida de arquivos estáticos com detecção de MIME types via `mime_guess`.
-   - Diretiva **`try_files`** (estilo Nginx) para suporte nativo a aplicações SPA (Single Page Applications como React, Vue, Angular).
-   - Suporte a headers de cache (`Cache-Control`) e proteção contra directory traversal (`../`).
-
-4. **Regras de Tráfego, Segurança & Headers**:
-   - **Rate Limiting**: Algoritmo Token Bucket com suporte a taxa por segundo e burst por IP.
-   - **Controle de Acesso**: Bloqueio e liberação de IPs (Allow/Deny).
-   - **Autenticação Básica**: Proteção HTTP Basic Auth per route ou vhost.
-   - **Redirecionamentos / Rewrites**: Suporte nativo a 301, 302, 307 e 308.
-
-5. **Hot-Reload em Tempo Real (Zero Downtime)**:
-   - Configurações alteradas pela Web UI ou pela API REST aplicam instantaneamente na memória usando ponteiros atômicos (`ArcSwap`), persistindo no arquivo `ferrix.json` no disco sem fechar sockets nem derrubar conexões ativas.
-
-6. **Dashboard Web React & API de Telemetria**:
-   - Painel de métricas com RPS, latência média, p95, p99 e distribuição de status HTTP (2xx, 3xx, 4xx, 5xx).
-   - Tabela de inspeção de requests ao vivo via **SSE** com detalhes profundos de cada requisição.
-   - Gestor visual de Virtual Hosts, Rotas e Pools de Upstream.
-   - Editor de configuração com validação sintática e botão "Validate & Hot-Reload".
+> **Where does the name come from?** _Ferrix_ combines **ferr-**, from _ferrum_ (Latin for iron) — because iron, over time, turns into **rust**, the language it is written in — with the trailing **-x** of **nginx**, the server that inspired it. In other words: an nginx made of rust. 🦀
 
 ---
 
-## 🛠️ Arquitetura do Projeto
+## 🚀 Features
 
-O Ferrix é estruturado em 3 camadas independentes e desacopladas:
+1. **Reverse proxy with WebSocket support**:
+   - Transparent, asynchronous full-duplex tunneling for `Upgrade: websocket` connections.
+   - Proxy header forwarding (`Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`, custom headers).
+   - Streaming and Server-Sent Events support without buffering whole responses in memory.
+
+2. **Load balancing and high availability**:
+   - **Supported algorithms**:
+     - `round_robin`: uniform cyclic distribution.
+     - `weighted_round_robin`: distribution proportional to per-server weights.
+     - `least_conn`: forwards to the server with the fewest active connections.
+     - `ip_hash`: sticky sessions based on the client IP.
+     - `random`: random choice among healthy nodes.
+   - **Active and passive health checks**:
+     - Periodic background health monitoring of backends (path, interval and expected status).
+     - Automatic failover (_proxy_next_upstream_): if a node returns 502/504 or times out, Ferrix immediately retries the next server in the pool.
+
+3. **Static files and SPA routing**:
+   - Fast static file serving with MIME type detection via `mime_guess`.
+   - Nginx-style **`try_files`** directive for single-page applications (React, Vue, Angular, etc.).
+   - Cache headers (`Cache-Control`) and directory traversal (`../`) protection.
+
+4. **Traffic rules, security and headers**:
+   - **Rate limiting**: token bucket algorithm with per-IP rate and burst.
+   - **Access control**: IP allow/deny lists.
+   - **Basic authentication**: HTTP Basic Auth per route or per virtual host.
+   - **Redirects and rewrites**: native 301, 302, 307 and 308 support.
+
+5. **Zero-downtime hot-reload**:
+   - Changes made in the web UI or via the REST API are applied instantly in memory using atomic pointers (`ArcSwap`) and persisted to `ferrix.json`, without closing sockets or dropping active connections.
+
+6. **React web dashboard and telemetry API**:
+   - Metrics panel with RPS, average latency, p95, p99 and HTTP status distribution (2xx, 3xx, 4xx, 5xx).
+   - Live request inspection table via **SSE**, with full details for each request.
+   - Visual manager for virtual hosts, routes and upstream pools.
+   - Configuration editor with syntax validation and a "validate & hot-reload" button.
+
+---
+
+## 🛠️ Project architecture
+
+Ferrix is split into 3 independent, decoupled layers:
 
 ```
 ferrix/
-├── core/                  # 🦀 Ferramenta Core em Rust (Nginx-style Proxy Engine, standalone e ultra-leve)
-│   ├── Cargo.toml         # Pacote Rust sem dependência de assets web
-│   ├── src/               # Engine de Proxy, Load Balancing, WebSockets, Cache, CLI
-│   ├── tests/             # Testes unitários e de integração
-│   └── scripts/           # Scripts de instalação: install.sh (Linux/systemd), install.ps1 (Windows)
+├── core/                  # 🦀 Rust core (Nginx-style proxy engine, standalone and lightweight)
+│   ├── Cargo.toml         # Rust package, no dependency on web assets
+│   ├── src/               # Proxy engine, load balancing, WebSockets, cache, CLI
+│   ├── tests/             # Unit and integration tests
+│   └── scripts/           # Install scripts: install.sh (Linux/systemd), install.ps1 (Windows)
 │
-├── backend/               # 🟢 Backend de Gestão em Node.js + Express (TypeScript)
-│   ├── package.json       # Servidor Node.js
-│   ├── tsconfig.json
-│   └── src/server.ts      # API REST, proxy para o Core, SSE stream e servidor do painel web
-│
-├── frontend/              # ⚛️ Painel Dashboard em React + Vite + Tailwind CSS
+├── backend/               # 🟢 Management backend in Node.js + Express (TypeScript)
 │   ├── package.json
-│   ├── src/               # Componentes, telas de métricas e modal de autenticação
-│   └── dist/              # Assets compilados entregues pelo backend Node.js
+│   ├── tsconfig.json
+│   └── src/server.ts      # REST API, proxy to the core, SSE stream and dashboard server
 │
-├── static_demo/           # Pasta de demonstração de arquivos estáticos servidos pelo Core
-├── ferrix.json            # Arquivo de configuração persistente
-└── test_backends.js       # Servidores mock para teste de balanceamento
+├── frontend/              # ⚛️ Web dashboard in React + Vite + Tailwind CSS
+│   ├── package.json
+│   ├── src/               # Components, metrics screens and auth modal
+│   └── dist/              # Built assets served by the Node.js backend
+│
+├── static_demo/           # Demo folder of static files served by the core
+├── docs/                  # Detailed documentation (Portuguese): overview, configuration, API...
+├── ferrix.json            # Local config (generated on first run, not tracked by git)
+└── test_backends.js       # Mock servers for load-balancing tests
 ```
 
 ---
 
-## 🏁 Como Executar e Instalar
+## 🏁 Running and installing
 
-### 1. Requisitos
+### 1. Requirements
 
 - **Rust & Cargo** (1.75+)
 - **Node.js** (v18+) & **npm**
 
-### 2. Executando em Desenvolvimento
+### 2. Running in development
 
 ```bash
-# 1. Iniciar o Core em Rust (Proxy em :8000 e Control Plane em :8081):
+# 1. Start the Rust core (proxy on :8000, control plane on :8081):
 cargo build --release --workspace
 ./target/release/ferrix --config ferrix.json
 
-# 2. Iniciar o Backend em Node.js (API e Painel em :8080):
+# 2. Start the Node.js backend (API and dashboard on :8080):
 cd backend
 npm install
 npm run build
 npm start
 
-# 3. (Opcional) Iniciar os servidores de teste para validação de balanceamento:
+# 3. (Optional) Start the mock servers to try out load balancing:
 node test_backends.js
 ```
 
-Em seguida:
+Then:
 
-1. Abra no navegador: **`http://localhost:8080`** para acessar o Dashboard.
-2. Insira o token de administração configurado no `ferrix.json` (`9f5c43dad9c341e6ac88e452d953f27b`).
-3. Dispare requisições para `http://localhost:8000/api` e veja o tráfego balanceado em tempo real no Dashboard!
+1. Open **`http://localhost:8080`** in your browser to access the dashboard.
+2. Enter the admin token. On first run, Ferrix creates `ferrix.json` with a random token (the `token` field); use that value.
+3. Send requests to `http://localhost:8000/api` and watch the balanced traffic live on the dashboard!
 
----
+### 📦 3. Installing the Ferrix core system-wide
 
-### 📦 3. Instalando o Ferrix Core no Sistema Operacional
+The **Ferrix core** can be installed as a system utility (`/usr/local/bin/ferrix` or `C:\Program Files\Ferrix\ferrix.exe`) with no Node.js dependency:
 
-O **Ferrix Core** pode ser instalado como um utilitário do sistema (`/usr/local/bin/ferrix` ou `C:\Program Files\Ferrix\ferrix.exe`) independente de Node.js:
-
-#### No Linux (com serviço Systemd automático):
+#### On Linux (with an automatic systemd service):
 
 ```bash
 sudo ./core/scripts/install.sh
 ```
 
-#### No Windows (PowerShell como Administrador):
+#### On Windows (PowerShell as Administrator):
 
 ```powershell
 .\core\scripts\install.ps1
@@ -123,19 +124,49 @@ sudo ./core/scripts/install.sh
 
 ---
 
-## 📡 API REST de Gestão
+## 📡 Management REST API
 
-| Método   | Endpoint               | Descrição                                                  |
-| -------- | ---------------------- | ---------------------------------------------------------- |
-| `GET`    | `/api/status`          | Informações de uptime, portas e contadores                 |
-| `GET`    | `/api/metrics`         | Snapshot de métricas (RPS, latência p95, status codes)     |
-| `GET`    | `/api/logs`            | Histórico paginado de logs com busca e filtros             |
-| `GET`    | `/api/logs/stream`     | Stream ao vivo de requisições via Server-Sent Events (SSE) |
-| `GET`    | `/api/config`          | Configuração JSON ativa                                    |
-| `POST`   | `/api/config`          | Atualiza a configuração global com hot-reload atômico      |
-| `GET`    | `/api/vhosts`          | Lista de hosts virtuais                                    |
-| `POST`   | `/api/vhosts`          | Cria ou atualiza um virtual host                           |
-| `DELETE` | `/api/vhosts/:id`      | Remove um virtual host                                     |
-| `GET`    | `/api/upstreams`       | Lista de pools de upstreams e status de saúde              |
-| `POST`   | `/api/upstreams`       | Cria ou atualiza um pool de upstreams                      |
-| `DELETE` | `/api/upstreams/:name` | Remove um pool de upstreams                                |
+| Method   | Endpoint               | Description                                           |
+| -------- | ---------------------- | ----------------------------------------------------- |
+| `GET`    | `/api/status`          | Uptime, ports and counters                            |
+| `GET`    | `/api/metrics`         | Metrics snapshot (RPS, p95 latency, status codes)     |
+| `GET`    | `/api/logs`            | Paginated log history with search and filters         |
+| `GET`    | `/api/logs/stream`     | Live request stream via Server-Sent Events (SSE)      |
+| `GET`    | `/api/config`          | Active JSON configuration                             |
+| `POST`   | `/api/config`          | Updates the global config with atomic hot-reload      |
+| `GET`    | `/api/vhosts`          | List virtual hosts                                    |
+| `POST`   | `/api/vhosts`          | Create or update a virtual host                       |
+| `DELETE` | `/api/vhosts/:id`      | Delete a virtual host                                 |
+| `GET`    | `/api/upstreams`       | List upstream pools and their health                  |
+| `POST`   | `/api/upstreams`       | Create or update an upstream pool                     |
+| `DELETE` | `/api/upstreams/:name` | Delete an upstream pool                               |
+
+Full documentation (in Portuguese) in [`docs/`](docs/README.md).
+
+---
+
+## 📊 Benchmark: Ferrix vs. nginx
+
+An honest comparison against nginx 1.27 on the same machine, so you know what to expect today.
+
+**Setup:** both servers pinned to 4 CPU cores (`worker_threads: 4` vs. `worker_processes 4`), nginx with `sendfile on` and upstream keepalive, load generated by `wrk` (8 threads) on separate cores, upstream being a separate nginx returning a 20-byte body. Each test ran twice for 10 s after a warm-up; numbers are averages.
+
+| Scenario (256 connections)   | Ferrix req/s          | nginx req/s          | Ferrix p99 | nginx p99 |
+| ---------------------------- | --------------------- | -------------------- | ---------- | --------- |
+| Static file, 1.4 KB          | ~14.7k                | ~56k                 | 33 ms      | 6–9 ms    |
+| Static file, 133 KB          | ~6.5k (0.83 GB/s)     | ~30k (3.7 GB/s)      | 68 ms      | 10–12 ms  |
+| Reverse proxy                | ~18.8k                | ~51k                 | 23 ms      | 6–7 ms    |
+
+At 50 connections the ratios were the same. Memory (RSS) after the runs: Ferrix ~53 MB, nginx ~11 MB.
+
+**Takeaway:** nginx is currently 2.7–4.5× faster in raw throughput and has much lower tail latency. Ferrix's strengths today are its features — web dashboard, API-driven hot-reload, built-in metrics and live request inspection — not raw speed. Likely areas for optimization (not yet profiled): zero-copy static file serving (`sendfile`) and open-file caching, upstream connection reuse, and per-request metrics/logging overhead. Performance contributions are very welcome!
+
+---
+
+## 🤝 Contributing
+
+Contributions are very welcome! Open an _issue_ to report bugs or suggest ideas, or send a _pull request_. See [CONTRIBUTING.md](CONTRIBUTING.md) for the step-by-step guide.
+
+## 📄 License
+
+Distributed under the MIT License. See [LICENSE](LICENSE).
