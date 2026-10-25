@@ -15,3 +15,6 @@ ferrix.log
 
 *.log
 .DS_Store
+
+# Configuração do benchmark: versionada de propósito, não tem segredo nenhum.
+!benchmarks/conf/ferrix.json
