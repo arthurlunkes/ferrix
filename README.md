@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/ferrix-logo.png" alt="Ferrix — Rust-based HTTP server" width="360">
+</p>
+
 # Ferrix — A high-performance web server and reverse proxy in Rust, inspired by Nginx
 
 **Ferrix** is an asynchronous web server and reverse proxy built in **Rust** (Tokio, Hyper and Axum). It comes with a modern admin web UI in **React + Tailwind CSS** and a **REST API** for dynamic configuration without restarts (_zero-downtime hot-reload_), real-time metrics and live request inspection via Server-Sent Events (SSE).
