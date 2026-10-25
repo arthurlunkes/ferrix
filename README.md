@@ -117,7 +117,39 @@ Then:
 2. Enter the admin token. On first run, Ferrix creates `ferrix.json` with a random token (the `token` field); use that value.
 3. Send requests to `http://localhost:8000/api` and watch the balanced traffic live on the dashboard!
 
-### 📦 3. Installing the Ferrix core system-wide
+### 🐳 3. Running with Docker (GitHub Packages)
+
+You can choose between the **ultra-lean Core image** (~20 MB) and the **Full All-in-One image** with the Web Dashboard:
+
+#### Option A: Ultra-lean Core only (~20 MB, pure Rust proxy & API)
+```bash
+docker run -d \
+  --name ferrix \
+  -p 8000:8000 \
+  -p 8081:8081 \
+  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  ghcr.io/arthurlunkes/ferrix:latest
+```
+
+#### Option B: Full All-in-One (Core + React Web Dashboard on :8080)
+```bash
+docker run -d \
+  --name ferrix-full \
+  -p 8000:8000 \
+  -p 8081:8081 \
+  -p 8080:8080 \
+  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  ghcr.io/arthurlunkes/ferrix:full
+```
+
+Or using Docker Compose:
+```bash
+docker compose up ferrix-core   # Run ultra-lean Core
+# or
+docker compose up ferrix-full   # Run All-in-One with Web Dashboard
+```
+
+### 📦 4. Installing the Ferrix core system-wide
 
 The **Ferrix core** can be installed as a system utility (`/usr/local/bin/ferrix` or `C:\Program Files\Ferrix\ferrix.exe`) with no Node.js dependency:
 

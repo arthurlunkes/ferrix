@@ -144,33 +144,52 @@ Send requests to `http://localhost:8000/api` and verify:
 
 ---
 
-## 🐳 Docker Deployment (Optional)
+## 🐳 Running with Docker (GitHub Packages)
 
-Multi-stage `Dockerfile` example to produce a minimal container image:
+Official multi-architecture images (`linux/amd64` and `linux/arm64`) are published to the GitHub Container Registry. You can choose between the **ultra-lean Core image** (~20 MB) or the **Full All-in-One image** with the Web Dashboard:
 
-```dockerfile
-# Stage 1: Build React UI
-FROM node:22-alpine AS ui-builder
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
+### Option A: Ultra-Lean Core (~20 MB, Rust Proxy Only)
 
-# Stage 2: Build Rust Binary
-FROM rust:1.80-alpine AS rust-builder
-RUN apk add --no-cache musl-dev
-WORKDIR /app
-COPY Cargo.* ./
-COPY core/ core/
-COPY --from=ui-builder /app/frontend/dist frontend/dist
-RUN cargo build --release
+Ideal for production, Kubernetes, and minimal resource footprints:
 
-# Stage 3: Runtime
-FROM alpine:3.20
-WORKDIR /app
-COPY --from=rust-builder /app/target/release/ferrix /usr/local/bin/ferrix
-COPY ferrix.json ./
-EXPOSE 8000 8081
-CMD ["ferrix", "run", "--config", "ferrix.json"]
+```bash
+docker run -d \
+  --name ferrix \
+  -p 8000:8000 \
+  -p 8081:8081 \
+  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  ghcr.io/arthurlunkes/ferrix:latest
+```
+
+### Option B: Full All-in-One (Core + React Dashboard on :8080)
+
+Includes the Ferrix Core and the interactive React Web Dashboard:
+
+```bash
+docker run -d \
+  --name ferrix-full \
+  -p 8000:8000 \
+  -p 8081:8081 \
+  -p 8080:8080 \
+  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  ghcr.io/arthurlunkes/ferrix:full
+```
+
+### Using Docker Compose
+
+```yaml
+services:
+  ferrix-core:
+    image: ghcr.io/arthurlunkes/ferrix:latest
+    ports:
+      - "8000:8000"
+      - "8081:8081"
+    volumes:
+      - ./ferrix.json:/etc/ferrix/ferrix.json
+```
+
+Run with:
+
+```bash
+docker compose up -d ferrix-core
 ```

@@ -1,0 +1,29 @@
+services:
+  # ----------------------------------------------------------------------------
+  # Option 1: Ultra-lean Core only (~20MB)
+  # Usage: docker compose up ferrix-core
+  # ----------------------------------------------------------------------------
+  ferrix-core:
+    image: ghcr.io/arthurlunkes/ferrix:latest
+    container_name: ferrix-core
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # Reverse Proxy traffic
+      - "8081:8081"   # Control Plane / Admin REST API
+    volumes:
+      - ./ferrix.json:/etc/ferrix/ferrix.json
+
+  # ----------------------------------------------------------------------------
+  # Option 2: Full All-in-One with React Web Dashboard
+  # Usage: docker compose up ferrix-full
+  # ----------------------------------------------------------------------------
+  ferrix-full:
+    image: ghcr.io/arthurlunkes/ferrix:full
+    container_name: ferrix-full
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # Reverse Proxy traffic
+      - "8081:8081"   # Control Plane / Admin REST API
+      - "8080:8080"   # React Web Dashboard & Gateway
+    volumes:
+      - ./ferrix.json:/etc/ferrix/ferrix.json
