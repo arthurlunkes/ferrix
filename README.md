@@ -1,5 +1,12 @@
 <p align="center">
-  <img src="docs/assets/ferrix-logo.png" alt="Ferrix — Rust-based HTTP server" width="360">
+  <img src="docs/assets/ferrix-banner.png" alt="Ferrix — Rust-based HTTP server" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/arthurlunkes/ferrix/actions/workflows/ci.yml"><img src="https://github.com/arthurlunkes/ferrix/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://arthurlunkes.github.io/ferrix"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation"></a>
+  <a href="https://semver.org"><img src="https://img.shields.io/badge/semver-2.0.0-orange.svg" alt="SemVer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
 # Ferrix — A high-performance web server and reverse proxy in Rust, inspired by Nginx

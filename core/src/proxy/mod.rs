@@ -23,8 +23,8 @@ use uuid::Uuid;
 use crate::cache::ResponseCache;
 use crate::config::store::ConfigStore;
 use crate::config::{
-    CacheConfig, NextUpstreamCondition, RouteRule, RouteTargetType, UpstreamConfig,
-    UpstreamTarget, VirtualHost,
+    CacheConfig, NextUpstreamCondition, RouteRule, RouteTargetType, UpstreamConfig, UpstreamTarget,
+    VirtualHost,
 };
 use crate::health::HealthChecker;
 use crate::metrics::logger::RequestLog;
@@ -353,8 +353,16 @@ impl ProxyEngine {
             }
         }
 
-        self.process_vhost_routes(compiled, vhost_index, vhost, is_tls, client_ip_str, req, is_ws)
-            .await
+        self.process_vhost_routes(
+            compiled,
+            vhost_index,
+            vhost,
+            is_tls,
+            client_ip_str,
+            req,
+            is_ws,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -850,7 +858,11 @@ fn cache_bypass_matches(cfg: &CacheConfig, parts: &axum::http::request::Parts) -
     }
 
     if !cfg.bypass_cookies.is_empty() {
-        if let Some(cookie_header) = parts.headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+        if let Some(cookie_header) = parts
+            .headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+        {
             for name in &cfg.bypass_cookies {
                 let hit = cookie_header
                     .split(';')
@@ -1010,7 +1022,11 @@ fn scheme_str(is_tls: bool) -> &'static str {
 /// Substitui as variáveis do nginx que fazem sentido num redirect: `$scheme`, `$host` e
 /// `$request_uri` (caminho com query). É o suficiente para o idioma mais comum de todos —
 /// o redirect HTTP→HTTPS que o Certbot gera — sem crescer para um interpolador genérico.
-fn interpolate_redirect_url(template: &str, parts: &axum::http::request::Parts, is_tls: bool) -> String {
+fn interpolate_redirect_url(
+    template: &str,
+    parts: &axum::http::request::Parts,
+    is_tls: bool,
+) -> String {
     if !template.contains('$') {
         return template.to_string();
     }
@@ -1398,7 +1414,10 @@ mod tests {
         let get_y = parts_full("/y", &[("host", "a.com")]);
         let get_x_other_host = parts_full("/x", &[("host", "b.com")]);
 
-        assert_ne!(cache_key_for(&vhost, &get_x), cache_key_for(&vhost, &head_x));
+        assert_ne!(
+            cache_key_for(&vhost, &get_x),
+            cache_key_for(&vhost, &head_x)
+        );
         assert_ne!(cache_key_for(&vhost, &get_x), cache_key_for(&vhost, &get_y));
         assert_ne!(
             cache_key_for(&vhost, &get_x),
@@ -1415,9 +1434,12 @@ mod tests {
 
         let resp = Response::builder()
             .status(200)
-            .body(Body::from_stream(futures_util::stream::iter([
-                Ok::<_, std::io::Error>(Bytes::from_static(b"chunk")),
-            ])))
+            .body(Body::from_stream(futures_util::stream::iter([Ok::<
+                _,
+                std::io::Error,
+            >(
+                Bytes::from_static(b"chunk"),
+            )])))
             .unwrap();
         let cfg = crate::config::CacheConfig::default();
 
@@ -1446,7 +1468,10 @@ mod tests {
             .await;
         assert_eq!(out.headers().get("x-cache-status").unwrap(), "MISS");
 
-        let cached = engine.response_cache.get("k2").expect("deveria ter guardado");
+        let cached = engine
+            .response_cache
+            .get("k2")
+            .expect("deveria ter guardado");
         assert_eq!(&cached.body[..], &body_bytes[..]);
         let replayed = build_cached_response(&cached);
         assert_eq!(replayed.status(), StatusCode::OK);
@@ -1468,7 +1493,9 @@ mod tests {
             .unwrap();
         let cfg = crate::config::CacheConfig::default();
 
-        engine.store_if_cacheable("k3".to_string(), &cfg, resp).await;
+        engine
+            .store_if_cacheable("k3".to_string(), &cfg, resp)
+            .await;
         assert!(engine.response_cache.get("k3").is_none());
     }
 }

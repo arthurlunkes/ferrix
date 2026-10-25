@@ -82,7 +82,9 @@ impl UpstreamClient {
         connector.set_connect_timeout(Some(connect_timeout));
         connector.set_nodelay(true);
 
-        let http = (0..POOL_SHARDS).map(|_| std::sync::OnceLock::new()).collect();
+        let http = (0..POOL_SHARDS)
+            .map(|_| std::sync::OnceLock::new())
+            .collect();
 
         let https = reqwest::Client::builder()
             .pool_idle_timeout(Duration::from_secs(90))
@@ -275,7 +277,7 @@ where
                         let limit_ms = this.dur.as_millis() as u64;
                         if idle_ms >= limit_ms {
                             return Poll::Ready(Some(Err(
-                                "tempo de leitura do upstream esgotado".into(),
+                                "tempo de leitura do upstream esgotado".into()
                             )));
                         }
                         // Houve atividade depois que o timer foi armado: rearma para o

@@ -84,6 +84,10 @@ mod tests {
 
         let real = Utc::now().timestamp_millis();
         let cached = utc_now().timestamp_millis();
-        assert!((real - cached).abs() < 20, "diferença de {} ms", real - cached);
+        assert!(
+            (real - cached).abs() < 20,
+            "diferença de {} ms",
+            real - cached
+        );
     }
 }

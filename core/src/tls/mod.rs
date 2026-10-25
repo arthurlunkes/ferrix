@@ -110,14 +110,16 @@ mod tests {
 
     #[test]
     fn a_vhost_with_tls_marks_its_port_for_https() {
-        let mut cfg = FerrixConfig::default();
-        cfg.vhosts = vec![vhost(
-            443,
-            Some(TlsConfig {
-                cert_path: "/c.pem".into(),
-                key_path: "/k.pem".into(),
-            }),
-        )];
+        let cfg = FerrixConfig {
+            vhosts: vec![vhost(
+                443,
+                Some(TlsConfig {
+                    cert_path: "/c.pem".into(),
+                    key_path: "/k.pem".into(),
+                }),
+            )],
+            ..Default::default()
+        };
 
         let plan = plan_ports(&cfg);
         let port_443 = plan.iter().find(|p| p.port == 443).unwrap();
@@ -128,23 +130,25 @@ mod tests {
 
     #[test]
     fn first_tls_vhost_on_a_shared_port_wins() {
-        let mut cfg = FerrixConfig::default();
-        cfg.vhosts = vec![
-            vhost(
-                443,
-                Some(TlsConfig {
-                    cert_path: "/primeiro.pem".into(),
-                    key_path: "/primeiro-key.pem".into(),
-                }),
-            ),
-            vhost(
-                443,
-                Some(TlsConfig {
-                    cert_path: "/segundo.pem".into(),
-                    key_path: "/segundo-key.pem".into(),
-                }),
-            ),
-        ];
+        let cfg = FerrixConfig {
+            vhosts: vec![
+                vhost(
+                    443,
+                    Some(TlsConfig {
+                        cert_path: "/primeiro.pem".into(),
+                        key_path: "/primeiro-key.pem".into(),
+                    }),
+                ),
+                vhost(
+                    443,
+                    Some(TlsConfig {
+                        cert_path: "/segundo.pem".into(),
+                        key_path: "/segundo-key.pem".into(),
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
 
         let plan = plan_ports(&cfg);
         let port_443 = plan.iter().find(|p| p.port == 443).unwrap();
@@ -155,20 +159,25 @@ mod tests {
     fn plain_vhost_sharing_a_tls_port_does_not_downgrade_it() {
         // Se o primeiro vhost visto na porta não tiver `tls` mas outro tiver, a porta
         // ainda deve subir em HTTPS — a ordem de declaração não deveria importar aqui.
-        let mut cfg = FerrixConfig::default();
-        cfg.vhosts = vec![
-            vhost(443, None),
-            vhost(
-                443,
-                Some(TlsConfig {
-                    cert_path: "/c.pem".into(),
-                    key_path: "/k.pem".into(),
-                }),
-            ),
-        ];
+        let cfg = FerrixConfig {
+            vhosts: vec![
+                vhost(443, None),
+                vhost(
+                    443,
+                    Some(TlsConfig {
+                        cert_path: "/c.pem".into(),
+                        key_path: "/k.pem".into(),
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
 
         let plan = plan_ports(&cfg);
         let port_443 = plan.iter().find(|p| p.port == 443).unwrap();
-        assert!(port_443.tls.is_some(), "a porta deveria ter sido promovida a TLS");
+        assert!(
+            port_443.tls.is_some(),
+            "a porta deveria ter sido promovida a TLS"
+        );
     }
 }

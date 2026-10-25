@@ -107,11 +107,13 @@ async fn proxy_handler(
 }
 
 fn proxy_router(engine: Arc<ProxyEngine>, listen_port: u16, is_tls: bool) -> Router {
-    Router::new().fallback(proxy_handler).with_state(ProxyListenerState {
-        engine,
-        listen_port,
-        is_tls,
-    })
+    Router::new()
+        .fallback(proxy_handler)
+        .with_state(ProxyListenerState {
+            engine,
+            listen_port,
+            is_tls,
+        })
 }
 
 /// Sobe `workers` threads servindo a mesma porta.
@@ -260,11 +262,19 @@ fn serve_tls(addr: SocketAddr, engine: Arc<ProxyEngine>, tls_config: RustlsConfi
 }
 
 #[cfg(not(unix))]
-fn serve_tls(addr: SocketAddr, engine: Arc<ProxyEngine>, tls_config: RustlsConfig, _workers: usize) {
+fn serve_tls(
+    addr: SocketAddr,
+    engine: Arc<ProxyEngine>,
+    tls_config: RustlsConfig,
+    _workers: usize,
+) {
     let app = proxy_router(engine, addr.port(), true);
     tokio::spawn(async move {
         let service = app.into_make_service_with_connect_info::<SocketAddr>();
-        if let Err(e) = axum_server::bind_rustls(addr, tls_config).serve(service).await {
+        if let Err(e) = axum_server::bind_rustls(addr, tls_config)
+            .serve(service)
+            .await
+        {
             error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
         }
     });
@@ -1001,4 +1011,3 @@ async fn run_server(args: Args) -> Result<(), String> {
 
     Ok(())
 }
-

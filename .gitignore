@@ -6,6 +6,9 @@
 node_modules/
 dist/
 
+# mdBook
+/book/
+
 # Config e runtime — gerados/local, nunca versionados: ferrix.json carrega o token de
 # administração e os domínios reais de quem está rodando. Um ferrix.json novo é criado
 # sozinho (com um token novo) na primeira execução — ver core/src/config/mod.rs.

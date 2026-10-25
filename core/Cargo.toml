@@ -1,10 +1,13 @@
 [package]
 name = "ferrix"
-version = "0.1.0"
-edition = "2021"
-authors = ["Arthur Lunkes"]
-license = "MIT"
-repository = "https://github.com/arthurlunkes/ferrix"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
 description = "High-performance standalone Nginx clone in Rust (Proxy Engine & Control Plane)"
 
 [dependencies]

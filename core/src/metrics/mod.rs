@@ -158,7 +158,11 @@ impl MetricsCollector {
             .is_ok()
         {
             let prev_count = self.rps_count.swap(1, Ordering::AcqRel);
-            let prev_rps = if now == cur + 1 { prev_count as f64 } else { 0.0 };
+            let prev_rps = if now == cur + 1 {
+                prev_count as f64
+            } else {
+                0.0
+            };
             self.rps_last.store(prev_rps.to_bits(), Ordering::Relaxed);
         } else {
             self.rps_count.fetch_add(1, Ordering::Relaxed);
@@ -182,7 +186,9 @@ impl MetricsCollector {
                 break;
             }
             let idx = (head - k) % LOG_CAPACITY;
-            let Ok(slot) = self.log_slots[idx].lock() else { continue };
+            let Ok(slot) = self.log_slots[idx].lock() else {
+                continue;
+            };
             let Some(log) = slot.as_ref() else { continue };
 
             if let Some(st) = filter_status {
@@ -213,7 +219,10 @@ impl MetricsCollector {
         let rps = f64::from_bits(self.rps_last.load(Ordering::Relaxed));
 
         // Cópia da janela (fora do caminho quente) e ordenação local.
-        let filled = self.latency_head.load(Ordering::Relaxed).min(LATENCY_WINDOW);
+        let filled = self
+            .latency_head
+            .load(Ordering::Relaxed)
+            .min(LATENCY_WINDOW);
         let mut sorted: Vec<f64> = self.latencies[..filled]
             .iter()
             .map(|a| f64::from_bits(a.load(Ordering::Relaxed)))
@@ -351,6 +360,9 @@ mod tests {
         let s = m.get_metrics_snapshot();
         assert_eq!(s.total_requests, 80_000);
         assert_eq!(s.status_2xx, 80_000);
-        assert_eq!(m.get_recent_logs(usize::MAX, None, None).len(), LOG_CAPACITY);
+        assert_eq!(
+            m.get_recent_logs(usize::MAX, None, None).len(),
+            LOG_CAPACITY
+        );
     }
 }

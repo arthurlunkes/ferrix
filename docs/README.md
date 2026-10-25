@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ferrix-banner.png" alt="Ferrix Banner" width="100%">
+</p>
+
 # Documentação Oficial do Ferrix
 
 Bem-vindo à documentação completa do **Ferrix** — um servidor web e reverse proxy de alto desempenho inspirado no Nginx, desenvolvido em **Rust** e equipado nativamente com um **Dashboard Web em React** e uma **API REST** para gerenciamento dinâmico em tempo real (_zero-downtime hot-reload_).

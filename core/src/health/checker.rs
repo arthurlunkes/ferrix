@@ -91,9 +91,12 @@ impl HealthChecker {
         // e assim cada requisição não disputa o lock de escrita global do mapa.
         if let Ok(map) = self.statuses.read() {
             if let Some(st) = map.get(target_url) {
-                let recent = st
-                    .last_checked
-                    .is_some_and(|t| crate::clock::utc_now().signed_duration_since(t).num_milliseconds() < 1000);
+                let recent = st.last_checked.is_some_and(|t| {
+                    crate::clock::utc_now()
+                        .signed_duration_since(t)
+                        .num_milliseconds()
+                        < 1000
+                });
                 if st.healthy && st.consecutive_fails == 0 && recent {
                     return;
                 }

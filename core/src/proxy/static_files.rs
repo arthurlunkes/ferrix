@@ -52,7 +52,8 @@ impl StaticFileServer {
 
         let hit = CACHE.read().ok().and_then(|c| c.entries.get(&key).cloned());
         if let Some(entry) = hit {
-            let age = crate::clock::mono_ms().saturating_sub(entry.checked_at.load(Ordering::Relaxed));
+            let age =
+                crate::clock::mono_ms().saturating_sub(entry.checked_at.load(Ordering::Relaxed));
             let fresh = age < REVALIDATE_AFTER.as_millis() as u64;
             if fresh || still_same_file(&entry).await {
                 return Ok(build_response(&entry));
@@ -69,9 +70,10 @@ impl StaticFileServer {
         let tf = try_files.map(|s| s.to_string());
         // Toda a resolução usa chamadas de sistema bloqueantes (stat, canonicalize, read);
         // fora do runtime, para não travar as outras conexões da mesma thread.
-        let loaded = tokio::task::spawn_blocking(move || load_file(&root, &req_path, tf.as_deref()))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+        let loaded =
+            tokio::task::spawn_blocking(move || load_file(&root, &req_path, tf.as_deref()))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
         match loaded {
             Loaded::Cacheable(entry) => {
@@ -117,7 +119,9 @@ async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
         Err(_) => false,
     };
     if same {
-        entry.checked_at.store(crate::clock::mono_ms(), Ordering::Relaxed);
+        entry
+            .checked_at
+            .store(crate::clock::mono_ms(), Ordering::Relaxed);
     }
     same
 }
@@ -171,7 +175,8 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
 
     if len > MAX_CACHED_FILE_BYTES {
         // Grande demais para a memória: segue em streaming direto do disco.
-        let file = std::fs::File::open(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let file =
+            std::fs::File::open(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
         let mut resp = Response::new(Body::from_stream(stream));
         let h = resp.headers_mut();

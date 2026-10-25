@@ -15,8 +15,8 @@ use super::report::{MigrationReport, NoteLevel};
 use crate::config::{
     BasicAuthConfig, CacheConfig, FerrixConfig, LimitConnConfig, LoadBalanceAlgorithm,
     NextUpstreamCondition, ProxyNextUpstreamConfig, RateLimitConfig, RateLimitMode, RealIpHeader,
-    RouteMatchType, RouteRule, RouteTargetType, Satisfy, TlsConfig, UpstreamConfig,
-    UpstreamTarget, VirtualHost,
+    RouteMatchType, RouteRule, RouteTargetType, Satisfy, TlsConfig, UpstreamConfig, UpstreamTarget,
+    VirtualHost,
 };
 
 pub struct ImportResult {
@@ -156,8 +156,14 @@ impl Converter {
         // Snippets sabidamente sem conteúdo para migrar (ver `safe_include_note`) — não
         // precisa nem tentar ler o arquivo.
         if let Some(reason) = safe_include_note(pattern) {
-            self.report
-                .note(NoteLevel::Converted, &self.file, d.line, "include", &d.source(), reason);
+            self.report.note(
+                NoteLevel::Converted,
+                &self.file,
+                d.line,
+                "include",
+                &d.source(),
+                reason,
+            );
             return Vec::new();
         }
 
@@ -810,7 +816,10 @@ impl Converter {
 
         match (ssl_cert, ssl_key) {
             (Some(cert_path), Some(key_path)) => {
-                vhost.tls = Some(TlsConfig { cert_path, key_path });
+                vhost.tls = Some(TlsConfig {
+                    cert_path,
+                    key_path,
+                });
                 if saw_ssl_listen {
                     self.report.note(
                         NoteLevel::Converted,
@@ -825,7 +834,11 @@ impl Converter {
             (cert, _key) if saw_ssl_listen => {
                 // Tinha `listen ... ssl` mas faltou um dos dois arquivos — a porta migra,
                 // mas sem certificado o Ferrix não tem como servir HTTPS nela.
-                let missing = if cert.is_none() { "ssl_certificate" } else { "ssl_certificate_key" };
+                let missing = if cert.is_none() {
+                    "ssl_certificate"
+                } else {
+                    "ssl_certificate_key"
+                };
                 self.report.partial(
                     &self.file,
                     d.line,
@@ -935,7 +948,10 @@ impl Converter {
     /// o Certbot redireciona HTTP para HTTPS. A condição é sempre verdadeira na prática:
     /// o server já só é alcançado quando o `Host` bate com um `server_name` seu, então
     /// checar `$host` de novo aqui não filtra nada — só um redirect incondicional.
-    fn try_convert_certbot_https_redirect(&mut self, if_directive: &Directive) -> Option<RouteRule> {
+    fn try_convert_certbot_https_redirect(
+        &mut self,
+        if_directive: &Directive,
+    ) -> Option<RouteRule> {
         // A forma exata que o Certbot gera: sem espaço depois do "(", o lexer devolve
         // "($host" como uma palavra só.
         if if_directive.args.len() != 3
@@ -946,7 +962,9 @@ impl Converter {
         }
 
         let block = if_directive.block.as_ref()?;
-        let [inner] = block.as_slice() else { return None };
+        let [inner] = block.as_slice() else {
+            return None;
+        };
         if inner.name != "return" {
             return None;
         }
@@ -1026,7 +1044,9 @@ impl Converter {
 
         match route.add_headers.get("Cache-Control").cloned() {
             None => {
-                route.add_headers.insert("Cache-Control".to_string(), computed);
+                route
+                    .add_headers
+                    .insert("Cache-Control".to_string(), computed);
                 self.report.note(
                     NoteLevel::Converted,
                     &self.file,
@@ -1038,7 +1058,10 @@ impl Converter {
             }
             Some(existing) => {
                 let lower = existing.to_ascii_lowercase();
-                if lower.contains("max-age") || lower.contains("no-cache") || lower.contains("no-store") {
+                if lower.contains("max-age")
+                    || lower.contains("no-cache")
+                    || lower.contains("no-store")
+                {
                     // Já tem duração própria — é mais específico que o que expires pediria.
                     // Nginx mandaria os dois headers (um bug documentado: o cliente escolhe
                     // qual obedecer); aqui fica só o explícito, que é a escolha mais segura.
@@ -1058,7 +1081,9 @@ impl Converter {
                     // O add_header explícito não define duração (ex.: só "public") — soma a
                     // duração do expires, preservando as duas intenções.
                     let merged = format!("{}, {}", existing, computed);
-                    route.add_headers.insert("Cache-Control".to_string(), merged);
+                    route
+                        .add_headers
+                        .insert("Cache-Control".to_string(), merged);
                     self.report.note(
                         NoteLevel::Converted,
                         &self.file,
@@ -1078,7 +1103,9 @@ impl Converter {
     /// o valor literal aqui sobrescreveria esse header de verdade com o texto cru
     /// "$upstream_cache_status", que não significa nada fora do nginx.
     fn apply_add_header(&mut self, item: &Directive, target: &mut HashMap<String, String>) {
-        let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else { return };
+        let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else {
+            return;
+        };
         if k.eq_ignore_ascii_case("x-cache-status") && v == "$upstream_cache_status" {
             self.report.note(
                 NoteLevel::Converted,
@@ -1132,7 +1159,11 @@ impl Converter {
         if let Some(chosen) = valid_items
             .iter()
             .find(|it| it.args.iter().any(|a| a == "200"))
-            .or_else(|| valid_items.iter().find(|it| it.args.iter().any(|a| a == "any")))
+            .or_else(|| {
+                valid_items
+                    .iter()
+                    .find(|it| it.args.iter().any(|a| a == "any"))
+            })
             .or_else(|| valid_items.first())
         {
             match chosen.args.last().and_then(|s| parse_time_ms(s)) {
@@ -1756,8 +1787,14 @@ impl Converter {
         // única chance: `import_str` nunca resolve includes.
         if d.name == "include" {
             if let Some(reason) = d.arg(0).and_then(safe_include_note) {
-                self.report
-                    .note(NoteLevel::Converted, &self.file, d.line, "include", &d.source(), reason);
+                self.report.note(
+                    NoteLevel::Converted,
+                    &self.file,
+                    d.line,
+                    "include",
+                    &d.source(),
+                    reason,
+                );
                 return;
             }
         }
@@ -1780,8 +1817,13 @@ impl Converter {
             "ssl_session_tickets",
         ];
         if RUSTLS_PERMANENT_DEFAULTS.contains(&d.name.as_str()) {
-            self.report
-                .ignored(&self.file, d.line, &d.name, &d.source(), reason_for(&d.name));
+            self.report.ignored(
+                &self.file,
+                d.line,
+                &d.name,
+                &d.source(),
+                reason_for(&d.name),
+            );
             return;
         }
         self.report.unsupported(
@@ -1815,8 +1857,14 @@ fn reason_for(name: &str) -> String {
         n if n.starts_with("gzip") || n == "brotli" => {
             "compressão está planejada para a próxima fase do Ferrix"
         }
-        "ssl_protocols" | "ssl_ciphers" | "ssl_prefer_server_ciphers" | "ssl_ecdh_curve"
-        | "ssl_dhparam" | "ssl_session_cache" | "ssl_session_timeout" | "ssl_session_tickets" => {
+        "ssl_protocols"
+        | "ssl_ciphers"
+        | "ssl_prefer_server_ciphers"
+        | "ssl_ecdh_curve"
+        | "ssl_dhparam"
+        | "ssl_session_cache"
+        | "ssl_session_timeout"
+        | "ssl_session_tickets" => {
             "o rustls (biblioteca de TLS do Ferrix) já escolhe protocolos, cifras e parâmetros \
              seguros automaticamente; não existe — e não está planejado — ajuste manual \
              disso: é uma limitação definitiva da biblioteca, não um item de fase futura"
@@ -2342,7 +2390,10 @@ mod tests {
         let r = convert(r#"http { server { listen 80; return 301 https://$host$request_uri; } }"#);
         let route = first_route(&r);
         assert_eq!(route.target_type, RouteTargetType::Redirect);
-        assert_eq!(route.redirect_url.as_deref(), Some("https://$host$request_uri"));
+        assert_eq!(
+            route.redirect_url.as_deref(),
+            Some("https://$host$request_uri")
+        );
         assert!(!r.report.notes.iter().any(|n| n.directive == "return"));
     }
 
@@ -2350,8 +2401,11 @@ mod tests {
     fn return_with_an_unsupported_variable_is_reported_not_guessed() {
         // $arg_* lê a query string — sem equivalente num redirect estático.
         let r = convert(r#"http { server { listen 80; return 301 https://$host/$arg_next; } }"#);
-        assert!(r.report.notes.iter().any(|n| n.directive == "return"
-            && n.reason.contains("$arg_next")));
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "return" && n.reason.contains("$arg_next")));
     }
 
     #[test]
@@ -2399,7 +2453,13 @@ mod tests {
         let route = first_route(&r);
         assert!(!route.websocket_enabled);
         // E o header em si precisa continuar indo para o backend — é o que a diretiva pede.
-        assert_eq!(route.proxy_set_headers.get("Connection").map(|s| s.as_str()), Some(""));
+        assert_eq!(
+            route
+                .proxy_set_headers
+                .get("Connection")
+                .map(|s| s.as_str()),
+            Some("")
+        );
     }
 
     #[test]
@@ -2879,7 +2939,10 @@ mod tests {
             } }"#,
         );
 
-        let tls = r.config.vhosts[0].tls.as_ref().expect("TLS deveria estar habilitado");
+        let tls = r.config.vhosts[0]
+            .tls
+            .as_ref()
+            .expect("TLS deveria estar habilitado");
         assert_eq!(tls.cert_path, "/etc/certs/fullchain.pem");
         assert_eq!(tls.key_path, "/etc/certs/privkey.pem");
 
@@ -2912,7 +2975,10 @@ mod tests {
         let route = first_route(&r);
         assert_eq!(route.target_type, RouteTargetType::Redirect);
         assert_eq!(route.redirect_code, Some(301));
-        assert_eq!(route.redirect_url.as_deref(), Some("https://$host$request_uri"));
+        assert_eq!(
+            route.redirect_url.as_deref(),
+            Some("https://$host$request_uri")
+        );
 
         // O "if" ganha uma nota explicando a simplificação (não é "não migrado" — foi
         // convertido, só que de um jeito diferente do texto original). O "return 404" de
@@ -3035,7 +3101,7 @@ mod tests {
             } }"#,
         );
         let route = first_route(&r);
-        assert!(route.add_headers.get("Cache-Control").is_none());
+        assert!(!route.add_headers.contains_key("Cache-Control"));
     }
 
     #[test]
@@ -3096,7 +3162,11 @@ mod tests {
                 location / { proxy_pass http://x:1; }
             } }"#,
         );
-        assert!(!r.report.notes.iter().any(|n| n.directive == "http2" && n.level == NoteLevel::Unsupported));
+        assert!(!r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "http2" && n.level == NoteLevel::Unsupported));
         assert!(r
             .report
             .notes
@@ -3221,9 +3291,13 @@ mod tests {
         );
         let route = first_route(&r);
         assert_eq!(route.cache.as_ref().unwrap().valid_secs, 30);
-        assert!(r.report.notes.iter().any(|n| n.directive == "proxy_cache_valid"
-            && n.level == NoteLevel::Partial
-            && n.reason.contains("3 diretivas")));
+        assert!(r
+            .report
+            .notes
+            .iter()
+            .any(|n| n.directive == "proxy_cache_valid"
+                && n.level == NoteLevel::Partial
+                && n.reason.contains("3 diretivas")));
     }
 
     #[test]
@@ -3280,7 +3354,10 @@ mod tests {
             } }"#,
         );
         let route = first_route(&r);
-        let cfg = route.cache.as_ref().expect("deveria herdar o cache do server");
+        let cfg = route
+            .cache
+            .as_ref()
+            .expect("deveria herdar o cache do server");
         assert_eq!(cfg.valid_secs, 30);
         assert_eq!(cfg.bypass_headers, vec!["upgrade".to_string()]);
         assert!(!r

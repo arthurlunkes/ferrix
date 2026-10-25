@@ -68,7 +68,14 @@ impl ResponseCache {
         None
     }
 
-    pub fn put(&self, key: String, status: u16, headers: Vec<(String, String)>, body: Bytes, valid_for: Duration) {
+    pub fn put(
+        &self,
+        key: String,
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Bytes,
+        valid_for: Duration,
+    ) {
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let response = CachedResponse {
             status,
@@ -78,7 +85,9 @@ impl ResponseCache {
             inserted_seq: seq,
         };
 
-        let Ok(mut entries) = self.entries.write() else { return };
+        let Ok(mut entries) = self.entries.write() else {
+            return;
+        };
         if entries.len() >= MAX_ENTRIES && !entries.contains_key(&key) {
             if let Some(oldest_key) = entries
                 .iter()
@@ -94,6 +103,11 @@ impl ResponseCache {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.read().map(|e| e.len()).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -246,8 +260,14 @@ mod tests {
     fn set_cookie_and_hop_by_hop_headers_are_stripped() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(axum::http::header::SET_COOKIE, "sess=abc".parse().unwrap());
-        headers.insert(axum::http::header::CONTENT_TYPE, "text/html".parse().unwrap());
-        headers.insert(axum::http::header::CONNECTION, "keep-alive".parse().unwrap());
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "text/html".parse().unwrap(),
+        );
+        headers.insert(
+            axum::http::header::CONNECTION,
+            "keep-alive".parse().unwrap(),
+        );
 
         let kept = cacheable_headers(&headers);
         assert!(kept.iter().any(|(k, _)| k == "content-type"));

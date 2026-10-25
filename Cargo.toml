@@ -3,3 +3,13 @@ members = [
     "core"
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Arthur Lunkes"]
+license = "MIT"
+repository = "https://github.com/arthurlunkes/ferrix"
+homepage = "https://arthurlunkes.github.io/ferrix"
+documentation = "https://arthurlunkes.github.io/ferrix"
+readme = "README.md"

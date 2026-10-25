@@ -31,6 +31,20 @@ Open an _issue_ describing:
 
 For larger changes, please open an _issue_ first to agree on the approach.
 
+## Versioning & Releases
+
+Ferrix strictly adheres to [Semantic Versioning (SemVer 2.0.0)](https://semver.org/):
+
+- **MAJOR (`x.0.0`)**: Incompatible changes to configuration schemas or APIs.
+- **MINOR (`0.x.0`)**: Backwards-compatible new features, directives, or algorithms.
+- **PATCH (`0.0.x`)**: Backwards-compatible bug fixes, security patches, and performance improvements.
+
+### Release Process
+1. Update `[workspace.package]` in root `Cargo.toml` and frontend/backend `package.json`.
+2. Update `CHANGELOG.md` with release notes under `## [X.Y.Z] - YYYY-MM-DD`.
+3. Create a git tag matching `vX.Y.Z` (e.g. `git tag -a v0.1.0 -m "Release v0.1.0"`).
+4. Push the tag (`git push origin v0.1.0`). GitHub Actions will automatically run CI, build binaries for Linux, macOS, and Windows, bundle frontend assets, and publish the GitHub Release.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the project's [MIT License](LICENSE).

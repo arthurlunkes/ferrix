@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-frontend:
+    name: Build Frontend UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend distribution
+        working-directory: frontend
+        run: npm run build
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  build-binaries:
+    name: Build Binary (${{ matrix.target }})
+    needs: build-frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Install Cross for cross-compilation
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build Ferrix binary (Native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }} --workspace
+
+      - name: Build Ferrix binary (Cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }} --workspace
+
+      - name: Package Archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          [ "$TAG" = "$GITHUB_REF" ] && TAG="latest"
+          ARCHIVE_NAME="ferrix-${TAG}-${{ matrix.target }}"
+          DIR_NAME="/tmp/${ARCHIVE_NAME}"
+          mkdir -p "${DIR_NAME}/ui"
+          cp "target/${{ matrix.target }}/release/ferrix" "${DIR_NAME}/"
+          cp README.md LICENSE ferrix.json "${DIR_NAME}/"
+          cp -r frontend/dist/* "${DIR_NAME}/ui/"
+          tar -czvf "${ARCHIVE_NAME}.tar.gz" -C /tmp "${ARCHIVE_NAME}"
+          sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+
+      - name: Package Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          [ "$TAG" = "$GITHUB_REF" ] && TAG="latest"
+          ARCHIVE_NAME="ferrix-${TAG}-${{ matrix.target }}"
+          DIR_NAME="${ARCHIVE_NAME}"
+          mkdir -p "${DIR_NAME}/ui"
+          cp "target/${{ matrix.target }}/release/ferrix.exe" "${DIR_NAME}/"
+          cp README.md LICENSE ferrix.json "${DIR_NAME}/"
+          cp -r frontend/dist/* "${DIR_NAME}/ui/"
+          7z a "${ARCHIVE_NAME}.zip" "${DIR_NAME}"
+          certutil -hashfile "${ARCHIVE_NAME}.zip" SHA256 | grep -v "hash" | tr -d ' \r\n' > "${ARCHIVE_NAME}.zip.sha256"
+
+      - name: Upload Release Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: |
+            ferrix-*.tar.gz
+            ferrix-*.tar.gz.sha256
+            ferrix-*.zip
+            ferrix-*.zip.sha256
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: release_assets
+
+      - name: Display release assets
+        run: ls -la release_assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
