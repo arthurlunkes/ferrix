@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
   workflow_dispatch:
@@ -10,8 +12,53 @@ permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Check Version & Tag Status
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag_name: ${{ steps.check.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version and existing tags
+        id: check
+        shell: bash
+        run: |
+          git fetch --tags --force
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG_NAME#v}"
+            echo "Triggered directly by tag ${TAG_NAME}"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f 2)
+          TAG_NAME="v${VERSION}"
+          echo "Cargo.toml version: ${VERSION} (tag: ${TAG_NAME})"
+
+          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" > /dev/null 2>&1; then
+            echo "Tag ${TAG_NAME} already exists. Skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${TAG_NAME} does not exist yet. Automatic release will proceed!"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
   build-frontend:
     name: Build Frontend UI
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -40,7 +87,8 @@ jobs:
 
   build-binaries:
     name: Build Binary (${{ matrix.target }})
-    needs: build-frontend
+    needs: [check-version, build-frontend]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -92,8 +140,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          [ "$TAG" = "$GITHUB_REF" ] && TAG="latest"
+          TAG="${{ needs.check-version.outputs.tag_name }}"
           ARCHIVE_NAME="ferrix-${TAG}-${{ matrix.target }}"
           DIR_NAME="/tmp/${ARCHIVE_NAME}"
           mkdir -p "${DIR_NAME}/ui"
@@ -107,8 +154,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          [ "$TAG" = "$GITHUB_REF" ] && TAG="latest"
+          TAG="${{ needs.check-version.outputs.tag_name }}"
           ARCHIVE_NAME="ferrix-${TAG}-${{ matrix.target }}"
           DIR_NAME="${ARCHIVE_NAME}"
           mkdir -p "${DIR_NAME}/ui"
@@ -130,7 +176,8 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: build-binaries
+    needs: [check-version, build-binaries]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -146,11 +193,13 @@ jobs:
       - name: Display release assets
         run: ls -la release_assets/
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release & Tag
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.check-version.outputs.tag_name }}
+          name: Ferrix ${{ needs.check-version.outputs.tag_name }}
+          target_commitish: ${{ github.sha }}
           files: release_assets/*
           generate_release_notes: true
           draft: false
           prerelease: false
-
