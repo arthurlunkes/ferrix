@@ -333,7 +333,7 @@ async function throwApiError(res: Response, fallback: string): Promise<never> {
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`);
-  if (!res.ok) return throwApiError(res, `GET ${path} falhou`);
+  if (!res.ok) return throwApiError(res, `GET ${path} failed`);
   return res.json();
 }
 
@@ -343,13 +343,13 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) return throwApiError(res, `POST ${path} falhou`);
+  if (!res.ok) return throwApiError(res, `POST ${path} failed`);
   return res.json();
 }
 
 async function deleteJson<T>(path: string): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`, { method: "DELETE" });
-  if (!res.ok) return throwApiError(res, `DELETE ${path} falhou`);
+  if (!res.ok) return throwApiError(res, `DELETE ${path} failed`);
   return res.json();
 }
 
