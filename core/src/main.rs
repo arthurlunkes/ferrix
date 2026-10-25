@@ -115,7 +115,72 @@ fn proxy_router(engine: Arc<ProxyEngine>, listen_port: u16, is_tls: bool) -> Rou
 }
 
 /// Sobe um listener HTTP simples numa porta, com a mesma lógica de proxy de sempre.
-fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>) -> JoinHandle<()> {
+///
+/// No Linux (e demais Unix), o modelo é *thread-per-core*, como os workers do nginx: cada
+/// uma das `workers` threads roda seu próprio runtime de thread única e seu próprio socket
+/// na mesma porta (`SO_REUSEPORT`), e o kernel distribui as conexões entre eles. Uma
+/// requisição de proxy — conexão do cliente, conexão com o upstream e tudo no meio — fica
+/// inteira numa thread só. No runtime compartilhado com work-stealing, essas tarefas
+/// pulavam de thread em thread e cada passagem custava um despertar entre threads; no
+/// benchmark de proxy, isso era a maior diferença para o nginx.
+#[cfg(unix)]
+fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usize) {
+    info!(
+        "Reverse Proxy Traffic listening on http://{} ({} workers)",
+        addr, workers
+    );
+    for worker in 0..workers.max(1) {
+        let engine = engine.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("ferrix-worker-{}", worker))
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        error!("Worker {} não conseguiu criar o runtime: {}", worker, e);
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let listener = match bind_reuseport(addr) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            error!("Failed to bind Proxy listener to {}: {}", addr, e);
+                            return;
+                        }
+                    };
+                    let app = proxy_router(engine, addr.port(), false);
+                    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+                    if let Err(e) = axum::serve(listener, service).await {
+                        error!("Proxy server on {} encountered an error: {}", addr, e);
+                    }
+                });
+            });
+        if let Err(e) = spawned {
+            error!("Falha ao iniciar o worker {} de {}: {}", worker, addr, e);
+        }
+    }
+}
+
+/// Socket de escuta com `SO_REUSEPORT`, para vários workers dividirem a mesma porta.
+#[cfg(unix)]
+fn bind_reuseport(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(4096)?;
+    tokio::net::TcpListener::from_std(socket.into())
+}
+
+/// Fora do Unix não há `SO_REUSEPORT`: um único listener no runtime compartilhado.
+#[cfg(not(unix))]
+fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, _workers: usize) {
     let app = proxy_router(engine, addr.port(), false);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {
@@ -128,7 +193,7 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>) -> JoinHandl
             }
             Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
         }
-    })
+    });
 }
 
 /// Sobe um listener HTTPS: mesma lógica de proxy de `spawn_plain_listener`, só que a
@@ -790,6 +855,7 @@ async fn run_server(args: Args) -> Result<(), String> {
     // Uma porta por entrada do plano — TLS quando algum vhost ali declarou certificado,
     // HTTP simples quando não. `ferrix.json` com um site em 443/HTTPS e outro redirecionando
     // de 80 vira, literalmente, dois listeners aqui.
+    let proxy_workers = store.config().http.worker_threads;
     let mut proxy_handles: Vec<JoinHandle<()>> = Vec::with_capacity(port_plan.len());
     let mut proxy_ports_summary = Vec::with_capacity(port_plan.len());
     for plan in &port_plan {
@@ -804,7 +870,8 @@ async fn run_server(args: Args) -> Result<(), String> {
             }
             None => {
                 proxy_ports_summary.push(format!("http://{}", addr));
-                proxy_handles.push(spawn_plain_listener(addr, proxy_engine.clone()));
+                // As threads dos workers morrem junto com o processo; não há handle a abortar.
+                spawn_plain_listener(addr, proxy_engine.clone(), proxy_workers);
             }
         }
     }

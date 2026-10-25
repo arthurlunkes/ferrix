@@ -146,7 +146,7 @@ impl MetricsCollector {
     /// só incrementam. Na virada pode perder/atribuir 1–2 req ao segundo vizinho —
     /// irrelevante para um indicador de painel.
     fn tick_rps(&self) {
-        let now = Utc::now().timestamp() as u64;
+        let now = crate::clock::unix_secs();
         let cur = self.rps_sec.load(Ordering::Relaxed);
         if cur == now {
             self.rps_count.fetch_add(1, Ordering::Relaxed);

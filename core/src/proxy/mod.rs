@@ -3,6 +3,7 @@ pub mod middleware;
 pub mod realip;
 pub mod static_files;
 pub mod upstream;
+pub mod upstream_client;
 pub mod websocket;
 
 use axum::body::{Body, Bytes};
@@ -11,7 +12,6 @@ use axum::extract::{FromRequestParts, Request};
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -34,6 +34,7 @@ use middleware::{AccessControl, AccessDecision, ConnLimiter, RateLimitDecision, 
 use realip::RealIpResolver;
 use static_files::StaticFileServer;
 use upstream::UpstreamPoolManager;
+use upstream_client::{OutgoingBody, UpstreamClient, UpstreamError};
 use websocket::WebSocketProxy;
 
 /// Chave do cache de clientes HTTP.
@@ -74,7 +75,7 @@ pub struct ProxyEngine {
     pub rate_limiter: Arc<RateLimiter>,
     pub conn_limiter: Arc<ConnLimiter>,
     pub response_cache: Arc<ResponseCache>,
-    clients: Arc<RwLock<HashMap<ClientKey, reqwest::Client>>>,
+    clients: Arc<RwLock<HashMap<ClientKey, Arc<UpstreamClient>>>>,
 }
 
 impl ProxyEngine {
@@ -121,24 +122,18 @@ impl ProxyEngine {
         });
     }
 
-    fn client_for(&self, key: ClientKey) -> reqwest::Client {
+    fn client_for(&self, key: ClientKey) -> Arc<UpstreamClient> {
         if let Ok(map) = self.clients.read() {
             if let Some(c) = map.get(&key) {
                 return c.clone();
             }
         }
 
-        let client = reqwest::Client::builder()
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(100)
-            .connect_timeout(Duration::from_millis(key.connect_ms))
-            // Intervalo máximo entre duas leituras, e não tempo total da resposta. É a
-            // semântica de `proxy_read_timeout` do nginx, e o que permite atravessar
-            // respostas longas e contínuas — SSE, downloads — sem cortá-las.
-            .read_timeout(Duration::from_millis(key.read_ms))
-            .danger_accept_invalid_certs(!key.verify_tls)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = Arc::new(UpstreamClient::new(
+            Duration::from_millis(key.connect_ms),
+            Duration::from_millis(key.read_ms),
+            key.verify_tls,
+        ));
 
         if let Ok(mut map) = self.clients.write() {
             map.insert(key, client.clone());
@@ -232,7 +227,7 @@ impl ProxyEngine {
 
         let log = RequestLog {
             id: Uuid::new_v4().to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::clock::utc_now(),
             client_ip: client_ip_str,
             method: method.to_string(),
             uri: uri.to_string(),
@@ -686,12 +681,9 @@ impl ProxyEngine {
         };
         let client = self.client_for(client_key);
 
-        let reqwest_method =
-            reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-
         let attempt_deadline = next_upstream
             .timeout_ms
-            .map(|ms| Instant::now() + Duration::from_millis(ms));
+            .map(|ms| crate::clock::now() + Duration::from_millis(ms));
 
         // O corpo bufferizado é reenviado a cada tentativa; o em streaming só existe uma
         // vez e por isso é consumido na primeira.
@@ -707,7 +699,7 @@ impl ProxyEngine {
                 break;
             }
             if let Some(deadline) = attempt_deadline {
-                if Instant::now() >= deadline {
+                if crate::clock::now() >= deadline {
                     last_error = Some("tempo de failover esgotado".to_string());
                     break;
                 }
@@ -716,24 +708,18 @@ impl ProxyEngine {
             let full_target_url = format!("{}{}", target.url.trim_end_matches('/'), target_path);
 
             self.pool_manager.inc_conn(&target.url);
-            let start = Instant::now();
+            let start = crate::clock::now();
 
-            let mut upstream_req = client.request(reqwest_method.clone(), &full_target_url);
-            upstream_req =
-                apply_forwarded_headers(upstream_req, &parts.headers, route, client_ip, is_tls);
+            let headers = forwarded_headers(&parts.headers, route, client_ip, is_tls);
+            let outgoing = match (&buffered_body, streaming_body.take()) {
+                (Some(bytes), _) if !bytes.is_empty() => OutgoingBody::Buffered(bytes.clone()),
+                (_, Some(body)) => OutgoingBody::Streaming(body),
+                _ => OutgoingBody::Empty,
+            };
 
-            match (&buffered_body, streaming_body.take()) {
-                (Some(bytes), _) if !bytes.is_empty() => {
-                    upstream_req = upstream_req.body(bytes.clone());
-                }
-                (_, Some(body)) => {
-                    upstream_req =
-                        upstream_req.body(reqwest::Body::wrap_stream(body.into_data_stream()));
-                }
-                _ => {}
-            }
-
-            let result = upstream_req.send().await;
+            let result = client
+                .send(method.clone(), &full_target_url, headers, outgoing)
+                .await;
             self.pool_manager.dec_conn(&target.url);
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -783,32 +769,13 @@ impl ProxyEngine {
             .unwrap()
     }
 
-    fn build_upstream_response(
-        &self,
-        upstream_res: reqwest::Response,
-        target_url: &str,
-    ) -> Response {
-        let status = upstream_res.status();
-        let mut builder = Response::builder().status(status.as_u16());
-
-        for (k, v) in upstream_res.headers() {
-            let key_str = k.as_str();
-            if is_hop_by_hop(key_str) {
-                continue;
-            }
-            builder = builder.header(key_str, v.as_bytes());
+    fn build_upstream_response(&self, upstream_res: Response, target_url: &str) -> Response {
+        let (mut parts, body) = upstream_res.into_parts();
+        strip_hop_by_hop(&mut parts.headers);
+        if let Ok(v) = HeaderValue::from_str(target_url) {
+            parts.headers.insert("X-Ferrix-Upstream", v);
         }
-        builder = builder.header("X-Ferrix-Upstream", target_url);
-
-        let stream = upstream_res.bytes_stream().map_err(std::io::Error::other);
-
-        builder.body(Body::from_stream(stream)).unwrap_or_else(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "500 Internal Server Error",
-            )
-                .into_response()
-        })
+        Response::from_parts(parts, body)
     }
 
     /// Chamada só quando a rota passou pelo cache e não teve HIT — decide se a resposta
@@ -967,69 +934,69 @@ fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -
     }
 }
 
-fn is_hop_by_hop(name: &str) -> bool {
-    const HOP_BY_HOP: [&str; 8] = [
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailers",
-        "transfer-encoding",
-        "upgrade",
-    ];
-    HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
+/// Remove os cabeçalhos hop-by-hop, que valem só para uma conexão e não atravessam proxy.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    for name in [
+        header::CONNECTION,
+        HeaderName::from_static("keep-alive"),
+        header::PROXY_AUTHENTICATE,
+        header::PROXY_AUTHORIZATION,
+        header::TE,
+        header::TRAILER,
+        HeaderName::from_static("trailers"),
+        header::TRANSFER_ENCODING,
+        header::UPGRADE,
+    ] {
+        headers.remove(name);
+    }
 }
 
-/// Copia os cabeçalhos do cliente e aplica os `proxy_set_headers` da rota.
-fn apply_forwarded_headers(
-    mut builder: reqwest::RequestBuilder,
+/// Monta os cabeçalhos enviados ao upstream: os do cliente (menos hop-by-hop e `Host`,
+/// que o cliente HTTP deriva da URL do upstream) mais os `proxy_set_headers` da rota.
+fn forwarded_headers(
     incoming: &HeaderMap,
     route: &RouteRule,
     client_ip: &str,
     is_tls: bool,
-) -> reqwest::RequestBuilder {
+) -> HeaderMap {
     let scheme = scheme_str(is_tls);
+    let mut headers = incoming.clone();
+    strip_hop_by_hop(&mut headers);
+    headers.remove(header::HOST);
 
-    for (k, v) in incoming {
-        let key_str = k.as_str();
-        if is_hop_by_hop(key_str) || key_str.eq_ignore_ascii_case("host") {
-            continue;
+    let xff = RealIpResolver::proxy_add_x_forwarded_for(incoming, client_ip);
+    let set = |headers: &mut HeaderMap, name: &str, value: &str| {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            headers.insert(n, v);
         }
-        if let Ok(val) = v.to_str() {
-            builder = builder.header(key_str, val);
-        }
-    }
+    };
 
-    builder = builder.header("X-Real-IP", client_ip);
-    builder = builder.header(
-        "X-Forwarded-For",
-        RealIpResolver::proxy_add_x_forwarded_for(incoming, client_ip),
-    );
+    set(&mut headers, "X-Real-IP", client_ip);
+    set(&mut headers, "X-Forwarded-For", &xff);
     // Antes disto era sempre "http" — o backend não tinha como saber que o cliente
     // originalmente falou HTTPS com o Ferrix, o que quebra links absolutos e redirects
     // que o backend gera a partir deste header.
-    builder = builder.header("X-Forwarded-Proto", scheme);
+    set(&mut headers, "X-Forwarded-Proto", scheme);
 
     for (k, v) in &route.proxy_set_headers {
         let resolved = match v.as_str() {
             "$host" => incoming
                 .get(header::HOST)
                 .and_then(|h| h.to_str().ok())
-                .unwrap_or("")
-                .to_string(),
-            "$remote_addr" => client_ip.to_string(),
+                .unwrap_or(""),
+            "$remote_addr" => client_ip,
             // Antes devolvia apenas o IP do cliente, apagando a cadeia recebida.
-            "$proxy_add_x_forwarded_for" => {
-                RealIpResolver::proxy_add_x_forwarded_for(incoming, client_ip)
-            }
-            "$scheme" => scheme.to_string(),
-            other => other.to_string(),
+            "$proxy_add_x_forwarded_for" => &xff,
+            "$scheme" => scheme,
+            other => other,
         };
-        builder = builder.header(k, resolved);
+        set(&mut headers, k, resolved);
     }
 
-    builder
+    headers
 }
 
 fn scheme_str(is_tls: bool) -> &'static str {
@@ -1121,7 +1088,7 @@ fn should_retry_status(conditions: &[NextUpstreamCondition], status: u16) -> boo
     })
 }
 
-fn should_retry_error(conditions: &[NextUpstreamCondition], err: &reqwest::Error) -> bool {
+fn should_retry_error(conditions: &[NextUpstreamCondition], err: &UpstreamError) -> bool {
     if err.is_timeout() {
         return conditions.contains(&NextUpstreamCondition::Timeout)
             || conditions.contains(&NextUpstreamCondition::Error);
@@ -1227,12 +1194,19 @@ mod tests {
     }
 
     #[test]
-    fn hop_by_hop_headers_are_recognised() {
-        assert!(is_hop_by_hop("Connection"));
-        assert!(is_hop_by_hop("transfer-encoding"));
-        assert!(is_hop_by_hop("UPGRADE"));
-        assert!(!is_hop_by_hop("content-type"));
-        assert!(!is_hop_by_hop("x-real-ip"));
+    fn hop_by_hop_headers_are_stripped() {
+        let mut h = HeaderMap::new();
+        h.insert("Connection", HeaderValue::from_static("keep-alive"));
+        h.insert("transfer-encoding", HeaderValue::from_static("chunked"));
+        h.insert("UPGRADE", HeaderValue::from_static("websocket"));
+        h.insert("content-type", HeaderValue::from_static("text/plain"));
+        h.insert("x-real-ip", HeaderValue::from_static("1.2.3.4"));
+        strip_hop_by_hop(&mut h);
+        assert!(!h.contains_key("connection"));
+        assert!(!h.contains_key("transfer-encoding"));
+        assert!(!h.contains_key("upgrade"));
+        assert!(h.contains_key("content-type"));
+        assert!(h.contains_key("x-real-ip"));
     }
 
     #[test]

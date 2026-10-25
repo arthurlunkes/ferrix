@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 use tracing::warn;
 
 /// Arquivos até este tamanho ficam inteiros em memória. Acima disso, o arquivo é lido do
@@ -38,12 +38,6 @@ struct FileCache {
 
 /// Chave: raiz + caminho pedido + `try_files`. A mesma URL pode cair em arquivos diferentes
 /// em rotas diferentes, então a raiz e o `try_files` entram na chave.
-static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
-
-fn now_ms() -> u64 {
-    EPOCH.elapsed().as_millis() as u64
-}
-
 static CACHE: LazyLock<RwLock<FileCache>> = LazyLock::new(|| RwLock::new(FileCache::default()));
 
 pub struct StaticFileServer;
@@ -58,7 +52,7 @@ impl StaticFileServer {
 
         let hit = CACHE.read().ok().and_then(|c| c.entries.get(&key).cloned());
         if let Some(entry) = hit {
-            let age = now_ms().saturating_sub(entry.checked_at.load(Ordering::Relaxed));
+            let age = crate::clock::mono_ms().saturating_sub(entry.checked_at.load(Ordering::Relaxed));
             let fresh = age < REVALIDATE_AFTER.as_millis() as u64;
             if fresh || still_same_file(&entry).await {
                 return Ok(build_response(&entry));
@@ -123,7 +117,7 @@ async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
         Err(_) => false,
     };
     if same {
-        entry.checked_at.store(now_ms(), Ordering::Relaxed);
+        entry.checked_at.store(crate::clock::mono_ms(), Ordering::Relaxed);
     }
     same
 }
@@ -199,6 +193,6 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
         modified: metadata.modified().ok(),
         len,
         file_path,
-        checked_at: AtomicU64::new(now_ms()),
+        checked_at: AtomicU64::new(crate::clock::mono_ms()),
     }))
 }

@@ -160,13 +160,23 @@ benchmarks/run.sh ferrix 30s # only Ferrix, 30 s per scenario
 
 | Scenario                | Ferrix req/s | nginx req/s | Ferrix p99 | nginx p99 |
 | ----------------------- | ------------ | ----------- | ---------- | --------- |
-| Static file, 1.4 KB     | **115.5k**   | 108.7k      | 3.7 ms     | 3.0 ms    |
-| Static file, 133 KB     | 41.4k        | **49.5k**   | 10.4 ms    | 5.9 ms    |
-| Reverse proxy           | 31.8k        | **82.7k**   | 13.2 ms    | 5.2 ms    |
+| Static file, 1.4 KB     | **127.7k**   | 105.3k      | **2.6 ms** | 3.4 ms    |
+| Static file, 133 KB     | 41.0k        | **47.3k**   | 10.5 ms    | **8.4 ms**|
+| Reverse proxy           | 47.7k        | **77.7k**   | **7.4 ms** | 8.1 ms    |
 
-Ferrix uses ~30 MB of RAM under this load.
+Ferrix uses ~34 MB of RAM under this load.
 
-**Where we stand:** Ferrix now beats nginx at small static files, thanks to an in-memory file cache (revalidated against the disk every second). nginx still leads on large files (zero-copy `sendfile`) and, by a wide margin, on reverse proxying, which is the current optimization focus. Performance contributions are very welcome!
+**Where we stand:** Ferrix beats nginx at small static files (+21% throughput, lower tail latency) and now has a lower p99 than nginx when proxying. nginx still leads on raw proxy throughput (~1.6×) and on large files (zero-copy `sendfile`) — those are the current optimization focus.
+
+**What made it faster** (proxy went from 18.8k to 47.7k req/s, small files from 14.7k to 127.7k):
+
+- **Thread-per-core workers:** each worker thread runs its own single-threaded runtime and its own `SO_REUSEPORT` socket, like nginx workers, so a request never hops between threads.
+- **In-memory static file cache** (files up to 1 MB, revalidated against the disk every second).
+- **Lock-free metrics:** atomics and ring buffers instead of three global write locks per request.
+- **Cached clock:** a background thread updates the time every millisecond, like nginx's `ngx_time_update`. On hosts without a reliable TSC, each clock read is a real syscall; this cut them from ~14 to ~7 per proxied request.
+- **Direct hyper client** for `http://` upstreams instead of `reqwest`, which avoids rebuilding the URL, headers and body for every request.
+
+Performance contributions are very welcome!
 
 ---
 

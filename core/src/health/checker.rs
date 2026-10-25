@@ -70,12 +70,12 @@ impl HealthChecker {
                     target_url: target_url.to_string(),
                     healthy: true,
                     latency_ms: 0.0,
-                    last_checked: Some(Utc::now()),
+                    last_checked: Some(crate::clock::utc_now()),
                     consecutive_fails: 0,
                     status_code: None,
                 });
             entry.consecutive_fails += 1;
-            entry.last_checked = Some(Utc::now());
+            entry.last_checked = Some(crate::clock::utc_now());
             if entry.consecutive_fails >= max_fails {
                 if entry.healthy {
                     error!(target = %target_url, fails = entry.consecutive_fails, "Target marked UNHEALTHY (passive)");
@@ -93,7 +93,7 @@ impl HealthChecker {
             if let Some(st) = map.get(target_url) {
                 let recent = st
                     .last_checked
-                    .is_some_and(|t| Utc::now().signed_duration_since(t).num_milliseconds() < 1000);
+                    .is_some_and(|t| crate::clock::utc_now().signed_duration_since(t).num_milliseconds() < 1000);
                 if st.healthy && st.consecutive_fails == 0 && recent {
                     return;
                 }
@@ -107,14 +107,14 @@ impl HealthChecker {
                     target_url: target_url.to_string(),
                     healthy: true,
                     latency_ms,
-                    last_checked: Some(Utc::now()),
+                    last_checked: Some(crate::clock::utc_now()),
                     consecutive_fails: 0,
                     status_code: Some(200),
                 });
             entry.consecutive_fails = 0;
             entry.healthy = true;
             entry.latency_ms = latency_ms;
-            entry.last_checked = Some(Utc::now());
+            entry.last_checked = Some(crate::clock::utc_now());
         }
     }
 

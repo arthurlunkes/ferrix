@@ -67,7 +67,7 @@ impl RateLimiter {
             return RateLimitDecision::Reject;
         }
         let burst = config.burst as f64;
-        let now = Instant::now();
+        let now = crate::clock::now();
 
         let mut map = match self.buckets.write() {
             Ok(m) => m,
@@ -116,7 +116,7 @@ impl RateLimiter {
     /// Sem isto o mapa cresce com cada IP distinto que aparece — uma varredura de portas
     /// bastava para consumir a memória do processo.
     pub fn sweep(&self) {
-        let now = Instant::now();
+        let now = crate::clock::now();
         if let Ok(mut map) = self.buckets.write() {
             map.retain(|_, b| {
                 now.duration_since(b.last_update) < BUCKET_IDLE_TTL || b.excess > 0.0
