@@ -116,6 +116,13 @@ impl UpstreamPoolManager {
         if len == 0 {
             return 0;
         }
+        // Caminho comum: o pool já tem contador, e um lock de leitura basta para o
+        // `fetch_add`. O de escrita só entra na primeira requisição de cada pool.
+        if let Ok(map) = self.rr_indices.read() {
+            if let Some(counter) = map.get(pool_name) {
+                return counter.fetch_add(1, Ordering::Relaxed) % len;
+            }
+        }
         let mut map = match self.rr_indices.write() {
             Ok(m) => m,
             Err(_) => return 0,

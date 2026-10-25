@@ -161,8 +161,38 @@ fn spawn_tls_listener(
     })
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // O runtime é montado à mão para respeitar `http.worker_threads`. Com `#[tokio::main]`
+    // o número de threads era sempre o de núcleos da máquina e o campo da configuração
+    // não tinha efeito nenhum.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(configured_worker_threads())
+        .enable_all()
+        .build()
+        .expect("falha ao criar o runtime do Tokio");
+    runtime.block_on(async_main())
+}
+
+/// Lê só `http.worker_threads` do arquivo de configuração, antes de o runtime existir.
+/// Qualquer problema (arquivo ausente, JSON inválido) cai no padrão — a validação de
+/// verdade acontece depois, em `run_server`, com mensagens de erro decentes.
+fn configured_worker_threads() -> usize {
+    let default = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let Ok(args) = Args::try_parse() else {
+        return default;
+    };
+    std::fs::read_to_string(&args.config)
+        .ok()
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+        .and_then(|v| v.get("http")?.get("worker_threads")?.as_u64())
+        .filter(|&n| n > 0)
+        .map(|n| n as usize)
+        .unwrap_or(default)
+}
+
+async fn async_main() -> ExitCode {
     // O rustls precisa de exatamente um provedor de criptografia escolhido — e como
     // `reqwest` (cliente, para os upstreams) e `axum-server` (aqui, para os listeners
     // HTTPS) trazem `ring` e `aws-lc-rs` juntos no grafo de dependências, ele não

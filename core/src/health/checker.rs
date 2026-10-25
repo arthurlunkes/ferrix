@@ -86,6 +86,19 @@ impl HealthChecker {
     }
 
     pub fn mark_success(&self, upstream_name: &str, target_url: &str, latency_ms: f64) {
+        // Caminho comum: servidor já saudável e atualizado há menos de um segundo. Nada a
+        // mudar além da latência exibida no painel, que pode esperar a próxima janela —
+        // e assim cada requisição não disputa o lock de escrita global do mapa.
+        if let Ok(map) = self.statuses.read() {
+            if let Some(st) = map.get(target_url) {
+                let recent = st
+                    .last_checked
+                    .is_some_and(|t| Utc::now().signed_duration_since(t).num_milliseconds() < 1000);
+                if st.healthy && st.consecutive_fails == 0 && recent {
+                    return;
+                }
+            }
+        }
         if let Ok(mut map) = self.statuses.write() {
             let entry = map
                 .entry(target_url.to_string())

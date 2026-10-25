@@ -3,11 +3,15 @@ pub mod logger;
 use chrono::{DateTime, Utc};
 use logger::RequestLog;
 use serde::Serialize;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
+
+/// Janela de amostras de latência usada para avg/p95/p99 (potência de 2: índice via máscara).
+const LATENCY_WINDOW: usize = 1024;
+/// Linhas mantidas no buffer de logs recentes (mesmo teto de antes).
+const LOG_CAPACITY: usize = 500;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsSnapshot {
@@ -25,6 +29,16 @@ pub struct MetricsSnapshot {
     pub p99_latency_ms: f64,
 }
 
+/// Coletor de métricas sem lock global no caminho quente.
+///
+/// Antes, toda requisição pegava três `RwLock::write()` compartilhados por todos os
+/// cores (RPS, latências e logs) — sob carga, as threads do Tokio serializavam nesses
+/// locks e o p99 explodia. Agora:
+/// - contadores e RPS: só atômicos;
+/// - latências: ring buffer de `AtomicU64` (bits do f64), escrita = 1 `fetch_add` + 1 `store`;
+/// - logs recentes: ring buffer de slots com `Mutex` **por slot** — duas requisições só
+///   disputam o mesmo lock se caírem no mesmo slot, o que exige dar a volta no buffer.
+/// - SSE: o `RequestLog` só é clonado se houver alguém ouvindo.
 pub struct MetricsCollector {
     start_time: Instant,
     start_utc: DateTime<Utc>,
@@ -35,18 +49,27 @@ pub struct MetricsCollector {
     status_4xx: AtomicU64,
     status_5xx: AtomicU64,
     total_bytes_sent: AtomicU64,
-    // Recent logs buffer (e.g. max 1000 items)
-    recent_logs: RwLock<VecDeque<RequestLog>>,
-    // Recent latencies for percentile calculation (max 1000 items)
-    recent_latencies: RwLock<VecDeque<f64>>,
-    // For RPS calculation (timestamp in secs -> count)
-    rps_tracker: RwLock<(u64, u64, f64)>, // (current_sec, count_this_sec, last_rps)
-    // Broadcast channel for real-time live request stream (SSE)
+
+    // RPS: segundo corrente, contagem nele, e RPS fechado do segundo anterior (bits f64).
+    rps_sec: AtomicU64,
+    rps_count: AtomicU64,
+    rps_last: AtomicU64,
+
+    // Latências: ring buffer lock-free.
+    latencies: Box<[AtomicU64]>,
+    latency_head: AtomicUsize,
+
+    // Logs recentes: ring buffer com lock por slot.
+    log_slots: Box<[Mutex<Option<RequestLog>>]>,
+    log_head: AtomicUsize,
+
     log_sender: broadcast::Sender<RequestLog>,
 }
 
 impl MetricsCollector {
-    pub fn new(capacity: usize) -> Arc<Self> {
+    /// `_capacity` mantido por compatibilidade de assinatura; o teto é `LOG_CAPACITY`,
+    /// como já era na prática.
+    pub fn new(_capacity: usize) -> Arc<Self> {
         let (log_sender, _) = broadcast::channel(512);
         Arc::new(Self {
             start_time: Instant::now(),
@@ -58,9 +81,13 @@ impl MetricsCollector {
             status_4xx: AtomicU64::new(0),
             status_5xx: AtomicU64::new(0),
             total_bytes_sent: AtomicU64::new(0),
-            recent_logs: RwLock::new(VecDeque::with_capacity(capacity)),
-            recent_latencies: RwLock::new(VecDeque::with_capacity(1000)),
-            rps_tracker: RwLock::new((0, 0, 0.0)),
+            rps_sec: AtomicU64::new(0),
+            rps_count: AtomicU64::new(0),
+            rps_last: AtomicU64::new(0f64.to_bits()),
+            latencies: (0..LATENCY_WINDOW).map(|_| AtomicU64::new(0)).collect(),
+            latency_head: AtomicUsize::new(0),
+            log_slots: (0..LOG_CAPACITY).map(|_| Mutex::new(None)).collect(),
+            log_head: AtomicUsize::new(0),
             log_sender,
         })
     }
@@ -73,78 +100,68 @@ impl MetricsCollector {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
-    /// Contabiliza bytes efetivamente entregues ao cliente.
-    ///
-    /// Chamado por chunk enquanto o corpo escoa. É o que torna o total confiável: o
-    /// `Content-Length` da resposta, que era a fonte anterior, não existe em resposta
-    /// streamada — e por isso o total ficava zerado justamente no tráfego mais pesado.
+    /// Contabiliza bytes efetivamente entregues ao cliente, chunk a chunk.
     pub fn add_bytes_sent(&self, bytes: u64) {
         self.total_bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// `log_line` distingue as métricas agregadas (sempre atualizadas) de aparecer no
-    /// buffer de logs recentes e no stream ao vivo. `access_log: false` numa rota — para
-    /// health checks e assets que gerariam ruído sem dizer nada — usa `false` aqui: RPS,
-    /// contagem de status e latência continuam contando a requisição, só a linha em si
-    /// que não aparece. É o mesmo corte que `access_log off` faz no nginx: `stub_status`
-    /// não deixa de contar, só o arquivo de log fica sem a linha.
+    /// `log_line: false` (rota com `access_log: false`) continua contando nos agregados;
+    /// só não aparece no buffer de logs nem no stream ao vivo — como `access_log off`.
     pub fn record_request(&self, log: RequestLog, log_line: bool) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        match log.status {
-            200..=299 => {
-                self.status_2xx.fetch_add(1, Ordering::Relaxed);
-            }
-            300..=399 => {
-                self.status_3xx.fetch_add(1, Ordering::Relaxed);
-            }
-            400..=499 => {
-                self.status_4xx.fetch_add(1, Ordering::Relaxed);
-            }
-            500..=599 => {
-                self.status_5xx.fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
+        let counter = match log.status {
+            200..=299 => Some(&self.status_2xx),
+            300..=399 => Some(&self.status_3xx),
+            400..=499 => Some(&self.status_4xx),
+            500..=599 => Some(&self.status_5xx),
+            _ => None,
+        };
+        if let Some(c) = counter {
+            c.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Update RPS
-        let now_sec = Utc::now().timestamp() as u64;
-        if let Ok(mut tracker) = self.rps_tracker.write() {
-            if tracker.0 == now_sec {
-                tracker.1 += 1;
-            } else {
-                let prev_rps = if now_sec == tracker.0 + 1 {
-                    tracker.1 as f64
-                } else {
-                    0.0
-                };
-                tracker.0 = now_sec;
-                tracker.1 = 1;
-                tracker.2 = prev_rps;
-            }
-        }
+        self.tick_rps();
 
-        // Store latency
-        if let Ok(mut latencies) = self.recent_latencies.write() {
-            if latencies.len() >= 1000 {
-                latencies.pop_front();
-            }
-            latencies.push_back(log.latency_ms);
-        }
+        // Latência: reserva um índice e grava. Sem lock.
+        let i = self.latency_head.fetch_add(1, Ordering::Relaxed) % LATENCY_WINDOW;
+        self.latencies[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
 
         if !log_line {
             return;
         }
 
-        // Broadcast to SSE listeners
-        let _ = self.log_sender.send(log.clone());
+        // Só clona se houver ouvinte SSE.
+        if self.log_sender.receiver_count() > 0 {
+            let _ = self.log_sender.send(log.clone());
+        }
 
-        // Store in recent logs ring buffer
-        if let Ok(mut logs) = self.recent_logs.write() {
-            if logs.len() >= 500 {
-                logs.pop_front();
-            }
-            logs.push_back(log);
+        let slot = self.log_head.fetch_add(1, Ordering::AcqRel) % LOG_CAPACITY;
+        if let Ok(mut s) = self.log_slots[slot].lock() {
+            *s = Some(log);
+        }
+    }
+
+    /// RPS sem lock. Quem vê o segundo virar ganha o CAS e fecha o anterior; os demais
+    /// só incrementam. Na virada pode perder/atribuir 1–2 req ao segundo vizinho —
+    /// irrelevante para um indicador de painel.
+    fn tick_rps(&self) {
+        let now = Utc::now().timestamp() as u64;
+        let cur = self.rps_sec.load(Ordering::Relaxed);
+        if cur == now {
+            self.rps_count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if self
+            .rps_sec
+            .compare_exchange(cur, now, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            let prev_count = self.rps_count.swap(1, Ordering::AcqRel);
+            let prev_rps = if now == cur + 1 { prev_count as f64 } else { 0.0 };
+            self.rps_last.store(prev_rps.to_bits(), Ordering::Relaxed);
+        } else {
+            self.rps_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -154,34 +171,37 @@ impl MetricsCollector {
         filter_status: Option<u16>,
         query: Option<&str>,
     ) -> Vec<RequestLog> {
-        if let Ok(logs) = self.recent_logs.read() {
-            let result: Vec<RequestLog> = logs
-                .iter()
-                .rev()
-                .filter(|log| {
-                    if let Some(st) = filter_status {
-                        if log.status / 100 != st / 100 && log.status != st {
-                            return false;
-                        }
-                    }
-                    if let Some(q) = query {
-                        if !q.is_empty() {
-                            let q_lower = q.to_lowercase();
-                            return log.uri.to_lowercase().contains(&q_lower)
-                                || log.method.to_lowercase().contains(&q_lower)
-                                || log.client_ip.contains(&q_lower)
-                                || log.host.to_lowercase().contains(&q_lower);
-                        }
-                    }
-                    true
-                })
-                .take(limit)
-                .cloned()
-                .collect();
-            result
-        } else {
-            Vec::new()
+        let head = self.log_head.load(Ordering::Acquire);
+        let filled = head.min(LOG_CAPACITY);
+        let q_lower = query.filter(|q| !q.is_empty()).map(|q| q.to_lowercase());
+
+        let mut out = Vec::with_capacity(limit.min(filled));
+        // Do mais recente para o mais antigo.
+        for k in 1..=filled {
+            if out.len() >= limit {
+                break;
+            }
+            let idx = (head - k) % LOG_CAPACITY;
+            let Ok(slot) = self.log_slots[idx].lock() else { continue };
+            let Some(log) = slot.as_ref() else { continue };
+
+            if let Some(st) = filter_status {
+                if log.status / 100 != st / 100 && log.status != st {
+                    continue;
+                }
+            }
+            if let Some(q) = &q_lower {
+                let hit = log.uri.to_lowercase().contains(q)
+                    || log.method.to_lowercase().contains(q)
+                    || log.client_ip.contains(q.as_str())
+                    || log.host.to_lowercase().contains(q);
+                if !hit {
+                    continue;
+                }
+            }
+            out.push(log.clone());
         }
+        out
     }
 
     pub fn subscribe_logs(&self) -> broadcast::Receiver<RequestLog> {
@@ -190,24 +210,23 @@ impl MetricsCollector {
 
     pub fn get_metrics_snapshot(&self) -> MetricsSnapshot {
         let uptime = self.start_time.elapsed().as_secs();
-        let rps = self.rps_tracker.read().map(|t| t.2).unwrap_or(0.0);
+        let rps = f64::from_bits(self.rps_last.load(Ordering::Relaxed));
 
-        let (avg_lat, p95_lat, p99_lat) = if let Ok(latencies) = self.recent_latencies.read() {
-            if latencies.is_empty() {
-                (0.0, 0.0, 0.0)
-            } else {
-                let mut sorted: Vec<f64> = latencies.iter().copied().collect();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let sum: f64 = sorted.iter().sum();
-                let avg = sum / sorted.len() as f64;
-                let p95_idx = ((sorted.len() as f64) * 0.95).floor() as usize;
-                let p99_idx = ((sorted.len() as f64) * 0.99).floor() as usize;
-                let p95 = sorted[p95_idx.min(sorted.len() - 1)];
-                let p99 = sorted[p99_idx.min(sorted.len() - 1)];
-                (avg, p95, p99)
-            }
-        } else {
+        // Cópia da janela (fora do caminho quente) e ordenação local.
+        let filled = self.latency_head.load(Ordering::Relaxed).min(LATENCY_WINDOW);
+        let mut sorted: Vec<f64> = self.latencies[..filled]
+            .iter()
+            .map(|a| f64::from_bits(a.load(Ordering::Relaxed)))
+            .collect();
+
+        let (avg_lat, p95_lat, p99_lat) = if sorted.is_empty() {
             (0.0, 0.0, 0.0)
+        } else {
+            sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+            let n = sorted.len();
+            let avg = sorted.iter().sum::<f64>() / n as f64;
+            let pick = |p: f64| sorted[((n as f64 * p).floor() as usize).min(n - 1)];
+            (avg, pick(0.95), pick(0.99))
         };
 
         MetricsSnapshot {
@@ -285,5 +304,53 @@ mod tests {
 
         assert_eq!(m.get_metrics_snapshot().total_requests, 3);
         assert_eq!(m.get_recent_logs(10, None, None).len(), 2);
+    }
+
+    #[test]
+    fn recent_logs_wrap_and_stay_newest_first() {
+        let m = MetricsCollector::new(0);
+        for i in 0..(LOG_CAPACITY + 10) {
+            let mut l = sample_log(200);
+            l.uri = format!("/{i}");
+            m.record_request(l, true);
+        }
+        let logs = m.get_recent_logs(usize::MAX, None, None);
+        assert_eq!(logs.len(), LOG_CAPACITY);
+        assert_eq!(logs[0].uri, format!("/{}", LOG_CAPACITY + 9));
+        assert_eq!(logs.last().unwrap().uri, "/10");
+    }
+
+    #[test]
+    fn percentiles_over_window() {
+        let m = MetricsCollector::new(0);
+        for i in 1..=100 {
+            let mut l = sample_log(200);
+            l.latency_ms = i as f64;
+            m.record_request(l, false);
+        }
+        let s = m.get_metrics_snapshot();
+        assert_eq!(s.p99_latency_ms, 100.0);
+        assert_eq!(s.p95_latency_ms, 96.0);
+        assert_eq!(s.avg_latency_ms, 50.5);
+    }
+
+    #[test]
+    fn concurrent_recording_counts_everything() {
+        let m = MetricsCollector::new(0);
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let m = m.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        m.record_request(sample_log(200), true);
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().for_each(|h| h.join().unwrap());
+        let s = m.get_metrics_snapshot();
+        assert_eq!(s.total_requests, 80_000);
+        assert_eq!(s.status_2xx, 80_000);
+        assert_eq!(m.get_recent_logs(usize::MAX, None, None).len(), LOG_CAPACITY);
     }
 }

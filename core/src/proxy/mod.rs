@@ -181,11 +181,11 @@ impl ProxyEngine {
     ) -> Response {
         let method = req.method().clone();
         let uri = req.uri().clone();
-        let req_headers = req.headers().clone();
+        let req_headers = req.headers();
 
         // O IP real vem antes de tudo: ACL, limite de taxa e log precisam concordar sobre
         // quem é o cliente.
-        let client_ip = compiled.real_ip.resolve(client_addr.ip(), &req_headers);
+        let client_ip = compiled.real_ip.resolve(client_addr.ip(), req_headers);
         let client_ip_str = client_ip.to_string();
 
         let host = req_headers
@@ -202,7 +202,7 @@ impl ProxyEngine {
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_string());
 
-        let is_ws = WebSocketProxy::is_websocket_request(&req_headers);
+        let is_ws = WebSocketProxy::is_websocket_request(req_headers);
 
         let response = match compiled.find_vhost(&host, listen_port) {
             Some(m) => {
@@ -276,6 +276,14 @@ impl ProxyEngine {
             return response;
         }
 
+        // Corpo de tamanho conhecido (arquivo estático, página de erro, resposta em cache):
+        // conta de uma vez e devolve o corpo intacto. Embrulhá-lo num stream só para
+        // contar custava uma alocação e fazia o hyper perder o tamanho exato do corpo.
+        if let Some(len) = axum::body::HttpBody::size_hint(response.body()).exact() {
+            self.metrics.add_bytes_sent(len);
+            return response;
+        }
+
         let (parts, body) = response.into_parts();
         let metrics = self.metrics.clone();
         let counted = body
@@ -298,7 +306,7 @@ impl ProxyEngine {
         req: Request,
         is_ws: bool,
     ) -> Response {
-        let headers = req.headers().clone();
+        let headers = req.headers();
 
         // Controle de acesso: IP e autenticação combinados segundo `satisfy`.
         let ip_ok = match compiled.vhost_acl(vhost_index) {
@@ -306,7 +314,7 @@ impl ProxyEngine {
             None => true,
         };
 
-        match AccessControl::evaluate(vhost.satisfy, ip_ok, vhost.basic_auth.as_ref(), &headers) {
+        match AccessControl::evaluate(vhost.satisfy, ip_ok, vhost.basic_auth.as_ref(), headers) {
             AccessDecision::Allow => {}
             AccessDecision::Forbidden => {
                 warn!(ip = %client_ip_str, "IP recusado pelo controle de acesso");
