@@ -114,23 +114,26 @@ fn proxy_router(engine: Arc<ProxyEngine>, listen_port: u16, is_tls: bool) -> Rou
     })
 }
 
-/// Sobe um listener HTTP simples numa porta, com a mesma lógica de proxy de sempre.
+/// Sobe `workers` threads servindo a mesma porta.
 ///
 /// No Linux (e demais Unix), o modelo é *thread-per-core*, como os workers do nginx: cada
-/// uma das `workers` threads roda seu próprio runtime de thread única e seu próprio socket
-/// na mesma porta (`SO_REUSEPORT`), e o kernel distribui as conexões entre eles. Uma
-/// requisição de proxy — conexão do cliente, conexão com o upstream e tudo no meio — fica
-/// inteira numa thread só. No runtime compartilhado com work-stealing, essas tarefas
-/// pulavam de thread em thread e cada passagem custava um despertar entre threads; no
-/// benchmark de proxy, isso era a maior diferença para o nginx.
+/// thread roda seu próprio runtime de thread única e seu próprio socket na mesma porta
+/// (`SO_REUSEPORT`), e o kernel distribui as conexões entre eles. Uma requisição de proxy —
+/// conexão do cliente, conexão com o upstream e tudo no meio — fica inteira numa thread
+/// só. No runtime compartilhado com work-stealing, essas tarefas pulavam de thread em
+/// thread e cada passagem custava um despertar entre threads; no benchmark de proxy, isso
+/// era a maior diferença para o nginx.
+///
+/// `serve` recebe o socket já em escuta e roda dentro do runtime do worker. As threads
+/// morrem junto com o processo; não há handle a abortar.
 #[cfg(unix)]
-fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usize) {
-    info!(
-        "Reverse Proxy Traffic listening on http://{} ({} workers)",
-        addr, workers
-    );
+fn spawn_workers<F, Fut>(addr: SocketAddr, workers: usize, serve: F)
+where
+    F: Fn(std::net::TcpListener) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = ()>,
+{
     for worker in 0..workers.max(1) {
-        let engine = engine.clone();
+        let serve = serve.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("ferrix-worker-{}", worker))
             .spawn(move || {
@@ -144,20 +147,10 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usi
                         return;
                     }
                 };
-                runtime.block_on(async move {
-                    let listener = match bind_reuseport(addr) {
-                        Ok(l) => l,
-                        Err(e) => {
-                            error!("Failed to bind Proxy listener to {}: {}", addr, e);
-                            return;
-                        }
-                    };
-                    let app = proxy_router(engine, addr.port(), false);
-                    let service = app.into_make_service_with_connect_info::<SocketAddr>();
-                    if let Err(e) = axum::serve(listener, service).await {
-                        error!("Proxy server on {} encountered an error: {}", addr, e);
-                    }
-                });
+                match bind_reuseport(addr) {
+                    Ok(listener) => runtime.block_on(serve(listener)),
+                    Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
+                }
             });
         if let Err(e) = spawned {
             error!("Falha ao iniciar o worker {} de {}: {}", worker, addr, e);
@@ -167,7 +160,7 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usi
 
 /// Socket de escuta com `SO_REUSEPORT`, para vários workers dividirem a mesma porta.
 #[cfg(unix)]
-fn bind_reuseport(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+fn bind_reuseport(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
@@ -175,7 +168,29 @@ fn bind_reuseport(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> 
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(4096)?;
-    tokio::net::TcpListener::from_std(socket.into())
+    Ok(socket.into())
+}
+
+/// Sobe um listener HTTP simples numa porta, com a mesma lógica de proxy de sempre.
+#[cfg(unix)]
+fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usize) {
+    info!(
+        "Reverse Proxy Traffic listening on http://{} ({} workers)",
+        addr, workers
+    );
+    spawn_workers(addr, workers, move |listener| {
+        let app = proxy_router(engine.clone(), addr.port(), false);
+        async move {
+            let listener = match tokio::net::TcpListener::from_std(listener) {
+                Ok(l) => l,
+                Err(e) => return error!("Proxy listener em {}: {}", addr, e),
+            };
+            let service = app.into_make_service_with_connect_info::<SocketAddr>();
+            if let Err(e) = axum::serve(listener, service).await {
+                error!("Proxy server on {} encountered an error: {}", addr, e);
+            }
+        }
+    });
 }
 
 /// Fora do Unix não há `SO_REUSEPORT`: um único listener no runtime compartilhado.
@@ -198,32 +213,61 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, _workers: us
 
 /// Sobe um listener HTTPS: mesma lógica de proxy de `spawn_plain_listener`, só que a
 /// conexão TCP passa primeiro pelo handshake TLS. Um certificado ilegível não derruba o
-/// processo inteiro — só esta porta fica sem subir, e o motivo vai para o log.
+/// processo: esta porta não sobe e as demais seguem normalmente.
+///
+/// O certificado é lido uma vez, aqui; os workers compartilham a mesma configuração TLS.
 fn spawn_tls_listener(
     addr: SocketAddr,
     engine: Arc<ProxyEngine>,
     source: tls_plan::TlsSource,
+    workers: usize,
 ) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let tls_config = match RustlsConfig::from_pem_file(&source.cert_path, &source.key_path).await {
+            Ok(c) => c,
+            Err(e) => {
+                return error!(
+                    "Falha ao carregar o certificado TLS de '{}' (cert: {}, key: {}) para a porta {}: {}. \
+                     Esta porta não vai subir; as demais continuam normalmente.",
+                    source.vhost_name, source.cert_path, source.key_path, addr.port(), e
+                )
+            }
+        };
+        info!(
+            "Reverse Proxy Traffic listening on https://{} (certificado de '{}', {} workers)",
+            addr, source.vhost_name, workers
+        );
+        serve_tls(addr, engine, tls_config, workers);
+    })
+}
+
+#[cfg(unix)]
+fn serve_tls(addr: SocketAddr, engine: Arc<ProxyEngine>, tls_config: RustlsConfig, workers: usize) {
+    spawn_workers(addr, workers, move |listener| {
+        let app = proxy_router(engine.clone(), addr.port(), true);
+        let tls_config = tls_config.clone();
+        async move {
+            let server = match axum_server::from_tcp_rustls(listener, tls_config) {
+                Ok(s) => s,
+                Err(e) => return error!("Proxy HTTPS listener em {}: {}", addr, e),
+            };
+            let service = app.into_make_service_with_connect_info::<SocketAddr>();
+            if let Err(e) = server.serve(service).await {
+                error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn serve_tls(addr: SocketAddr, engine: Arc<ProxyEngine>, tls_config: RustlsConfig, _workers: usize) {
     let app = proxy_router(engine, addr.port(), true);
     tokio::spawn(async move {
-        match RustlsConfig::from_pem_file(&source.cert_path, &source.key_path).await {
-            Ok(tls_config) => {
-                info!(
-                    "Reverse Proxy Traffic listening on https://{} (certificado de '{}')",
-                    addr, source.vhost_name
-                );
-                let service = app.into_make_service_with_connect_info::<SocketAddr>();
-                if let Err(e) = axum_server::bind_rustls(addr, tls_config).serve(service).await {
-                    error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
-                }
-            }
-            Err(e) => error!(
-                "Falha ao carregar o certificado TLS de '{}' (cert: {}, key: {}) para a porta {}: {}. \
-                 Esta porta não vai subir; as demais continuam normalmente.",
-                source.vhost_name, source.cert_path, source.key_path, addr.port(), e
-            ),
+        let service = app.into_make_service_with_connect_info::<SocketAddr>();
+        if let Err(e) = axum_server::bind_rustls(addr, tls_config).serve(service).await {
+            error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
         }
-    })
+    });
 }
 
 fn main() -> ExitCode {
@@ -866,7 +910,12 @@ async fn run_server(args: Args) -> Result<(), String> {
         match &plan.tls {
             Some(source) => {
                 proxy_ports_summary.push(format!("https://{}", addr));
-                proxy_handles.push(spawn_tls_listener(addr, proxy_engine.clone(), source.clone()));
+                proxy_handles.push(spawn_tls_listener(
+                    addr,
+                    proxy_engine.clone(),
+                    source.clone(),
+                    proxy_workers,
+                ));
             }
             None => {
                 proxy_ports_summary.push(format!("http://{}", addr));
