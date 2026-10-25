@@ -200,13 +200,10 @@ pub async fn route_test(
             .static_root
             .clone()
             .map(|r| format!("files in '{}'", r)),
-        RouteTargetType::Redirect => route.redirect_url.clone().map(|u| {
-            format!(
-                "redirect {} to {}",
-                route.redirect_code.unwrap_or(302),
-                u
-            )
-        }),
+        RouteTargetType::Redirect => route
+            .redirect_url
+            .clone()
+            .map(|u| format!("redirect {} to {}", route.redirect_code.unwrap_or(302), u)),
     };
 
     Json(RouteTestResponse {
