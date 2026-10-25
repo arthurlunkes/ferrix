@@ -1,11 +1,3 @@
-//! Guarda a configuração ativa e a versão pré-compilada dela.
-//!
-//! Antes, cada componente carregava um `ArcSwap<FerrixConfig>` cru. Como agora existe
-//! material derivado que custa caro para montar — expressões regulares de rota, blocos
-//! CIDR, a lista de proxies confiáveis —, ele precisa ser reconstruído junto com a
-//! configuração e trocado no mesmo instante. Deixar isso a cargo de quem chama seria
-//! convidar o esquecimento; centralizar aqui garante que os dois nunca divirjam.
-
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 
@@ -26,13 +18,10 @@ impl ConfigStore {
         }
     }
 
-    /// A configuração compilada em vigor. Uma requisição segura este `Arc` do começo ao
-    /// fim, então um hot-reload no meio do caminho não a afeta.
     pub fn compiled(&self) -> Arc<CompiledConfig> {
         self.compiled.load_full()
     }
 
-    /// Só os dados de configuração, para quem não precisa do material derivado.
     pub fn config(&self) -> Arc<FerrixConfig> {
         self.compiled.load().config.clone()
     }
@@ -41,16 +30,11 @@ impl ConfigStore {
         &self.path
     }
 
-    /// Troca a configuração em memória, recompilando o que deriva dela.
     pub fn apply(&self, config: FerrixConfig) {
         let compiled = CompiledConfig::build(Arc::new(config));
         self.compiled.store(Arc::new(compiled));
     }
 
-    /// Grava em disco e só então aplica.
-    ///
-    /// A ordem importa: se a gravação falhar, o processo continua com a configuração
-    /// anterior em vez de rodar com algo que não sobreviveria a um reinício.
     pub fn persist_and_apply(&self, config: FerrixConfig) -> Result<(), String> {
         config.save_to_file(&self.path)?;
         self.apply(config);
@@ -70,7 +54,7 @@ mod tests {
 
         let mut next = FerrixConfig::default();
         next.vhosts[0].name = "renomeado".to_string();
-        // Uma rota só, para que o teste fale apenas do match exato.
+
         next.vhosts[0].routes.truncate(1);
         next.vhosts[0].routes[0].match_type = RouteMatchType::Exact;
         next.vhosts[0].routes[0].path_prefix = "/exato".to_string();
@@ -78,13 +62,13 @@ mod tests {
 
         let compiled = store.compiled();
         assert_eq!(compiled.config.vhosts[0].name, "renomeado");
-        // O material derivado acompanhou: o match exato já vale.
+
         let m = compiled.match_route(0, "/exato").expect("deveria casar");
         assert_eq!(
             compiled.config.vhosts[0].routes[m.route_index].target_type,
             RouteTargetType::ProxyUpstream
         );
-        // Exato é exato: um caminho mais longo não pertence a ele.
+
         assert!(compiled.match_route(0, "/exato/mais").is_none());
     }
 
@@ -109,7 +93,6 @@ mod tests {
         next.vhosts[0].name = "novo".to_string();
         store.apply(next);
 
-        // Quem já estava atendendo continua com a configuração com que começou.
         assert_eq!(held.config.vhosts[0].name, "Default Virtual Host");
         assert_eq!(store.config().vhosts[0].name, "novo");
     }

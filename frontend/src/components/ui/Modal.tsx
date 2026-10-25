@@ -25,8 +25,6 @@ const ICON_TONE_CLASSES: Record<NonNullable<ModalProps["iconTone"]>, string> = {
   amber: "bg-amber-500/10 text-amber-400",
 };
 
-/** Casco de modal comum: header com ícone/título/fechar, corpo rolável, rodapé fixo.
- * Todos os modais do painel (VHost, Upstream, confirmação) montam sobre isto. */
 export const Modal: React.FC<ModalProps> = ({
   open,
   onClose,
@@ -74,7 +72,7 @@ export const Modal: React.FC<ModalProps> = ({
           <button
             onClick={onClose}
             className="p-1 rounded-lg text-content-muted hover:text-content-primary hover:bg-surface-2 transition"
-            aria-label="Fechar"
+            aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
@@ -91,3 +89,4 @@ export const Modal: React.FC<ModalProps> = ({
     </div>
   );
 };
+

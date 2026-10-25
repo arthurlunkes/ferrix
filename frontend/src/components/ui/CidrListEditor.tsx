@@ -3,9 +3,6 @@ import { Plus, Trash2 } from "lucide-react";
 import { Input } from "./Input";
 import { Button } from "./Button";
 
-/** Verificação leve, só para dar feedback imediato — a validação de verdade (IPv6, forma
- * mapeada, limites de máscara) é a mesma que o servidor roda em `net::cidr`. Isto aqui só
- * evita mandar "abc" para o servidor e descobrir o erro só depois de salvar. */
 function looksLikeIpOrCidr(value: string): boolean {
   const v = value.trim();
   if (v === "" || v === "*" || v.toLowerCase() === "all") return true;
@@ -21,13 +18,11 @@ interface CidrListEditorProps {
   addLabel?: string;
 }
 
-/** Lista de IPs/blocos CIDR para `allowed_ips`/`denied_ips` — equivalente a `allow`/`deny`
- * do nginx. Antes só existia como array cru no JSON do Config Editor. */
 export const CidrListEditor: React.FC<CidrListEditorProps> = ({
   value,
   onChange,
   placeholder = "10.0.0.0/8, 192.168.1.1, *",
-  addLabel = "Adicionar",
+  addLabel = "Add",
 }) => {
   const update = (index: number, next: string) => {
     onChange(value.map((v, i) => (i === index ? next : v)));
@@ -38,7 +33,7 @@ export const CidrListEditor: React.FC<CidrListEditorProps> = ({
   return (
     <div className="space-y-2">
       {value.length === 0 && (
-        <p className="text-[11px] text-content-muted">Nenhuma entrada — todos os IPs se aplicam.</p>
+        <p className="text-[11px] text-content-muted">No entries — all IPs apply.</p>
       )}
       {value.map((v, i) => {
         const valid = looksLikeIpOrCidr(v);
@@ -68,3 +63,4 @@ export const CidrListEditor: React.FC<CidrListEditorProps> = ({
     </div>
   );
 };
+

@@ -26,7 +26,7 @@ const TABS = [
   { to: "/vhosts", label: "Virtual Hosts", icon: Globe },
   { to: "/live", label: "Live Requests", icon: Zap },
   { to: "/upstreams", label: "Upstreams", icon: Server },
-  { to: "/import", label: "Importar nginx", icon: UploadCloud },
+  { to: "/import", label: "Import Nginx", icon: UploadCloud },
   { to: "/config", label: "Config Editor", icon: FileCode },
 ];
 
@@ -50,7 +50,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="bg-surface-1/95 backdrop-blur border-b border-border-subtle sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Linha 1: marca e indicadores de status */}
+        {}
         <div className="flex items-center justify-between h-14 gap-4">
           <div className="flex items-center gap-3 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-brand-600 to-teal-400 flex items-center justify-center shadow-glow">
@@ -69,17 +69,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {status && !status.admin_auth_enabled && (
               <span
-                title="A API de administração está sem autenticação configurada"
+                title="Admin API has no authentication configured"
                 className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-warning-500/10 text-warning-400 border border-warning-500/30 text-[11px] font-medium"
               >
                 <ShieldAlert className="w-3.5 h-3.5" />
-                Sem autenticação
+                Unauthenticated
               </span>
             )}
 
             <button
               onClick={() => setRouteTesterOpen(true)}
-              title="Testar qual rota atende uma requisição"
+              title="Test which route handles a request"
               className="p-2 rounded-lg text-content-secondary hover:text-content-primary hover:bg-surface-2 transition"
             >
               <Compass className="w-4 h-4" />
@@ -97,13 +97,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 />
               </span>
               <span className="text-content-secondary font-mono text-[11px]">
-                {sseConnected ? "Live SSE" : "Reconectando..."}
+                {sseConnected ? "Live SSE" : "Reconnecting..."}
               </span>
             </div>
 
             <button
               onClick={onOpenAuth}
-              title={isAuthenticated ? "Token ativo — clique para alterar" : "Clique para autenticar"}
+              title={isAuthenticated ? "Active token — click to change" : "Click to authenticate"}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono transition-all border ${
                 isAuthenticated
                   ? "bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500/20"
@@ -111,7 +111,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <KeyRound className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{isAuthenticated ? "Autenticado" : "Autenticar"}</span>
+              <span className="hidden sm:inline">{isAuthenticated ? "Authenticated" : "Authenticate"}</span>
             </button>
 
             <div className="hidden xl:flex flex-col text-right text-xs leading-tight">
@@ -128,7 +128,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Linha 2: navegação — sempre quebra em várias linhas, nunca rola na horizontal */}
+        {}
         <nav className="flex flex-wrap items-center gap-1 pb-2">
           {TABS.map((tab) => {
             const Icon = tab.icon;
@@ -156,3 +156,4 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
+

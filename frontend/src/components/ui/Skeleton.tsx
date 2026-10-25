@@ -1,7 +1,5 @@
 import React from "react";
 
-/** Placeholder pulsante para o carregamento inicial — hoje a tela ou mostra dados prontos
- * ou não mostra nada, o que pisca como se tivesse falhado. */
 export const Skeleton: React.FC<{ className?: string }> = ({ className = "" }) => (
   <div className={`animate-pulse rounded-lg bg-surface-2 ${className}`} />
 );
@@ -18,3 +16,4 @@ export const SkeletonCard: React.FC = () => (
     <Skeleton className="h-20 w-full" />
   </div>
 );
+

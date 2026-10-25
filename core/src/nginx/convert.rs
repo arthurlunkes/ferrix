@@ -1,12 +1,3 @@
-//! Converte a árvore de um `nginx.conf` em uma `FerrixConfig`.
-//!
-//! Duas regras guiam tudo aqui:
-//!
-//! 1. **Não inventar equivalências.** O que o Ferrix não sabe fazer vira linha no
-//!    relatório, com arquivo e linha, em vez de virar uma aproximação silenciosa.
-//! 2. **Nunca afrouxar segurança na migração.** Uma diretiva de proteção que não pode ser
-//!    convertida fielmente deixa a rota fechada, não aberta.
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -24,7 +15,6 @@ pub struct ImportResult {
     pub report: MigrationReport,
 }
 
-/// Converte o conteúdo de um `nginx.conf` já lido.
 pub fn import_str(source: &str, file_name: &str) -> Result<ImportResult, ParseError> {
     let directives = parse(source)?;
     let mut converter = Converter::new(file_name, PathBuf::new());
@@ -36,7 +26,6 @@ pub fn import_str(source: &str, file_name: &str) -> Result<ImportResult, ParseEr
     })
 }
 
-/// Lê um `nginx.conf` do disco, resolvendo `include`, e converte.
 pub fn import_file(path: &Path) -> Result<ImportResult, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("não foi possível ler {}: {}", path.display(), e))?;
@@ -46,8 +35,7 @@ pub fn import_file(path: &Path) -> Result<ImportResult, String> {
         parse(&source).map_err(|e| format!("erro de sintaxe em {}: {}", file_name, e))?;
 
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    // A raiz da busca por nome é a mesma pasta: é onde `include`s de caminho absoluto
-    // (que não existem nesta máquina) têm chance de ser encontrados por nome de arquivo.
+
     let mut converter = Converter::new(&file_name, base_dir.clone());
     converter.report.files.push(file_name.clone());
     converter.resolve_includes(&mut directives, &base_dir, 0);
@@ -63,39 +51,28 @@ struct Converter {
     config: FerrixConfig,
     report: MigrationReport,
     file: String,
-    /// Pasta onde a busca por nome de arquivo procura um `include` de caminho absoluto que
-    /// não existe nesta máquina. Vazia quando a conversão partiu de uma string em memória.
+
     search_root: PathBuf,
-    /// Taxas declaradas em `limit_req_zone`, para resolver o `limit_req zone=NOME`.
+
     limit_req_zones: HashMap<String, u32>,
     limit_conn_zones: HashSet<String>,
-    /// Contador para nomear upstreams criados a partir de um `proxy_pass` direto.
+
     synthetic_upstreams: usize,
     route_seq: usize,
-    /// `add_header` visto no nível `http`, aplicado como ponto de partida de todo vhost
-    /// criado depois — nginx também propaga assim, na ausência do override quirk (se o
-    /// server redefine `add_header`, o Ferrix soma em vez de substituir a lista inteira,
-    /// mais previsível do que replicar esse detalhe).
+
     http_headers: HashMap<String, String>,
 
-    // Estado herdado de `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` — desce de
-    // `http` para `server` para `location` como no nginx real: uma location que só tem
-    // `proxy_cache_bypass` (sem repetir `proxy_cache`) ainda está cacheada se um nível
-    // acima ligou o cache. `cache_enabled` é `false` até algum nível ligar uma zona que
-    // não seja "off"; os outros três só importam quando `cache_enabled` é `true`.
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
     cache_bypass_cookies: Vec<String>,
     cache_bypass_query: Vec<String>,
-    /// Snapshot do estado logo após o pré-passe do nível `http` — todo `server` reparte
-    /// daqui, não do que o `server` anterior deixou para trás.
+
     http_cache_baseline: (bool, u64, Vec<String>, Vec<String>, Vec<String>),
 }
 
 impl Converter {
     fn new(file: &str, search_root: PathBuf) -> Self {
-        // Parte de uma configuração vazia: tudo vem do arquivo de origem.
         let config = FerrixConfig {
             admin: Default::default(),
             http: Default::default(),
@@ -122,7 +99,6 @@ impl Converter {
         }
     }
 
-    /// Substitui cada `include` pelo conteúdo dos arquivos que ele aponta.
     fn resolve_includes(&mut self, directives: &mut Vec<Directive>, base: &Path, depth: usize) {
         if depth > 16 {
             return;
@@ -153,8 +129,6 @@ impl Converter {
         d: &Directive,
         depth: usize,
     ) -> Vec<Directive> {
-        // Snippets sabidamente sem conteúdo para migrar (ver `safe_include_note`) — não
-        // precisa nem tentar ler o arquivo.
         if let Some(reason) = safe_include_note(pattern) {
             self.report.note(
                 NoteLevel::Converted,
@@ -169,11 +143,6 @@ impl Converter {
 
         let mut paths = resolve_include_paths(pattern, base);
 
-        // Um `include` de caminho absoluto (`/etc/nginx/snippets/proxy.conf`) é comum e
-        // legítimo em nginx — mas ao migrar a partir de uma cópia da configuração (e não
-        // do próprio servidor), esse caminho não existe na máquina onde a importação
-        // corre. Antes de desistir, procura pelo nome do arquivo dentro da árvore de onde
-        // o `nginx.conf` principal foi lido: é o que uma pessoa faria à mão.
         let mut resolved_by_name = false;
         if paths.is_empty() && !pattern.contains('*') && Path::new(pattern).is_absolute() {
             if let Some(name) = Path::new(pattern).file_name() {
@@ -246,12 +215,6 @@ impl Converter {
     }
 
     fn run(&mut self, directives: &[Directive]) {
-        // Um arquivo de site do nginx (o que fica em sites-enabled/, o que o Certbot
-        // gerencia) é feito de `server { }` e `upstream { }` soltos, sem o `http { }` que
-        // só existe no nginx.conf principal — é o `include` que costura os dois. Colar só
-        // o arquivo do site, sem esse wrapper, é o caso comum de migração de um site só.
-        // Por isso `upstream`/`server`/zonas de limite/timeouts são tratados igual estando
-        // soltos no nível superior ou dentro de um bloco `http`.
         self.collect_upstreams_and_zones(directives);
         for d in directives {
             if d.name == "http" {
@@ -261,9 +224,6 @@ impl Converter {
             }
         }
 
-        // Mesma ideia: `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` no nível
-        // `http` viram a base herdada por todo `server` — vistos antes de qualquer server
-        // ser processado, não importa se vêm antes ou depois deles no arquivo.
         self.collect_http_cache_scope(directives);
         for d in directives {
             if d.name == "http" {
@@ -320,7 +280,6 @@ impl Converter {
             }
         }
 
-        // Sem nenhum `server`, o resultado não subiria: a validação exige um host.
         if self.config.vhosts.is_empty() {
             self.config.vhosts.push(VirtualHost {
                 id: "vhost-importado".to_string(),
@@ -343,22 +302,10 @@ impl Converter {
         self.report.upstreams_created = self.config.upstreams.len();
         self.report.routes_created = self.config.vhosts.iter().map(|v| v.routes.len()).sum();
 
-        // Um snippet incluído por várias locations (comum: `proxy.conf` num monte de
-        // `location`) entraria repetido uma vez por include. A ordem original não importa
-        // aqui — é só a lista de "o que foi lido" — então ordenar e deduplicar deixa o
-        // relatório legível sem perder nenhum arquivo.
         self.report.files.sort();
         self.report.files.dedup();
     }
 
-    /// Primeira passada: zonas de `limit_req`/`limit_conn` e pools de `upstream`,
-    /// registrados antes de qualquer `server` ser processado.
-    ///
-    /// A ordem no arquivo não deveria importar — o próprio nginx não exige `upstream`
-    /// declarado antes do `server` que o usa — mas o conversor processa em ordem, então
-    /// sem esta passada um `server` que aparecesse primeiro no arquivo criaria um
-    /// upstream sintético de um servidor só, em vez de apontar para o pool de verdade
-    /// declarado mais abaixo.
     fn collect_upstreams_and_zones(&mut self, block: &[Directive]) {
         for d in block {
             match d.name.as_str() {
@@ -370,9 +317,6 @@ impl Converter {
         }
     }
 
-    /// Junta todo `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` direto num nível
-    /// `http` (ou solto no topo, sem `http{}`) e fixa o resultado em `self.cache_*` — a
-    /// base que todo `server` vai herdar antes de processar o que é seu.
     fn collect_http_cache_scope(&mut self, block: &[Directive]) {
         let mut zone: Option<&Directive> = None;
         let mut valid: Vec<&Directive> = Vec::new();
@@ -388,12 +332,10 @@ impl Converter {
         self.finalize_cache_scope(zone, &valid, &bypass);
     }
 
-    /// Diretivas que valem tanto soltas no nível superior (arquivo de site sem `http{}`)
-    /// quanto dentro de um bloco `http{}` de verdade.
     fn dispatch_top_level(&mut self, d: &Directive) {
         match d.name.as_str() {
-            "limit_req_zone" | "limit_conn_zone" | "upstream" => {} // já coletados
-            "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {} // já coletados
+            "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
+            "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
 
             "client_max_body_size" => {
@@ -483,7 +425,6 @@ impl Converter {
     }
 
     fn collect_limit_req_zone(&mut self, d: &Directive) {
-        // `limit_req_zone $chave zone=nome:10m rate=5r/s;`
         let mut zone_name = None;
         let mut rate = None;
         for arg in &d.args {
@@ -506,7 +447,6 @@ impl Converter {
             ),
         }
 
-        // A chave da zona é sempre o IP do cliente no Ferrix.
         if let Some(key) = d.args.first() {
             if key != "$binary_remote_addr" && key != "$remote_addr" {
                 self.report.partial(
@@ -563,8 +503,6 @@ impl Converter {
                 "ip_hash" => algorithm = Some(LoadBalanceAlgorithm::IpHash),
                 "random" => algorithm = Some(LoadBalanceAlgorithm::Random),
                 "hash" => {
-                    // `hash $request_uri consistent` distribui por uma variável qualquer;
-                    // o Ferrix só sabe distribuir por IP de origem.
                     algorithm = Some(LoadBalanceAlgorithm::IpHash);
                     self.report.partial(
                         &self.file,
@@ -601,7 +539,6 @@ impl Converter {
         }
 
         let algorithm = algorithm.unwrap_or(if has_weights {
-            // Pesos sem algoritmo declarado significam rodízio ponderado no nginx.
             LoadBalanceAlgorithm::WeightedRoundRobin
         } else {
             LoadBalanceAlgorithm::RoundRobin
@@ -664,8 +601,6 @@ impl Converter {
             }
         }
 
-        // `max_fails=0` desliga a contagem de falhas no nginx. No Ferrix o zero marcaria o
-        // servidor como fora já na primeira falha, então vira um teto bem alto.
         if target.max_fails == 0 {
             target.max_fails = u32::MAX;
         }
@@ -676,9 +611,6 @@ impl Converter {
     fn convert_server(&mut self, d: &Directive) {
         let Some(block) = &d.block else { return };
 
-        // Cada server reparte do que `http` deixou herdado, não do que o server anterior
-        // deixou para trás — sem isto, o segundo `server{}` de um arquivo herdaria o
-        // cache ligado (ou a lista de bypass) do primeiro.
         (
             self.cache_enabled,
             self.cache_valid_secs,
@@ -710,9 +642,7 @@ impl Converter {
         let mut saw_ssl_listen = false;
         let mut ssl_cert: Option<String> = None;
         let mut ssl_key: Option<String> = None;
-        // Preenchido quando o server é o clássico redirecionador HTTP→HTTPS do Certbot —
-        // ver `try_convert_certbot_https_redirect`. Substitui inteiramente o `if`/`return
-        // 404` que o gerava, então o `return 404` de fallback não é reportado.
+
         let mut certbot_redirect: Option<RouteRule> = None;
         let mut cache_zone: Option<&Directive> = None;
         let mut cache_valid: Vec<&Directive> = Vec::new();
@@ -733,7 +663,7 @@ impl Converter {
                     vhost.server_names.extend(item.args.iter().cloned());
                 }
                 "root" => server_root = item.arg(0).map(|s| s.to_string()),
-                "location" => {} // segunda passada, depois de `root` ser conhecido
+                "location" => {}
                 "allow" => {
                     if let Some(v) = item.arg(0) {
                         vhost.allowed_ips.push(v.to_string());
@@ -832,8 +762,6 @@ impl Converter {
                 }
             }
             (cert, _key) if saw_ssl_listen => {
-                // Tinha `listen ... ssl` mas faltou um dos dois arquivos — a porta migra,
-                // mas sem certificado o Ferrix não tem como servir HTTPS nela.
                 let missing = if cert.is_none() {
                     "ssl_certificate"
                 } else {
@@ -853,12 +781,8 @@ impl Converter {
             _ => {}
         }
 
-        // Agora as locations, que podem herdar o `root` do server.
         for item in block {
             if item.name == "location" {
-                // Cada location reparte do que este server deixou herdado — não do que a
-                // location anterior sobrescreveu, senão um `proxy_cache_bypass` numa
-                // location vazaria para a próxima que nunca pediu isso.
                 (
                     self.cache_enabled,
                     self.cache_valid_secs,
@@ -873,8 +797,6 @@ impl Converter {
             }
         }
 
-        // O redirect do Certbot substitui o `if`/`return 404` inteiro; um `return` comum
-        // no nível do server vira uma rota que pega tudo, como antes.
         if let Some(route) = certbot_redirect {
             vhost.routes.push(route);
         } else if let Some(item) = server_return {
@@ -887,7 +809,6 @@ impl Converter {
 
         if vhost.routes.is_empty() {
             if let Some(root) = &server_root {
-                // Um server só com `root` serve arquivos a partir da raiz.
                 vhost.routes.push(RouteRule {
                     id: self.next_route_id(),
                     path_prefix: "/".to_string(),
@@ -903,8 +824,6 @@ impl Converter {
         self.config.vhosts.push(vhost);
     }
 
-    /// Devolve `true` quando este `listen` pediu `ssl` — quem chama decide a nota certa
-    /// depois de saber se um certificado foi encontrado no resto do server.
     fn apply_listen(&mut self, d: &Directive, vhost: &mut VirtualHost) -> bool {
         if let Some(first) = d.arg(0) {
             if let Some(port) = parse_listen_port(first) {
@@ -944,16 +863,10 @@ impl Converter {
         saw_ssl
     }
 
-    /// Reconhece `if ($host = X) { return 301 https://$host$request_uri; }` — o jeito que
-    /// o Certbot redireciona HTTP para HTTPS. A condição é sempre verdadeira na prática:
-    /// o server já só é alcançado quando o `Host` bate com um `server_name` seu, então
-    /// checar `$host` de novo aqui não filtra nada — só um redirect incondicional.
     fn try_convert_certbot_https_redirect(
         &mut self,
         if_directive: &Directive,
     ) -> Option<RouteRule> {
-        // A forma exata que o Certbot gera: sem espaço depois do "(", o lexer devolve
-        // "($host" como uma palavra só.
         if if_directive.args.len() != 3
             || if_directive.args[0] != "($host"
             || if_directive.args[1] != "="
@@ -984,8 +897,6 @@ impl Converter {
         Some(route)
     }
 
-    /// `access_log off;` — a única forma que o Ferrix consegue migrar de verdade, porque
-    /// ele só grava em memória. Um caminho de arquivo customizado não tem para onde ir.
     fn apply_access_log(&mut self, d: &Directive, route: &mut RouteRule) {
         if d.arg(0) == Some("off") {
             route.access_log = false;
@@ -1009,18 +920,10 @@ impl Converter {
         }
     }
 
-    /// `expires` vira `add_header Cache-Control` — o efeito prático que interessa. O
-    /// header `Expires` em si (uma data calculada a cada resposta) o Ferrix não gera,
-    /// mas todo navegador atual já prioriza `Cache-Control` quando os dois aparecem.
-    ///
-    /// Chamada só depois do resto da location já ter sido processada, para poder ver se
-    /// já existe um `add_header Cache-Control` explícito — não importa se ele veio antes
-    /// ou depois do `expires` no arquivo original.
     fn apply_expires(&mut self, d: &Directive, route: &mut RouteRule) {
         let Some(value) = d.arg(0) else { return };
 
         if value == "off" {
-            // É o padrão do próprio Ferrix também — nada a converter.
             return;
         }
 
@@ -1062,9 +965,6 @@ impl Converter {
                     || lower.contains("no-cache")
                     || lower.contains("no-store")
                 {
-                    // Já tem duração própria — é mais específico que o que expires pediria.
-                    // Nginx mandaria os dois headers (um bug documentado: o cliente escolhe
-                    // qual obedecer); aqui fica só o explícito, que é a escolha mais segura.
                     self.report.partial(
                         &self.file,
                         d.line,
@@ -1078,8 +978,6 @@ impl Converter {
                         ),
                     );
                 } else {
-                    // O add_header explícito não define duração (ex.: só "public") — soma a
-                    // duração do expires, preservando as duas intenções.
                     let merged = format!("{}, {}", existing, computed);
                     route
                         .add_headers
@@ -1097,11 +995,6 @@ impl Converter {
         }
     }
 
-    /// `add_header X-Cache-Status $upstream_cache_status;` é como o nginx expõe se a
-    /// resposta veio do cache. O Ferrix já expõe exatamente isso sozinho — todo `HIT`/
-    /// `MISS` de uma rota com `proxy_cache` sai no header `X-Cache-Status` — então guardar
-    /// o valor literal aqui sobrescreveria esse header de verdade com o texto cru
-    /// "$upstream_cache_status", que não significa nada fora do nginx.
     fn apply_add_header(&mut self, item: &Directive, target: &mut HashMap<String, String>) {
         let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else {
             return;
@@ -1121,16 +1014,6 @@ impl Converter {
         target.insert(k.to_string(), v.to_string());
     }
 
-    /// Processa `proxy_cache`/`proxy_cache_valid`/`proxy_cache_bypass` vistos num único
-    /// nível (http, server ou location) e atualiza o estado herdado (`self.cache_*`), que
-    /// quem chamou já deixou pré-carregado com o valor do nível pai — exatamente como o
-    /// nginx real: uma location só com `proxy_cache_bypass` continua cacheada se `http`
-    /// ou `server` já ligou `proxy_cache`, sem precisar repetir a diretiva.
-    ///
-    /// O Ferrix não separa por zona nem grava em disco — uma tabela só, compartilhada,
-    /// diferenciada pela própria chave (método+host+caminho) — então o nome da zona só
-    /// serve para saber que o cache foi pedido; `proxy_cache_path` (nível `http`) é só
-    /// anotado, sem efeito.
     fn finalize_cache_scope(
         &mut self,
         zone_item: Option<&Directive>,
@@ -1152,10 +1035,6 @@ impl Converter {
             }
         }
 
-        // Pode haver um `proxy_cache_valid` por grupo de status ("200 30s", "404 10s",
-        // "any 5s"); o Ferrix só cacheia 200 e só tem uma duração, então usa a entrada
-        // que fala de "200" (ou "any", se não houver uma específica) e avisa quando
-        // sobra alguma diferença não capturada.
         if let Some(chosen) = valid_items
             .iter()
             .find(|it| it.args.iter().any(|a| a == "200"))
@@ -1207,8 +1086,6 @@ impl Converter {
         }
 
         if !bypass_items.is_empty() {
-            // Redefinir substitui a lista herdada inteira, não soma — mesmo critério do
-            // nginx para esta diretiva.
             let mut headers = Vec::new();
             let mut cookies = Vec::new();
             let mut query = Vec::new();
@@ -1295,7 +1172,6 @@ impl Converter {
         };
 
         let Some(block) = &d.block else {
-            // `location /x { }` vazia herda o root do server.
             route.target_type = RouteTargetType::StaticFiles;
             route.static_root = server_root.map(|s| s.to_string());
             return route.static_root.is_some().then_some(route);
@@ -1303,17 +1179,11 @@ impl Converter {
 
         let mut has_target = false;
         let mut auth_realm: Option<String> = None;
-        // `expires` só é aplicado depois do loop (ver abaixo), porque a ordem no arquivo
-        // não é garantida: um `add_header Cache-Control` explícito pode vir antes OU
-        // depois dele, e só dá para decidir mesclar ou não depois de ver os dois.
+
         let mut expires: Option<&Directive> = None;
-        // Mesma lógica do `expires`: a ordem entre `proxy_cache`, `proxy_cache_valid` e
-        // `proxy_cache_bypass` não é garantida, e só dá para montar a `CacheConfig`
-        // depois de ver todo mundo.
+
         let mut cache_zone: Option<&Directive> = None;
-        // `proxy_cache_valid` pode aparecer várias vezes, uma por grupo de status (ex.:
-        // "200 30s", "404 10s", "any 5s") — o Ferrix usa uma duração só, então todas são
-        // coletadas para `apply_cache` escolher a mais representativa e avisar da perda.
+
         let mut cache_valid: Vec<&Directive> = Vec::new();
         let mut cache_bypass: Vec<&Directive> = Vec::new();
 
@@ -1330,7 +1200,6 @@ impl Converter {
                     has_target = true;
                 }
                 "alias" => {
-                    // `alias` substitui o prefixo casado pelo caminho, e não o acrescenta.
                     route.target_type = RouteTargetType::StaticFiles;
                     route.static_root = item.arg(0).map(|s| s.to_string());
                     route.strip_prefix = true;
@@ -1352,18 +1221,11 @@ impl Converter {
                 }
                 "proxy_set_header" => {
                     if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
-                        // `proxy_set_header Upgrade $http_upgrade;` é o que de fato pede
-                        // upgrade de protocolo. Já `Connection` só conta quando o valor diz
-                        // "upgrade" — `proxy_set_header Connection "";` é um idioma comum
-                        // para forçar keep-alive numa API HTTP normal, e não deve acender
-                        // o túnel de WebSocket à toa.
                         let asks_upgrade = k.eq_ignore_ascii_case("upgrade") && !v.is_empty();
                         let connection_upgrades = k.eq_ignore_ascii_case("connection")
                             && v.to_ascii_lowercase().contains("upgrade");
 
                         if asks_upgrade || connection_upgrades {
-                            // O túnel do Ferrix já cuida dos headers de upgrade sozinho;
-                            // só liga a flag, não repassa o header em si.
                             route.websocket_enabled = true;
                         } else {
                             route.proxy_set_headers.insert(k.to_string(), v.to_string());
@@ -1477,13 +1339,10 @@ impl Converter {
         Some(route)
     }
 
-    /// Converte `proxy_pass`. Devolve `false` se não deu para migrar.
     fn apply_proxy_pass(&mut self, d: &Directive, route: &mut RouteRule) -> bool {
         let Some(raw) = d.arg(0) else { return false };
 
         if raw.contains('$') {
-            // No nginx isso exige `resolver` e resolve em runtime; o destino pode ser
-            // qualquer coisa, então não há como escolher um upstream na conversão.
             self.report.unsupported(
                 &self.file,
                 d.line,
@@ -1508,7 +1367,6 @@ impl Converter {
             return false;
         };
 
-        // Barra ao final substitui o prefixo casado — é o `strip_prefix` do Ferrix.
         route.strip_prefix = rest.contains('/');
         let host_part = rest.split('/').next().unwrap_or(rest);
 
@@ -1534,7 +1392,6 @@ impl Converter {
             return true;
         }
 
-        // `proxy_pass` direto para um host: cria um pool de um servidor só.
         let scheme = if raw.starts_with("https://") {
             "https"
         } else {
@@ -1581,7 +1438,6 @@ impl Converter {
     fn convert_return(&mut self, d: &Directive) -> Option<RouteRule> {
         let first = d.arg(0)?;
 
-        // `return https://destino` sem código é um 302 implícito.
         if first.starts_with("http://") || first.starts_with("https://") {
             return Some(RouteRule {
                 id: self.next_route_id(),
@@ -1607,9 +1463,6 @@ impl Converter {
                 return None;
             };
             if let Some(unknown) = first_unsupported_variable(url) {
-                // `$scheme`, `$host` e `$request_uri` — o essencial do padrão HTTP→HTTPS
-                // — o Ferrix já interpola no redirect. O resto (`$arg_x`, `$cookie_x`...)
-                // não tem onde guardar valor nenhum num redirect estático.
                 self.report.unsupported(
                     &self.file,
                     d.line,
@@ -1647,7 +1500,7 @@ impl Converter {
     fn parse_limit_req(&mut self, d: &Directive) -> Option<RateLimitConfig> {
         let mut zone = None;
         let mut burst = 0;
-        let mut mode = RateLimitMode::Queue; // o padrão do nginx enfileira
+        let mut mode = RateLimitMode::Queue;
         let mut delay = None;
 
         for arg in &d.args {
@@ -1748,11 +1601,6 @@ impl Converter {
         }
     }
 
-    /// Fecha a rota com uma senha aleatória quando o `htpasswd` não pode ser convertido.
-    ///
-    /// O arquivo guarda hashes, então não há como recuperar a senha original. Deixar a
-    /// rota sem proteção seria transformar uma migração numa brecha, então ela fica
-    /// fechada e o relatório manda redefinir as credenciais no painel.
     fn placeholder_basic_auth(&mut self, d: &Directive, realm: Option<&str>) -> BasicAuthConfig {
         self.report.unsupported(
             &self.file,
@@ -1781,10 +1629,6 @@ impl Converter {
     }
 
     fn note_unsupported(&mut self, d: &Directive) {
-        // Um `include` de snippet reconhecido (ver `safe_include_note`) é Converted mesmo
-        // ao colar texto na tela, sem acesso ao arquivo — `expand_include` cobre o mesmo
-        // caso quando o arquivo existe de verdade (`ferrix import --from`), mas aqui é a
-        // única chance: `import_str` nunca resolve includes.
         if d.name == "include" {
             if let Some(reason) = d.arg(0).and_then(safe_include_note) {
                 self.report.note(
@@ -1798,14 +1642,7 @@ impl Converter {
                 return;
             }
         }
-        // `ssl_ciphers`, `ssl_protocols`, `ssl_dhparam` e companhia não são um gap — o
-        // rustls decide essas escolhas sozinho, de propósito, e não existe (nem vai
-        // existir) um jeito de sobrescrever. `Ignored` sinaliza isso na UI como uma
-        // diferença de design permanente, não como uma pendência de fase futura.
-        //
-        // Nem todo `ssl_*` se encaixa aqui: `ssl_client_certificate`/`ssl_verify_client`
-        // (mTLS) e `ssl_stapling*` (OCSP) são recursos que o Ferrix de fato ainda não tem
-        // — um gap real, não uma escolha — então continuam `Unsupported`.
+
         const RUSTLS_PERMANENT_DEFAULTS: [&str; 8] = [
             "ssl_protocols",
             "ssl_ciphers",
@@ -1836,8 +1673,6 @@ impl Converter {
     }
 }
 
-/// Padrões de `include` sem conteúdo para migrar, reconhecidos só pelo caminho — não
-/// precisa ler o arquivo (por isso funciona tanto colando texto quanto lendo do disco).
 fn safe_include_note(pattern: &str) -> Option<&'static str> {
     if pattern.ends_with("mime.types") {
         Some("tipos MIME são detectados automaticamente pelo Ferrix")
@@ -1851,7 +1686,6 @@ fn safe_include_note(pattern: &str) -> Option<&'static str> {
     }
 }
 
-/// Explicação específica para as diretivas que sabemos não suportar.
 fn reason_for(name: &str) -> String {
     let reason = match name {
         n if n.starts_with("gzip") || n == "brotli" => {
@@ -1892,10 +1726,7 @@ fn reason_for(name: &str) -> String {
             "o Ferrix só fala HTTP com o backend"
         }
         "map" => "escolher destino por variável não existe no Ferrix; crie rotas explícitas",
-        // Só chega até aqui colando texto na tela: `import_str` não segue `include`, por
-        // não ter acesso ao resto dos arquivos. Vindo de `ferrix import --from arquivo`,
-        // um include já foi substituído pelo conteúdo antes desta função ser chamada — e
-        // se não foi encontrado, a nota vem de `expand_include`, não daqui.
+
         "include" => {
             "não é seguido ao colar texto na tela; use 'ferrix import --from arquivo.conf' na \
              máquina onde os arquivos estão, que resolve os includes automaticamente"
@@ -1934,15 +1765,10 @@ fn reason_for(name: &str) -> String {
     reason.to_string()
 }
 
-/// `location [= | ~ | ~* | ^~] padrão`
 fn parse_location_args(args: &[String]) -> Option<(RouteMatchType, String)> {
     match args.len() {
         0 => None,
-        1 => Some((
-            // Sem modificador o nginx compara o prefixo como texto puro.
-            RouteMatchType::PrefixLiteral,
-            args[0].clone(),
-        )),
+        1 => Some((RouteMatchType::PrefixLiteral, args[0].clone())),
         _ => {
             let modifier = args[0].as_str();
             let pattern = args[1].clone();
@@ -1958,7 +1784,6 @@ fn parse_location_args(args: &[String]) -> Option<(RouteMatchType, String)> {
     }
 }
 
-/// `listen 80`, `listen 443 ssl`, `listen [::]:8080`, `listen 127.0.0.1:8000`
 fn parse_listen_port(arg: &str) -> Option<u16> {
     if let Ok(port) = arg.parse::<u16>() {
         return Some(port);
@@ -1966,13 +1791,8 @@ fn parse_listen_port(arg: &str) -> Option<u16> {
     arg.rsplit_once(':').and_then(|(_, p)| p.parse().ok())
 }
 
-/// As únicas variáveis que um `redirect_url` sabe interpolar em runtime — ver
-/// `proxy::interpolate_redirect_url`. Qualquer outra (`$arg_x`, `$cookie_x`, ...) não tem
-/// como ser resolvida num redirect estático.
 const SUPPORTED_REDIRECT_VARIABLES: [&str; 3] = ["scheme", "host", "request_uri"];
 
-/// Procura a primeira variável não suportada num destino de redirect. `None` significa
-/// que todas as variáveis usadas (se houver alguma) são interpoladas pelo Ferrix.
 fn first_unsupported_variable(target: &str) -> Option<String> {
     let mut rest = target;
     while let Some(dollar_at) = rest.find('$') {
@@ -1989,7 +1809,6 @@ fn first_unsupported_variable(target: &str) -> Option<String> {
     None
 }
 
-/// Um servidor de upstream do nginx não tem esquema; assume-se HTTP.
 fn normalize_upstream_url(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.to_string()
@@ -1998,7 +1817,6 @@ fn normalize_upstream_url(addr: &str) -> String {
     }
 }
 
-/// `10s`, `100ms`, `1m`, `1h`, ou um número solto (segundos).
 pub fn parse_time_ms(value: &str) -> Option<u64> {
     let v = value.trim();
     if v.is_empty() {
@@ -2018,7 +1836,6 @@ pub fn parse_time_ms(value: &str) -> Option<u64> {
     Some(ms.round() as u64)
 }
 
-/// `10m`, `512k`, `1g`, ou um número solto (bytes).
 pub fn parse_size(value: &str) -> Option<u64> {
     let v = value.trim();
     if v.is_empty() {
@@ -2037,7 +1854,6 @@ pub fn parse_size(value: &str) -> Option<u64> {
     Some(bytes.round() as u64)
 }
 
-/// `5r/s` ou `30r/m`, sempre devolvido em requisições por segundo.
 pub fn parse_rate_per_second(value: &str) -> Option<u32> {
     let v = value.trim();
     let (number, rest) = split_number_unit(v);
@@ -2045,8 +1861,7 @@ pub fn parse_rate_per_second(value: &str) -> Option<u32> {
 
     let per_second = match rest {
         "r/s" => n,
-        // Arredonda para cima: um limite de 1 r/s é mais permissivo que zero, e zero
-        // seria interpretado como "bloqueie tudo".
+
         "r/m" => (n / 60.0).max(1.0),
         _ => return None,
     };
@@ -2060,13 +1875,6 @@ fn split_number_unit(v: &str) -> (&str, &str) {
     (&v[..idx], &v[idx..])
 }
 
-/// Expande o padrão de um `include`, com suporte a `*` no nome do arquivo.
-/// Procura, recursivamente, arquivos cujo nome bate exatamente com `name` dentro de `root`.
-///
-/// Usada só como último recurso quando um `include` de caminho absoluto não existe na
-/// máquina onde a importação corre — o caso comum de migrar a partir de uma cópia da
-/// configuração, e não do servidor original. Devolve todos os achados: mais de um é
-/// ambíguo, e quem chama decide não adivinhar nesse caso.
 fn find_files_by_name(root: &Path, name: &std::ffi::OsStr, depth: usize) -> Vec<PathBuf> {
     if depth > 12 {
         return Vec::new();
@@ -2103,7 +1911,6 @@ fn resolve_include_paths(pattern: &str, base: &Path) -> Vec<PathBuf> {
         };
     }
 
-    // Só o caso comum: curinga no nome do arquivo, como `conf.d/*.conf`.
     let Some(parent) = joined.parent() else {
         return Vec::new();
     };
@@ -2133,7 +1940,7 @@ fn resolve_include_paths(pattern: &str, base: &Path) -> Vec<PathBuf> {
                 && name.len() >= prefix.len() + suffix.len()
         })
         .collect();
-    // Ordem estável, para que a importação seja reproduzível.
+
     found.sort();
     found
 }
@@ -2150,15 +1957,13 @@ mod tests {
         &r.config.vhosts[0].routes[0]
     }
 
-    // -- Auxiliares de unidade ----------------------------------------------
-
     #[test]
     fn time_units_are_parsed() {
         assert_eq!(parse_time_ms("10s"), Some(10_000));
         assert_eq!(parse_time_ms("100ms"), Some(100));
         assert_eq!(parse_time_ms("1m"), Some(60_000));
         assert_eq!(parse_time_ms("1h"), Some(3_600_000));
-        // Número solto no nginx é segundos.
+
         assert_eq!(parse_time_ms("30"), Some(30_000));
         assert_eq!(parse_time_ms("lixo"), None);
     }
@@ -2176,7 +1981,7 @@ mod tests {
     fn rates_are_normalised_to_per_second() {
         assert_eq!(parse_rate_per_second("5r/s"), Some(5));
         assert_eq!(parse_rate_per_second("120r/m"), Some(2));
-        // Abaixo de 1 r/s arredonda para 1: zero significaria bloquear tudo.
+
         assert_eq!(parse_rate_per_second("30r/m"), Some(1));
         assert_eq!(parse_rate_per_second("5"), None);
     }
@@ -2202,8 +2007,6 @@ mod tests {
         );
         assert_eq!(f(vec!["^~", "/assets"]).0, RouteMatchType::PrefixPriority);
     }
-
-    // -- Upstreams -----------------------------------------------------------
 
     #[test]
     fn upstream_with_options_is_converted() {
@@ -2275,8 +2078,6 @@ mod tests {
 
     #[test]
     fn max_fails_zero_becomes_effectively_unlimited() {
-        // No nginx `max_fails=0` desliga a contagem; zero literal marcaria o servidor
-        // como fora logo na primeira falha.
         let r = convert(
             r#"http {
                 upstream p { server a:3000 max_fails=0; }
@@ -2296,8 +2097,6 @@ mod tests {
         assert_eq!(u.targets[0].url, "http://127.0.0.1:3000");
         assert!(first_route(&r).upstream_name.is_some());
     }
-
-    // -- Servers e locations -------------------------------------------------
 
     #[test]
     fn server_names_and_port_are_migrated() {
@@ -2383,8 +2182,6 @@ mod tests {
         assert_eq!(route.redirect_url.as_deref(), Some("https://exemplo.com"));
     }
 
-    /// O clássico redirect HTTP→HTTPS usa exatamente as três variáveis que o motor do
-    /// Ferrix interpola num redirect — ver `proxy::interpolate_redirect_url`.
     #[test]
     fn return_with_supported_variables_is_converted() {
         let r = convert(r#"http { server { listen 80; return 301 https://$host$request_uri; } }"#);
@@ -2399,7 +2196,6 @@ mod tests {
 
     #[test]
     fn return_with_an_unsupported_variable_is_reported_not_guessed() {
-        // $arg_* lê a query string — sem equivalente num redirect estático.
         let r = convert(r#"http { server { listen 80; return 301 https://$host/$arg_next; } }"#);
         assert!(r
             .report
@@ -2432,13 +2228,10 @@ mod tests {
             }"#,
         );
         assert!(first_route(&r).websocket_enabled);
-        // Os headers de upgrade não são repassados literalmente: o túnel cuida disso.
+
         assert!(!first_route(&r).proxy_set_headers.contains_key("Upgrade"));
     }
 
-    /// `proxy_set_header Connection "";` é o idioma comum para forçar keep-alive numa API
-    /// HTTP normal — nada a ver com WebSocket. Antes desta correção, qualquer
-    /// `proxy_set_header Connection ...` acendia `websocket_enabled`, mesmo vazio.
     #[test]
     fn clearing_connection_header_does_not_enable_websocket() {
         let r = convert(
@@ -2452,7 +2245,7 @@ mod tests {
         );
         let route = first_route(&r);
         assert!(!route.websocket_enabled);
-        // E o header em si precisa continuar indo para o backend — é o que a diretiva pede.
+
         assert_eq!(
             route
                 .proxy_set_headers
@@ -2526,8 +2319,6 @@ mod tests {
         assert_eq!(r.config.real_ip.header, RealIpHeader::XForwardedFor);
         assert!(r.config.real_ip.recursive);
     }
-
-    // -- Limites -------------------------------------------------------------
 
     #[test]
     fn limit_req_resolves_its_zone_rate() {
@@ -2603,8 +2394,6 @@ mod tests {
         );
     }
 
-    // -- Controle de acesso --------------------------------------------------
-
     #[test]
     fn allow_and_deny_are_migrated_per_location() {
         let r = convert(
@@ -2637,8 +2426,6 @@ mod tests {
 
     #[test]
     fn htpasswd_leaves_the_route_closed_not_open() {
-        // O ponto de segurança: uma migração não pode transformar uma rota protegida
-        // numa rota pública.
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -2660,8 +2447,6 @@ mod tests {
                     && n.reason.contains("senha aleatória"))
         );
     }
-
-    // -- Relatório -----------------------------------------------------------
 
     #[test]
     fn unsupported_directives_are_reported_with_their_line() {
@@ -2737,9 +2522,6 @@ mod tests {
 
     #[test]
     fn included_snippet_used_by_many_locations_is_listed_once() {
-        // O exemplo 13 do learning-NGINX inclui snippets/proxy.conf em nove locations
-        // diferentes. Sem a deduplicação, a lista de arquivos lidos repetiria o mesmo
-        // caminho nove vezes.
         let path = Path::new("tests/fixtures/nginx/13-loadbalance_avancado/nginx.conf");
         let result = import_file(path).expect("fixture deveria importar");
 
@@ -2756,16 +2538,11 @@ mod tests {
         );
     }
 
-    /// Um `include` de caminho absoluto que não existe nesta máquina, mas cujo nome de
-    /// arquivo existe em algum lugar dentro da pasta importada, deve ser resolvido — é
-    /// exatamente o caso de migrar uma cópia de `/etc/nginx` para outra máquina.
     #[test]
     fn absolute_include_not_found_locally_resolves_by_filename_within_the_import_tree() {
         let path = Path::new("tests/fixtures/nginx/3-timeouts/nginx.conf");
         let result = import_file(path).expect("fixture deveria importar");
 
-        // O snippet declara `proxy_set_header Host $host;` — se ele não tivesse sido
-        // encontrado, nenhuma rota teria esse header.
         let found_host_header = result
             .config
             .vhosts
@@ -2803,10 +2580,6 @@ mod tests {
         assert_eq!(r.config.vhosts[1].server_names, vec!["b.com"]);
     }
 
-    /// O caso real que motivou este teste: um arquivo de site (o que fica em
-    /// `sites-enabled/`, o que o Certbot gerencia) traz `server`/`upstream` soltos, sem o
-    /// `http { }` que só existe no nginx.conf principal — quem cola só esse arquivo não
-    /// devia ver "server: não há equivalente no Ferrix", porque o Ferrix converte isto sim.
     #[test]
     fn bare_server_and_upstream_without_an_http_wrapper_are_converted() {
         let r = convert(
@@ -2830,15 +2603,11 @@ mod tests {
         assert!(r.config.upstreams.contains_key("backend_x"));
         assert_eq!(first_route(&r).upstream_name.as_deref(), Some("backend_x"));
 
-        // Nem "server" nem "upstream" devem aparecer como não migrados.
         let unsupported = r.report.unsupported_directives();
         assert!(!unsupported.contains(&"server".to_string()));
         assert!(!unsupported.contains(&"upstream".to_string()));
     }
 
-    /// Mesmo caso, mas com o `server` aparecendo no arquivo *antes* do `upstream` que ele
-    /// referencia — ordem válida em nginx de verdade, que não deve fazer o Ferrix criar um
-    /// upstream sintético de um servidor só em vez de apontar para o pool declarado.
     #[test]
     fn a_server_before_its_upstream_still_links_to_the_real_pool() {
         let r = convert(
@@ -2857,13 +2626,10 @@ mod tests {
 
         assert_eq!(r.config.upstreams["backend_y"].targets.len(), 2);
         assert_eq!(first_route(&r).upstream_name.as_deref(), Some("backend_y"));
-        // Um upstream sintético "upstream_backend_y" apareceria se a ordem tivesse
-        // importado; só deve existir o pool de verdade.
+
         assert_eq!(r.config.upstreams.len(), 1);
     }
 
-    /// Vários `server` soltos no mesmo arquivo, sem `http{}` — o formato de um vhost do
-    /// Certbot com blocos de app, API e WebSocket separados por porta.
     #[test]
     fn multiple_bare_servers_produce_multiple_vhosts() {
         let r = convert(
@@ -2901,8 +2667,6 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// Só `ssl_certificate`, sem a chave — falta a metade que o Ferrix precisa para
-    /// terminar TLS de verdade nesta porta.
     #[test]
     fn listen_ssl_without_a_key_stays_partial() {
         let r = convert(
@@ -2925,8 +2689,6 @@ mod tests {
         assert!(note.reason.contains("ssl_certificate_key"));
     }
 
-    /// O caso que interessa de verdade: certificado e chave presentes — TLS sai
-    /// habilitado no vhost, pronto para o Core terminar HTTPS nesta porta.
     #[test]
     fn listen_ssl_with_cert_and_key_enables_tls() {
         let r = convert(
@@ -2955,8 +2717,6 @@ mod tests {
         assert_eq!(note.level, NoteLevel::Converted);
     }
 
-    /// O redirecionador HTTP→HTTPS que o Certbot gera para todo domínio — deve virar um
-    /// redirect incondicional, não um "if" e um "return 404" não migrados.
     #[test]
     fn certbot_https_redirect_idiom_becomes_an_unconditional_redirect() {
         let r = convert(
@@ -2980,9 +2740,6 @@ mod tests {
             Some("https://$host$request_uri")
         );
 
-        // O "if" ganha uma nota explicando a simplificação (não é "não migrado" — foi
-        // convertido, só que de um jeito diferente do texto original). O "return 404" de
-        // reserva nem chega a ser reportado: foi absorvido pelo redirect incondicional.
         assert!(r
             .report
             .notes
@@ -2995,8 +2752,6 @@ mod tests {
             .any(|n| n.directive == "return" && n.level == NoteLevel::Unsupported));
     }
 
-    /// Um `if` que não é exatamente o idioma do Certbot continua reportado como não
-    /// migrado — nada de tentar adivinhar condições genéricas.
     #[test]
     fn an_if_that_does_not_match_the_certbot_idiom_stays_unsupported() {
         let r = convert(
@@ -3010,8 +2765,6 @@ mod tests {
         );
         assert!(r.report.notes.iter().any(|n| n.directive == "if"));
     }
-
-    // -- access_log / expires -------------------------------------------------
 
     #[test]
     fn access_log_off_in_a_location_disables_the_route_log() {
@@ -3106,8 +2859,6 @@ mod tests {
 
     #[test]
     fn expires_merges_into_an_add_header_with_no_duration_of_its_own() {
-        // Ordem no arquivo original não deve importar: expires antes ou depois do
-        // add_header chega ao mesmo resultado.
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -3148,8 +2899,6 @@ mod tests {
             .iter()
             .any(|n| n.directive == "expires" && n.level == NoteLevel::Partial));
     }
-
-    // -- http2 / TLS ------------------------------------------------------------
 
     #[test]
     fn bare_http2_directive_is_converted_not_unsupported() {
@@ -3230,8 +2979,6 @@ mod tests {
         assert!(!note.reason.contains("próxima fase"));
         assert!(note.reason.contains("definitiva"));
     }
-
-    // -- proxy_cache -------------------------------------------------------------
 
     #[test]
     fn proxy_cache_enables_route_cache_with_the_declared_duration() {
@@ -3337,9 +3084,6 @@ mod tests {
             .any(|n| n.directive == "proxy_cache_path" && n.level == NoteLevel::Converted));
     }
 
-    /// O bug real reportado: `proxy_cache_bypass` numa location que não repete
-    /// `proxy_cache` (porque a zona já foi ligada lá no `server`) precisa continuar
-    /// cacheando, herdando do nível acima — como o nginx real faz.
     #[test]
     fn proxy_cache_at_server_level_is_inherited_by_a_location_with_only_bypass() {
         let r = convert(
@@ -3393,9 +3137,6 @@ mod tests {
         }
     }
 
-    /// Uma location que redefine o bypass não pode vazar essa lista para a próxima
-    /// location irmã, que nunca pediu isso — cada location reparte do que o server
-    /// deixou, não do que a location anterior deixou.
     #[test]
     fn one_location_bypass_override_does_not_leak_into_the_next_sibling() {
         let r = convert(

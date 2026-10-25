@@ -1,11 +1,3 @@
-//! Controle de tráfego: limite de taxa, limite de conexões simultâneas e controle de
-//! acesso.
-//!
-//! O limitador de taxa reproduz o balde furado do `limit_req` do nginx, incluindo os três
-//! comportamentos de rajada (`nodelay`, fila e `delay=N`) — antes existia apenas o
-//! equivalente a `nodelay`. O mapa de baldes também passou a ser varrido: como nunca
-//! removia entradas, uma varredura de IPs distintos consumia memória sem teto.
-
 use axum::http::HeaderMap;
 use base64::prelude::*;
 use std::collections::HashMap;
@@ -17,24 +9,18 @@ use std::time::{Duration, Instant};
 use crate::config::{BasicAuthConfig, LimitConnConfig, RateLimitConfig, RateLimitMode};
 use crate::net::cidr::IpMatcher;
 
-/// Tempo de ociosidade após o qual um balde zerado pode ser descartado.
 const BUCKET_IDLE_TTL: Duration = Duration::from_secs(300);
 
-/// O que fazer com uma requisição diante do limite de taxa.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RateLimitDecision {
-    /// Segue adiante imediatamente.
     Allow,
-    /// Segue adiante depois de esperar — é o enfileiramento do nginx, que suaviza a
-    /// rajada em vez de puni-la.
+
     Delay(Duration),
     Reject,
 }
 
-/// Estado por chave: quantas requisições estão "na fila" do balde.
 #[derive(Debug)]
 struct Bucket {
-    /// Excesso acumulado, em requisições. Escoa à taxa configurada.
     excess: f64,
     last_update: Instant,
 }
@@ -56,14 +42,9 @@ impl RateLimiter {
         }
     }
 
-    /// Avalia uma requisição contra o limite.
-    ///
-    /// A chave costuma ser o IP do cliente, mas fica a critério de quem chama — o que
-    /// permite limitar por rota sem que uma rota consuma a cota da outra.
     pub fn check(&self, key: &str, config: &RateLimitConfig) -> RateLimitDecision {
         let rate = config.requests_per_second as f64;
         if rate <= 0.0 {
-            // Taxa zero seria divisão por zero adiante; a validação já recusa isso.
             return RateLimitDecision::Reject;
         }
         let burst = config.burst as f64;
@@ -71,7 +52,7 @@ impl RateLimiter {
 
         let mut map = match self.buckets.write() {
             Ok(m) => m,
-            // Um lock envenenado não deve derrubar o tráfego: deixa passar e segue.
+
             Err(_) => return RateLimitDecision::Allow,
         };
 
@@ -80,23 +61,18 @@ impl RateLimiter {
             last_update: now,
         });
 
-        // Escoa o que passou desde a última requisição e contabiliza a atual.
         let elapsed = now.duration_since(bucket.last_update).as_secs_f64();
         let drained = (bucket.excess - rate * elapsed).max(0.0);
         let excess = drained + 1.0;
         bucket.last_update = now;
 
-        // O excesso já inclui a requisição atual; passar do burst significa que havia
-        // mais de `burst` esperando antes dela.
         if excess - 1.0 > burst {
-            // A recusa não acumula excesso: o cliente recusado não é punido duas vezes.
             bucket.excess = drained;
             return RateLimitDecision::Reject;
         }
 
         bucket.excess = excess;
 
-        // Quantas requisições da rajada passam sem espera.
         let free = match config.mode {
             RateLimitMode::NoDelay => burst,
             RateLimitMode::Queue => 0.0,
@@ -111,10 +87,6 @@ impl RateLimiter {
         }
     }
 
-    /// Descarta baldes já escoados e sem uso recente.
-    ///
-    /// Sem isto o mapa cresce com cada IP distinto que aparece — uma varredura de portas
-    /// bastava para consumir a memória do processo.
     pub fn sweep(&self) {
         let now = crate::clock::now();
         if let Ok(mut map) = self.buckets.write() {
@@ -130,14 +102,11 @@ impl RateLimiter {
     }
 }
 
-/// Contagem de requisições simultâneas por chave, espelhando `limit_conn`.
 #[derive(Default)]
 pub struct ConnLimiter {
     counters: RwLock<HashMap<String, Arc<AtomicI64>>>,
 }
 
-/// Mantém a conexão contabilizada enquanto viver, e devolve a vaga ao ser destruído —
-/// inclusive quando a requisição termina em erro ou é cancelada.
 pub struct ConnGuard {
     counter: Arc<AtomicI64>,
 }
@@ -168,7 +137,6 @@ impl ConnLimiter {
             .clone()
     }
 
-    /// Tenta ocupar uma vaga. `None` significa que o limite já está no teto.
     pub fn acquire(&self, key: &str, config: &LimitConnConfig) -> Option<ConnGuard> {
         let counter = self.counter_for(key);
         let previous = counter.fetch_add(1, Ordering::AcqRel);
@@ -179,7 +147,6 @@ impl ConnLimiter {
         Some(ConnGuard { counter })
     }
 
-    /// Descarta contadores zerados. Chaves em uso são preservadas.
     pub fn sweep(&self) {
         if let Ok(mut map) = self.counters.write() {
             map.retain(|_, c| c.load(Ordering::Relaxed) > 0);
@@ -187,25 +154,18 @@ impl ConnLimiter {
     }
 }
 
-/// Resultado da avaliação conjunta de ACL e autenticação.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessDecision {
     Allow,
-    /// Reprovado no ACL de IP.
+
     Forbidden,
-    /// Falta autenticação ou ela está incorreta.
+
     Unauthorized,
 }
 
 pub struct AccessControl;
 
 impl AccessControl {
-    /// Avalia o ACL de IP com a semântica do nginx: `deny` é considerado primeiro, e uma
-    /// lista `allow` não-vazia passa a exigir correspondência.
-    ///
-    /// As listas chegam já compiladas, porque interpretar CIDR a cada requisição seria
-    /// desperdício — e porque a comparação por string que existia aqui nunca casava um
-    /// bloco como `172.31.0.0/16`.
     pub fn is_ip_allowed(client_ip: IpAddr, allowed: &IpMatcher, denied: &IpMatcher) -> bool {
         if denied.matches(client_ip) {
             return false;
@@ -238,10 +198,6 @@ impl AccessControl {
         user == auth.username && pass == auth.password
     }
 
-    /// Combina ACL e autenticação segundo `satisfy`.
-    ///
-    /// Com `All` os dois precisam passar; com `Any` basta um. O código anterior encadeava
-    /// as checagens em `else if`, o que equivalia a `All` sem oferecer o `Any`.
     pub fn evaluate(
         satisfy: crate::config::Satisfy,
         ip_ok: bool,
@@ -251,7 +207,6 @@ impl AccessControl {
         use crate::config::Satisfy;
 
         let Some(auth) = basic_auth else {
-            // Sem autenticação configurada, só o ACL decide — em qualquer modo.
             return if ip_ok {
                 AccessDecision::Allow
             } else {
@@ -275,7 +230,6 @@ impl AccessControl {
                 if ip_ok || auth_ok {
                     AccessDecision::Allow
                 } else {
-                    // Recusado nos dois; pedir credencial é a resposta mais útil.
                     AccessDecision::Unauthorized
                 }
             }
@@ -304,8 +258,6 @@ mod tests {
         IpAddr::from_str(s).unwrap()
     }
 
-    // -- Limite de taxa ------------------------------------------------------
-
     #[test]
     fn first_request_always_passes() {
         let rl = RateLimiter::new();
@@ -327,7 +279,7 @@ mod tests {
     fn burst_allows_a_batch_through_in_nodelay_mode() {
         let rl = RateLimiter::new();
         let cfg = limit(5, 3, RateLimitMode::NoDelay);
-        // A primeira mais as três da rajada passam sem espera.
+
         for i in 0..4 {
             assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow, "req {}", i);
         }
@@ -339,7 +291,7 @@ mod tests {
         let rl = RateLimiter::new();
         let cfg = limit(5, 3, RateLimitMode::Queue);
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
-        // No modo fila o excedente espera em vez de passar direto.
+
         match rl.check("a", &cfg) {
             RateLimitDecision::Delay(d) => assert!(d > Duration::ZERO),
             other => panic!("esperava espera, veio {:?}", other),
@@ -352,7 +304,6 @@ mod tests {
         let mut cfg = limit(5, 10, RateLimitMode::Delay);
         cfg.delay = Some(2);
 
-        // A primeira, mais as duas isentas.
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
@@ -377,15 +328,12 @@ mod tests {
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Reject);
 
-        // A 100 r/s, 20 ms devolvem duas vagas.
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
     }
 
     #[test]
     fn rejection_does_not_deepen_the_queue() {
-        // Um cliente recusado não deve acumular dívida a cada tentativa; caso contrário
-        // insistir aumentaria o tempo de bloqueio indefinidamente.
         let rl = RateLimiter::new();
         let cfg = limit(100, 0, RateLimitMode::NoDelay);
         assert_eq!(rl.check("a", &cfg), RateLimitDecision::Allow);
@@ -414,12 +362,9 @@ mod tests {
         }
         assert_eq!(rl.len(), 100);
 
-        // Recém-usados sobrevivem à varredura, o que é o comportamento desejado.
         rl.sweep();
         assert_eq!(rl.len(), 100);
     }
-
-    // -- Limite de conexões --------------------------------------------------
 
     #[test]
     fn conn_limiter_blocks_above_the_ceiling() {
@@ -468,15 +413,12 @@ mod tests {
         assert_eq!(cl.counters.read().unwrap().len(), 1);
     }
 
-    // -- Controle de acesso --------------------------------------------------
-
     fn matcher(entries: &[&str]) -> IpMatcher {
         IpMatcher::compile(&entries.iter().map(|s| s.to_string()).collect::<Vec<_>>()).0
     }
 
     #[test]
     fn cidr_deny_now_actually_blocks() {
-        // O caso que a comparação por string deixava passar silenciosamente.
         let denied = matcher(&["172.31.0.0/16"]);
         let allowed = matcher(&[]);
         assert!(!AccessControl::is_ip_allowed(
@@ -594,17 +536,16 @@ mod tests {
             password: "p".into(),
         };
 
-        // Só a rede interna basta.
         assert_eq!(
             AccessControl::evaluate(Satisfy::Any, true, Some(&cfg), &HeaderMap::new()),
             AccessDecision::Allow
         );
-        // Só a senha basta.
+
         assert_eq!(
             AccessControl::evaluate(Satisfy::Any, false, Some(&cfg), &auth_header("u", "p")),
             AccessDecision::Allow
         );
-        // Nenhum dos dois.
+
         assert_eq!(
             AccessControl::evaluate(Satisfy::Any, false, Some(&cfg), &HeaderMap::new()),
             AccessDecision::Unauthorized

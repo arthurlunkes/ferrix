@@ -8,9 +8,8 @@ use crate::config::{LoadBalanceAlgorithm, UpstreamConfig, UpstreamTarget};
 use crate::health::HealthChecker;
 
 pub struct UpstreamPoolManager {
-    /// Posição do rodízio por pool.
     rr_indices: RwLock<HashMap<String, AtomicUsize>>,
-    /// Conexões em curso por servidor, base do `least_conn` e do `max_conns`.
+
     active_connections: RwLock<HashMap<String, Arc<AtomicI64>>>,
     health_checker: Arc<HealthChecker>,
 }
@@ -54,7 +53,6 @@ impl UpstreamPoolManager {
             .load(Ordering::Relaxed)
     }
 
-    /// Um servidor só entra na rotação se estiver saudável e abaixo do seu `max_conns`.
     fn is_available(&self, target: &UpstreamTarget) -> bool {
         if !self.health_checker.is_healthy(&target.url) {
             return false;
@@ -65,13 +63,6 @@ impl UpstreamPoolManager {
         }
     }
 
-    /// Monta a lista ordenada de candidatos: o primeiro é para onde a requisição vai, e
-    /// os seguintes são o caminho do failover.
-    ///
-    /// A ordem segue o nginx: servidores `down` ficam de fora; os `backup` só entram
-    /// quando nenhum servidor comum está disponível; e se nada estiver saudável, o pool
-    /// inteiro é tentado assim mesmo, para não transformar uma janela de health check
-    /// ruim em indisponibilidade total.
     pub fn select_targets(
         &self,
         upstream: &UpstreamConfig,
@@ -96,8 +87,7 @@ impl UpstreamPoolManager {
 
         if !primary.is_empty() {
             let mut ordered = self.order_by_algorithm(upstream, primary, client_ip);
-            // Os backups ficam no fim: só são alcançados se todos os comuns falharem
-            // durante esta requisição.
+
             ordered.extend(backups);
             return ordered;
         }
@@ -106,8 +96,6 @@ impl UpstreamPoolManager {
             return self.order_by_algorithm(upstream, backups, client_ip);
         }
 
-        // Último recurso: ninguém passou no filtro de saúde ou de capacidade. Tentar
-        // mesmo assim é melhor que devolver 502 sem sequer bater na porta.
         let fallback: Vec<UpstreamTarget> = live.iter().map(|t| (*t).clone()).collect();
         self.order_by_algorithm(upstream, fallback, client_ip)
     }
@@ -116,8 +104,7 @@ impl UpstreamPoolManager {
         if len == 0 {
             return 0;
         }
-        // Caminho comum: o pool já tem contador, e um lock de leitura basta para o
-        // `fetch_add`. O de escrita só entra na primeira requisição de cada pool.
+
         if let Ok(map) = self.rr_indices.read() {
             if let Some(counter) = map.get(pool_name) {
                 return counter.fetch_add(1, Ordering::Relaxed) % len;
@@ -194,7 +181,6 @@ impl UpstreamPoolManager {
     }
 }
 
-/// Gira a lista para que `start` fique na frente, preservando a ordem cíclica dos demais.
 fn rotate(pool: Vec<UpstreamTarget>, start: usize) -> Vec<UpstreamTarget> {
     let len = pool.len();
     (0..len).map(|i| pool[(start + i) % len].clone()).collect()
@@ -318,7 +304,6 @@ mod tests {
 
     #[test]
     fn saturated_pool_still_gets_tried_as_a_last_resort() {
-        // Devolver 502 sem tentar seria pior que exceder o teto por uma requisição.
         let m = manager();
         let mut limitado = target("unico");
         limitado.max_conns = Some(1);
@@ -382,7 +367,7 @@ mod tests {
                 pesado_count += 1;
             }
         }
-        // Proporção 3:1 — a margem é folgada de propósito, o teste é sobre a tendência.
+
         assert!(
             pesado_count > 22,
             "esperava predominância do peso 3, veio {}",

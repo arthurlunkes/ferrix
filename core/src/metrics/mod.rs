@@ -8,9 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
 
-/// Janela de amostras de latência usada para avg/p95/p99 (potência de 2: índice via máscara).
 const LATENCY_WINDOW: usize = 1024;
-/// Linhas mantidas no buffer de logs recentes (mesmo teto de antes).
+
 const LOG_CAPACITY: usize = 500;
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,16 +28,6 @@ pub struct MetricsSnapshot {
     pub p99_latency_ms: f64,
 }
 
-/// Coletor de métricas sem lock global no caminho quente.
-///
-/// Antes, toda requisição pegava três `RwLock::write()` compartilhados por todos os
-/// cores (RPS, latências e logs) — sob carga, as threads do Tokio serializavam nesses
-/// locks e o p99 explodia. Agora:
-/// - contadores e RPS: só atômicos;
-/// - latências: ring buffer de `AtomicU64` (bits do f64), escrita = 1 `fetch_add` + 1 `store`;
-/// - logs recentes: ring buffer de slots com `Mutex` **por slot** — duas requisições só
-///   disputam o mesmo lock se caírem no mesmo slot, o que exige dar a volta no buffer.
-/// - SSE: o `RequestLog` só é clonado se houver alguém ouvindo.
 pub struct MetricsCollector {
     start_time: Instant,
     start_utc: DateTime<Utc>,
@@ -50,16 +39,13 @@ pub struct MetricsCollector {
     status_5xx: AtomicU64,
     total_bytes_sent: AtomicU64,
 
-    // RPS: segundo corrente, contagem nele, e RPS fechado do segundo anterior (bits f64).
     rps_sec: AtomicU64,
     rps_count: AtomicU64,
     rps_last: AtomicU64,
 
-    // Latências: ring buffer lock-free.
     latencies: Box<[AtomicU64]>,
     latency_head: AtomicUsize,
 
-    // Logs recentes: ring buffer com lock por slot.
     log_slots: Box<[Mutex<Option<RequestLog>>]>,
     log_head: AtomicUsize,
 
@@ -67,8 +53,6 @@ pub struct MetricsCollector {
 }
 
 impl MetricsCollector {
-    /// `_capacity` mantido por compatibilidade de assinatura; o teto é `LOG_CAPACITY`,
-    /// como já era na prática.
     pub fn new(_capacity: usize) -> Arc<Self> {
         let (log_sender, _) = broadcast::channel(512);
         Arc::new(Self {
@@ -100,13 +84,10 @@ impl MetricsCollector {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
-    /// Contabiliza bytes efetivamente entregues ao cliente, chunk a chunk.
     pub fn add_bytes_sent(&self, bytes: u64) {
         self.total_bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// `log_line: false` (rota com `access_log: false`) continua contando nos agregados;
-    /// só não aparece no buffer de logs nem no stream ao vivo — como `access_log off`.
     pub fn record_request(&self, log: RequestLog, log_line: bool) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
 
@@ -123,7 +104,6 @@ impl MetricsCollector {
 
         self.tick_rps();
 
-        // Latência: reserva um índice e grava. Sem lock.
         let i = self.latency_head.fetch_add(1, Ordering::Relaxed) % LATENCY_WINDOW;
         self.latencies[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
 
@@ -131,7 +111,6 @@ impl MetricsCollector {
             return;
         }
 
-        // Só clona se houver ouvinte SSE.
         if self.log_sender.receiver_count() > 0 {
             let _ = self.log_sender.send(log.clone());
         }
@@ -142,9 +121,6 @@ impl MetricsCollector {
         }
     }
 
-    /// RPS sem lock. Quem vê o segundo virar ganha o CAS e fecha o anterior; os demais
-    /// só incrementam. Na virada pode perder/atribuir 1–2 req ao segundo vizinho —
-    /// irrelevante para um indicador de painel.
     fn tick_rps(&self) {
         let now = crate::clock::unix_secs();
         let cur = self.rps_sec.load(Ordering::Relaxed);
@@ -180,7 +156,7 @@ impl MetricsCollector {
         let q_lower = query.filter(|q| !q.is_empty()).map(|q| q.to_lowercase());
 
         let mut out = Vec::with_capacity(limit.min(filled));
-        // Do mais recente para o mais antigo.
+
         for k in 1..=filled {
             if out.len() >= limit {
                 break;
@@ -218,7 +194,6 @@ impl MetricsCollector {
         let uptime = self.start_time.elapsed().as_secs();
         let rps = f64::from_bits(self.rps_last.load(Ordering::Relaxed));
 
-        // Cópia da janela (fora do caminho quente) e ordenação local.
         let filled = self
             .latency_head
             .load(Ordering::Relaxed)
@@ -281,9 +256,6 @@ mod tests {
         }
     }
 
-    /// `access_log: false` numa rota vira `log_line: false` aqui — a requisição some do
-    /// buffer de logs recentes, mas continua contando nos totais agregados. É o mesmo
-    /// corte que `access_log off` faz no nginx: `stub_status` não para de contar.
     #[test]
     fn log_line_false_still_counts_aggregate_metrics() {
         let m = MetricsCollector::new(100);

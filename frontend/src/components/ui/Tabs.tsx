@@ -4,7 +4,7 @@ export interface TabItem {
   id: string;
   label: string;
   icon?: React.ReactNode;
-  /** Um ponto de aviso no canto da aba — usado para sinalizar campo com erro sem abrir a aba. */
+
   badge?: React.ReactNode;
 }
 
@@ -14,8 +14,6 @@ interface TabsProps {
   onChange: (id: string) => void;
 }
 
-/** Navegação por abas dentro de um modal — usada para separar Geral/Rotas/Headers/
- * Segurança/Limites no formulário de Virtual Host, que crescido demais para uma coluna só. */
 export const Tabs: React.FC<TabsProps> = ({ tabs, active, onChange }) => (
   <div className="flex items-center gap-1 border-b border-border-subtle overflow-x-auto -mx-1 px-1">
     {tabs.map((tab) => {
@@ -39,3 +37,4 @@ export const Tabs: React.FC<TabsProps> = ({ tabs, active, onChange }) => (
     })}
   </div>
 );
+

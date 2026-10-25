@@ -21,10 +21,9 @@ pub struct TargetHealthStatus {
 #[derive(Clone)]
 pub struct HealthChecker {
     statuses: Arc<RwLock<HashMap<String, TargetHealthStatus>>>,
-    /// Cliente que valida o certificado do backend.
+
     http_client: reqwest::Client,
-    /// Cliente para pools com `verify_tls: false`. Sem ele, um pool que aceita
-    /// certificado próprio seria marcado como fora do ar pelo próprio health check.
+
     http_client_insecure: reqwest::Client,
 }
 
@@ -36,7 +35,6 @@ impl Default for HealthChecker {
 
 impl HealthChecker {
     pub fn new() -> Self {
-        // O timeout fica por requisição, vindo do `timeout_secs` de cada health check.
         let build = |insecure: bool| {
             reqwest::Client::builder()
                 .danger_accept_invalid_certs(insecure)
@@ -57,7 +55,7 @@ impl HealthChecker {
                 return st.healthy;
             }
         }
-        // If not checked yet or no health check configured, assume healthy
+
         true
     }
 
@@ -86,9 +84,6 @@ impl HealthChecker {
     }
 
     pub fn mark_success(&self, upstream_name: &str, target_url: &str, latency_ms: f64) {
-        // Caminho comum: servidor já saudável e atualizado há menos de um segundo. Nada a
-        // mudar além da latência exibida no painel, que pode esperar a próxima janela —
-        // e assim cada requisição não disputa o lock de escrita global do mapa.
         if let Ok(map) = self.statuses.read() {
             if let Some(st) = map.get(target_url) {
                 let recent = st.last_checked.is_some_and(|t| {
@@ -132,8 +127,7 @@ impl HealthChecker {
     pub fn start_background_checker(self: Arc<Self>, store: Arc<ConfigStore>) {
         tokio::spawn(async move {
             info!("Health check worker started");
-            // Quando cada alvo foi verificado pela última vez, para respeitar o
-            // `interval_secs` de cada upstream em vez de um intervalo único global.
+
             let mut last_check: HashMap<String, Instant> = HashMap::new();
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
 
@@ -147,7 +141,6 @@ impl HealthChecker {
                         let interval = Duration::from_secs(hc.interval_secs.max(1));
 
                         for target in &upstream_cfg.targets {
-                            // Um alvo retirado da rotação não precisa ser sondado.
                             if target.down {
                                 continue;
                             }

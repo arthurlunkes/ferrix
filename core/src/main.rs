@@ -26,67 +26,57 @@ use proxy::ProxyEngine;
 #[command(
     name = "ferrix",
     version,
-    about = "⚡ Ferrix: Standalone Reverse Proxy & Web Server de alta performance em Rust (estilo Nginx)",
-    after_help = "💡 Exemplos de uso:\n  ferrix --help            Exibe todos os comandos e opções detalhadas\n  ferrix run               Inicia o servidor no terminal atual (foreground)\n  ferrix start             Inicia o servidor em segundo plano (daemon)\n  ferrix stop              Para o servidor em segundo plano\n  ferrix restart           Reinicia o servidor em segundo plano\n  ferrix reload            Recarrega o arquivo de configuração\n  ferrix status            Verifica se o servidor está em execução\n  ferrix -t                Testa a sintaxe do arquivo de configuração\n"
+    about = "⚡ Ferrix: High-performance standalone reverse proxy & web server in Rust (Nginx-inspired)",
+    after_help = "💡 Usage examples:\n  ferrix --help            Show all commands and detailed options\n  ferrix run               Start the server in foreground\n  ferrix start             Start the server in background (daemon)\n  ferrix stop              Stop the background server\n  ferrix restart           Restart the background server\n  ferrix reload            Reload configuration without dropping active connections\n  ferrix status            Check if the server is running\n  ferrix -t                Test configuration file syntax\n"
 )]
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Caminho do arquivo de configuração JSON
     #[arg(short, long, default_value = "ferrix.json", global = true)]
     config: PathBuf,
 
-    /// Sobrescreve o endereço de escuta da API de administração
     #[arg(long, global = true)]
     admin_listen: Option<String>,
 
-    /// Sobrescreve o endereço de escuta do proxy HTTP
     #[arg(long, global = true)]
     http_listen: Option<String>,
 
-    /// Testa a sintaxe do arquivo de configuração e sai (estilo nginx -t)
     #[arg(short = 't', long, global = true)]
     test: bool,
 
-    /// Sinal de controle para o processo em execução (stop, reload, restart, status)
     #[arg(short = 's', long, value_name = "SIGNAL")]
     signal: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
 enum Commands {
-    /// Inicia o servidor no terminal atual (foreground)
     Run,
-    /// Inicia o servidor em segundo plano (background daemon)
+
     Start,
-    /// Para o servidor em execução em segundo plano
+
     Stop,
-    /// Reinicia o servidor em segundo plano
+
     Restart,
-    /// Recarrega as configurações do servidor sem reiniciar o processo
+
     Reload,
-    /// Exibe o status atual do servidor Ferrix
+
     Status,
-    /// Testa a sintaxe e integridade do arquivo de configuração (atalho: ferrix -t)
+
     Test,
-    /// Converte um nginx.conf existente para o formato do Ferrix
+
     Import {
-        /// Caminho do nginx.conf a importar (segue os `include` que existirem)
         #[arg(long)]
         from: PathBuf,
-        /// Onde gravar o JSON convertido. Sem isto, o resultado só é impresso na tela.
+
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Onde gravar o relatório de migração em Markdown, além do resumo no terminal.
+
         #[arg(long)]
         report: Option<PathBuf>,
     },
 }
 
-/// Cada listener de porta tem seu próprio `Router`, mas todos compartilham o mesmo
-/// `ProxyEngine` — o pool de upstreams, o limitador de taxa e o cache de clientes HTTP
-/// são únicos para o processo inteiro, não duplicados por porta.
 #[derive(Clone)]
 struct ProxyListenerState {
     engine: Arc<ProxyEngine>,
@@ -116,18 +106,6 @@ fn proxy_router(engine: Arc<ProxyEngine>, listen_port: u16, is_tls: bool) -> Rou
         })
 }
 
-/// Sobe `workers` threads servindo a mesma porta.
-///
-/// No Linux (e demais Unix), o modelo é *thread-per-core*, como os workers do nginx: cada
-/// thread roda seu próprio runtime de thread única e seu próprio socket na mesma porta
-/// (`SO_REUSEPORT`), e o kernel distribui as conexões entre eles. Uma requisição de proxy —
-/// conexão do cliente, conexão com o upstream e tudo no meio — fica inteira numa thread
-/// só. No runtime compartilhado com work-stealing, essas tarefas pulavam de thread em
-/// thread e cada passagem custava um despertar entre threads; no benchmark de proxy, isso
-/// era a maior diferença para o nginx.
-///
-/// `serve` recebe o socket já em escuta e roda dentro do runtime do worker. As threads
-/// morrem junto com o processo; não há handle a abortar.
 #[cfg(unix)]
 fn spawn_workers<F, Fut>(addr: SocketAddr, workers: usize, serve: F)
 where
@@ -145,7 +123,7 @@ where
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        error!("Worker {} não conseguiu criar o runtime: {}", worker, e);
+                        error!("Worker {} failed to create runtime: {}", worker, e);
                         return;
                     }
                 };
@@ -155,12 +133,11 @@ where
                 }
             });
         if let Err(e) = spawned {
-            error!("Falha ao iniciar o worker {} de {}: {}", worker, addr, e);
+            error!("Failed to start worker {} of {}: {}", worker, addr, e);
         }
     }
 }
 
-/// Socket de escuta com `SO_REUSEPORT`, para vários workers dividirem a mesma porta.
 #[cfg(unix)]
 fn bind_reuseport(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
@@ -173,7 +150,6 @@ fn bind_reuseport(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     Ok(socket.into())
 }
 
-/// Sobe um listener HTTP simples numa porta, com a mesma lógica de proxy de sempre.
 #[cfg(unix)]
 fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usize) {
     info!(
@@ -195,7 +171,6 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usi
     });
 }
 
-/// Fora do Unix não há `SO_REUSEPORT`: um único listener no runtime compartilhado.
 #[cfg(not(unix))]
 fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, _workers: usize) {
     let app = proxy_router(engine, addr.port(), false);
@@ -213,11 +188,6 @@ fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, _workers: us
     });
 }
 
-/// Sobe um listener HTTPS: mesma lógica de proxy de `spawn_plain_listener`, só que a
-/// conexão TCP passa primeiro pelo handshake TLS. Um certificado ilegível não derruba o
-/// processo: esta porta não sobe e as demais seguem normalmente.
-///
-/// O certificado é lido uma vez, aqui; os workers compartilham a mesma configuração TLS.
 fn spawn_tls_listener(
     addr: SocketAddr,
     engine: Arc<ProxyEngine>,
@@ -225,18 +195,19 @@ fn spawn_tls_listener(
     workers: usize,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let tls_config = match RustlsConfig::from_pem_file(&source.cert_path, &source.key_path).await {
-            Ok(c) => c,
-            Err(e) => {
-                return error!(
-                    "Falha ao carregar o certificado TLS de '{}' (cert: {}, key: {}) para a porta {}: {}. \
-                     Esta porta não vai subir; as demais continuam normalmente.",
+        let tls_config =
+            match RustlsConfig::from_pem_file(&source.cert_path, &source.key_path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    return error!(
+                    "Failed to load TLS certificate for '{}' (cert: {}, key: {}) on port {}: {}. \
+                     This port will not start; other ports continue normally.",
                     source.vhost_name, source.cert_path, source.key_path, addr.port(), e
                 )
-            }
-        };
+                }
+            };
         info!(
-            "Reverse Proxy Traffic listening on https://{} (certificado de '{}', {} workers)",
+            "Reverse Proxy Traffic listening on https://{} (certificate for '{}', {} workers)",
             addr, source.vhost_name, workers
         );
         serve_tls(addr, engine, tls_config, workers);
@@ -281,20 +252,14 @@ fn serve_tls(
 }
 
 fn main() -> ExitCode {
-    // O runtime é montado à mão para respeitar `http.worker_threads`. Com `#[tokio::main]`
-    // o número de threads era sempre o de núcleos da máquina e o campo da configuração
-    // não tinha efeito nenhum.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(configured_worker_threads())
         .enable_all()
         .build()
-        .expect("falha ao criar o runtime do Tokio");
+        .expect("failed to create Tokio runtime");
     runtime.block_on(async_main())
 }
 
-/// Lê só `http.worker_threads` do arquivo de configuração, antes de o runtime existir.
-/// Qualquer problema (arquivo ausente, JSON inválido) cai no padrão — a validação de
-/// verdade acontece depois, em `run_server`, com mensagens de erro decentes.
 fn configured_worker_threads() -> usize {
     let default = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -312,17 +277,10 @@ fn configured_worker_threads() -> usize {
 }
 
 async fn async_main() -> ExitCode {
-    // O rustls precisa de exatamente um provedor de criptografia escolhido — e como
-    // `reqwest` (cliente, para os upstreams) e `axum-server` (aqui, para os listeners
-    // HTTPS) trazem `ring` e `aws-lc-rs` juntos no grafo de dependências, ele não
-    // consegue decidir sozinho e entra em pânico na primeira conexão TLS sem isto. Só
-    // importa que seja instalado uma vez, antes de qualquer TLS — `ring` evita depender
-    // de cmake para compilar em máquinas que não o têm.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let raw_args: Vec<String> = std::env::args().collect();
 
-    // Se o usuário chamou apenas `ferrix` sem argumentos:
     if raw_args.len() == 1 {
         print_welcome_guide();
         return ExitCode::SUCCESS;
@@ -372,7 +330,7 @@ async fn async_main() -> ExitCode {
         Some(Commands::Start) => match handle_start(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("Erro ao iniciar Ferrix: {}", e);
+                eprintln!("Error starting Ferrix: {}", e);
                 ExitCode::FAILURE
             }
         },
@@ -386,7 +344,7 @@ async fn async_main() -> ExitCode {
         Some(Commands::Restart) => match handle_restart(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("Erro ao reiniciar Ferrix: {}", e);
+                eprintln!("Error restarting Ferrix: {}", e);
                 ExitCode::FAILURE
             }
         },
@@ -428,29 +386,29 @@ fn print_welcome_guide() {
     println!(
         r#"⚡ Ferrix v{} — High-Performance Standalone Reverse Proxy & Web Server
 
-Uso: ferrix [COMANDO] [OPÇÕES]
+Usage: ferrix [COMMAND] [OPTIONS]
 
-Comandos principais:
-  run       Inicia o servidor no terminal atual (foreground)
-  start     Inicia o servidor em segundo plano (background/daemon)
-  stop      Para o servidor em segundo plano
-  restart   Reinicia o servidor em segundo plano
-  reload    Recarrega as configurações sem derrubar conexões ativas
-  status    Verifica se o servidor está em execução
-  test      Testa a sintaxe do arquivo de configuração (atalho: ferrix -t)
+Main commands:
+  run       Start the server in foreground
+  start     Start the server in background (daemon)
+  stop      Stop the background server
+  restart   Restart the background server
+  reload    Reload configuration without dropping active connections
+  status    Check if the server is currently running
+  test      Test configuration file syntax (shortcut: ferrix -t)
 
-Opções globais:
-  -c, --config <ARQUIVO>   Caminho do arquivo de configuração [padrão: ferrix.json]
-  -t, --test               Testa a sintaxe do arquivo de configuração e sai
-  -s, --signal <SINAL>     Envia sinal ao Ferrix (stop, reload, restart, status)
-  -h, --help               Exibe todas as opções detalhadas de ajuda
-  -V, --version            Exibe a versão instalada do Ferrix
+Global options:
+  -c, --config <FILE>      Configuration file path [default: ferrix.json]
+  -t, --test               Test configuration file syntax and exit
+  -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
+  -h, --help               Display all detailed help options
+  -V, --version            Display installed Ferrix version
 
-💡 Dicas rápidas:
-  • Para ver todas as opções disponíveis:  ferrix --help
-  • Para testar a sintaxe da sua config:   ferrix -t
-  • Para iniciar agora neste terminal:    ferrix run
-  • Para iniciar em segundo plano:        ferrix start
+💡 Quick tips:
+  • To see all available options:      ferrix --help
+  • To test your config syntax:       ferrix -t
+  • To start in foreground:           ferrix run
+  • To start in background:           ferrix start
 "#,
         env!("CARGO_PKG_VERSION")
     );
@@ -490,7 +448,7 @@ fn is_pid_alive(pid: u32) -> bool {
 fn run_test(config_path: &Path) -> Result<(), String> {
     let config_path_str = config_path.to_string_lossy().to_string();
     let config = FerrixConfig::load(config_path)
-        .map_err(|e| format!("ferrix: falha ao carregar {}:\n  {}", config_path_str, e))?;
+        .map_err(|e| format!("ferrix: failed to load {}:\n  {}", config_path_str, e))?;
 
     let report = validate(&config);
     for issue in report.warnings() {
@@ -520,27 +478,18 @@ fn run_test(config_path: &Path) -> Result<(), String> {
     }
 }
 
-/// `ferrix import --from nginx.conf --out ferrix.json --report report.md`
-///
-/// Não sobrescreve nada por conta própria: sem `--out`, o JSON só é impresso; sem
-/// `--report`, só o resumo aparece no terminal. Quem decide aplicar a configuração
-/// resultante é sempre uma ação explícita depois de olhar o relatório.
 fn run_import(from: &Path, out: Option<&Path>, report_path: Option<&Path>) -> Result<(), String> {
     let result = ferrix::nginx::convert::import_file(from)
-        .map_err(|e| format!("ferrix: falha ao importar {}:\n  {}", from.display(), e))?;
+        .map_err(|e| format!("ferrix: failed to import {}:\n  {}", from.display(), e))?;
 
-    let json = serde_json::to_string_pretty(&result.config).map_err(|e| {
-        format!(
-            "ferrix: falha ao serializar a configuração convertida: {}",
-            e
-        )
-    })?;
+    let json = serde_json::to_string_pretty(&result.config)
+        .map_err(|e| format!("ferrix: failed to serialize converted configuration: {}", e))?;
 
     match out {
         Some(path) => {
             std::fs::write(path, &json)
-                .map_err(|e| format!("ferrix: falha ao gravar {}: {}", path.display(), e))?;
-            println!("✔ Configuração convertida gravada em {}", path.display());
+                .map_err(|e| format!("ferrix: failed to write {}: {}", path.display(), e))?;
+            println!("✔ Converted configuration written to {}", path.display());
         }
         None => {
             println!("{}", json);
@@ -549,18 +498,16 @@ fn run_import(from: &Path, out: Option<&Path>, report_path: Option<&Path>) -> Re
 
     if let Some(path) = report_path {
         std::fs::write(path, result.report.to_markdown())
-            .map_err(|e| format!("ferrix: falha ao gravar {}: {}", path.display(), e))?;
-        println!("✔ Relatório de migração gravado em {}", path.display());
+            .map_err(|e| format!("ferrix: failed to write {}: {}", path.display(), e))?;
+        println!("✔ Migration report written to {}", path.display());
     }
 
     println!("\n{}", result.report.to_text_summary());
 
-    // A validação aqui é diagnóstico, não bloqueio: o resultado ainda não foi aplicado a
-    // nada, então um erro só avisa o que precisa de ajuste antes de usar a configuração.
     let validation = validate(&result.config);
     if !validation.is_valid() {
         println!(
-            "\n⚠️  A configuração convertida ainda não passaria em 'ferrix -t':\n{}",
+            "\n⚠️  The converted configuration would not yet pass 'ferrix -t':\n{}",
             validation.summary()
         );
     }
@@ -572,8 +519,8 @@ fn handle_start(args: &Args) -> Result<(), String> {
     let pid_file = pid_file_path(&args.config);
     if let Some(pid) = read_pid(&pid_file) {
         if is_pid_alive(pid) {
-            println!("⚠️  O Ferrix já está em execução (PID: {}).", pid);
-            println!("💡 Use 'ferrix status' para verificar ou 'ferrix stop' para parar.");
+            println!("⚠️  Ferrix is already running (PID: {}).", pid);
+            println!("💡 Use 'ferrix status' to check or 'ferrix stop' to stop.");
             return Ok(());
         } else {
             let _ = std::fs::remove_file(&pid_file);
@@ -588,20 +535,20 @@ fn handle_start(args: &Args) -> Result<(), String> {
                 admin_token,
             } => (config, Some(admin_token)),
         },
-        Err(e) => return Err(format!("Erro na configuração: {}", e)),
+        Err(e) => return Err(format!("Configuration error: {}", e)),
     };
     let report = validate(&config);
     if !report.is_valid() {
-        return Err("A configuração tem erros. Execute 'ferrix -t' para ver os detalhes.".into());
+        return Err("Configuration has errors. Run 'ferrix -t' to see details.".into());
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("Falha ao obter executável: {}", e))?;
+    let exe = std::env::current_exe().map_err(|e| format!("Failed to get executable: {}", e))?;
     let log_path = "ferrix.log";
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
-        .map_err(|e| format!("Falha ao abrir {}: {}", log_path, e))?;
+        .map_err(|e| format!("Failed to open {}: {}", log_path, e))?;
     let err_file = log_file.try_clone().map_err(|e| e.to_string())?;
 
     let mut cmd = std::process::Command::new(exe);
@@ -630,29 +577,26 @@ fn handle_start(args: &Args) -> Result<(), String> {
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("Falha ao iniciar processo em segundo plano: {}", e))?;
+        .map_err(|e| format!("Failed to spawn background process: {}", e))?;
     let pid = child.id();
     std::fs::write(&pid_file, pid.to_string())
-        .map_err(|e| format!("Falha ao gravar arquivo de PID: {}", e))?;
+        .map_err(|e| format!("Failed to write PID file: {}", e))?;
 
     std::thread::sleep(std::time::Duration::from_millis(250));
     if !is_pid_alive(pid) {
         let _ = std::fs::remove_file(&pid_file);
         return Err(format!(
-            "O processo caiu imediatamente após iniciar. Verifique o arquivo {}",
+            "Process exited immediately after starting. Check {}",
             log_path
         ));
     }
 
-    println!(
-        "✔ Ferrix iniciado com sucesso em segundo plano (PID: {})",
-        pid
-    );
-    println!("  🌐 Proxy HTTP:        http://{}", config.http.listen);
+    println!("✔ Ferrix successfully started in background (PID: {})", pid);
+    println!("  🌐 HTTP Proxy:        http://{}", config.http.listen);
     println!("  ⚙️  Control Plane API: http://{}", config.admin.listen);
-    println!("  📄 Configuração:      {}", args.config.display());
-    println!("  📝 Logs gravados em:  {}", log_path);
-    println!("\n💡 Use 'ferrix status' para verificar o serviço ou 'ferrix stop' para parar.");
+    println!("  📄 Configuration:     {}", args.config.display());
+    println!("  📝 Logs written to:   {}", log_path);
+    println!("\n💡 Use 'ferrix status' to check service or 'ferrix stop' to stop.");
 
     Ok(())
 }
@@ -661,18 +605,13 @@ fn handle_stop(args: &Args) -> Result<(), String> {
     let pid_file = pid_file_path(&args.config);
     let pid = match read_pid(&pid_file) {
         Some(p) => p,
-        None => {
-            return Err(
-                "Nenhum processo do Ferrix em execução foi encontrado (.ferrix.pid ausente)."
-                    .into(),
-            )
-        }
+        None => return Err("No running Ferrix process found (.ferrix.pid is missing).".into()),
     };
 
     if !is_pid_alive(pid) {
         let _ = std::fs::remove_file(&pid_file);
         return Err(format!(
-            "O processo com PID {} não está em execução. O arquivo de PID foi removido.",
+            "Process with PID {} is not running. PID file removed.",
             pid
         ));
     }
@@ -698,7 +637,7 @@ fn handle_stop(args: &Args) -> Result<(), String> {
     }
 
     let _ = std::fs::remove_file(&pid_file);
-    println!("✔ Ferrix (PID: {}) encerrado com sucesso.", pid);
+    println!("✔ Ferrix (PID: {}) stopped successfully.", pid);
     Ok(())
 }
 
@@ -706,17 +645,12 @@ fn handle_reload(args: &Args) -> Result<(), String> {
     let pid_file = pid_file_path(&args.config);
     let pid = match read_pid(&pid_file) {
         Some(p) => p,
-        None => {
-            return Err(
-                "Nenhum processo do Ferrix em execução foi encontrado (.ferrix.pid ausente)."
-                    .into(),
-            )
-        }
+        None => return Err("No running Ferrix process found (.ferrix.pid is missing).".into()),
     };
 
     if !is_pid_alive(pid) {
         let _ = std::fs::remove_file(&pid_file);
-        return Err(format!("O processo com PID {} não está em execução.", pid));
+        return Err(format!("Process with PID {} is not running.", pid));
     }
 
     run_test(&args.config)?;
@@ -726,21 +660,21 @@ fn handle_reload(args: &Args) -> Result<(), String> {
         let res = unsafe { libc::kill(pid as i32, libc::SIGHUP) };
 
         if res == 0 {
-            println!("✔ Sinal de recarga enviado para o Ferrix (PID: {}).", pid);
-            println!("  As configurações foram atualizadas sem interromper conexões ativas.");
+            println!("✔ Reload signal sent to Ferrix (PID: {}).", pid);
+            println!("  Configuration reloaded without dropping active connections.");
             Ok(())
         } else {
-            Err("Falha ao enviar sinal para o processo.".into())
+            Err("Failed to send signal to process.".into())
         }
     }
     #[cfg(not(unix))]
     {
-        Err("Recarga via sinal não suportada nesta plataforma.".into())
+        Err("Signal reload not supported on this platform.".into())
     }
 }
 
 fn handle_restart(args: &Args) -> Result<(), String> {
-    println!("Reiniciando Ferrix...");
+    println!("Restarting Ferrix...");
     let _ = handle_stop(args);
     std::thread::sleep(std::time::Duration::from_millis(300));
     handle_start(args)
@@ -752,11 +686,11 @@ async fn handle_status(args: &Args) -> Result<(), String> {
 
     match pid {
         Some(p) if is_pid_alive(p) => {
-            println!("● Ferrix está em execução (PID: {})", p);
-            println!("  📄 Configuração:      {}", args.config.display());
-            println!("  📝 Arquivo de PID:    {}", pid_file.display());
+            println!("● Ferrix is running (PID: {})", p);
+            println!("  📄 Configuration:   {}", args.config.display());
+            println!("  📝 PID file:        {}", pid_file.display());
             if Path::new("ferrix.log").exists() {
-                println!("  📋 Arquivo de log:    ferrix.log");
+                println!("  📋 Log file:        ferrix.log");
             }
 
             let admin_url = if let Some(ref listen) = args.admin_listen {
@@ -779,18 +713,18 @@ async fn handle_status(args: &Args) -> Result<(), String> {
                     }
                 }
             }
-            println!("\n💡 Para parar o servidor: ferrix stop");
-            println!("💡 Para recarregar config: ferrix reload");
+            println!("\n💡 To stop the server: ferrix stop");
+            println!("💡 To reload config:   ferrix reload");
             Ok(())
         }
         _ => {
             if pid.is_some() {
                 let _ = std::fs::remove_file(&pid_file);
             }
-            println!("○ Ferrix está parado.");
-            println!("\n💡 Para iniciar:");
-            println!("   ferrix run      (rodar neste terminal)");
-            println!("   ferrix start    (rodar em segundo plano)");
+            println!("○ Ferrix is stopped.");
+            println!("\n💡 To start:");
+            println!("   ferrix run      (run in foreground)");
+            println!("   ferrix start    (run in background)");
             Ok(())
         }
     }
@@ -803,7 +737,7 @@ async fn handle_signal(signal: &str, args: &Args) -> Result<(), String> {
         "restart" => handle_restart(args),
         "status" => handle_status(args).await,
         other => Err(format!(
-            "Sinal desconhecido '{}'. Sinais válidos: stop, reload, restart, status",
+            "Unknown signal '{}'. Valid signals: stop, reload, restart, status",
             other
         )),
     }
@@ -843,23 +777,25 @@ async fn run_server(args: Args) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n");
         return Err(format!(
-            "a configuração em {} tem erros e o Ferrix não vai subir:\n{}",
+            "Configuration in {} has errors and Ferrix will not start:\n{}",
             config_path, details
         ));
     }
 
     if let Some(token) = &generated_token {
         info!("──────────────────────────────────────────────────────────────");
-        info!(" Configuração inicial criada em {}", config_path);
-        info!(" Token de administração gerado: {}", token);
-        info!(" Use-o no painel ou como: Authorization: Bearer {}", token);
+        info!(" Initial configuration created at {}", config_path);
+        info!(" Generated admin token: {}", token);
+        info!(
+            " Use it in dashboard or as: Authorization: Bearer {}",
+            token
+        );
         info!("──────────────────────────────────────────────────────────────");
     }
 
     let admin_listen = config.admin.listen.clone();
     let proxy_listen = config.http.listen.clone();
-    // Todo listener de proxy escuta no mesmo host que `http.listen` — só a porta muda,
-    // uma por porta distinta declarada entre `http.listen` e os vhosts.
+
     let proxy_host = proxy_listen
         .rsplit_once(':')
         .map(|(host, _)| host.to_string())
@@ -906,9 +842,6 @@ async fn run_server(args: Args) -> Result<(), String> {
         }
     });
 
-    // Uma porta por entrada do plano — TLS quando algum vhost ali declarou certificado,
-    // HTTP simples quando não. `ferrix.json` com um site em 443/HTTPS e outro redirecionando
-    // de 80 vira, literalmente, dois listeners aqui.
     let proxy_workers = store.config().http.worker_threads;
     let mut proxy_handles: Vec<JoinHandle<()>> = Vec::with_capacity(port_plan.len());
     let mut proxy_ports_summary = Vec::with_capacity(port_plan.len());
@@ -929,7 +862,7 @@ async fn run_server(args: Args) -> Result<(), String> {
             }
             None => {
                 proxy_ports_summary.push(format!("http://{}", addr));
-                // As threads dos workers morrem junto com o processo; não há handle a abortar.
+
                 spawn_plain_listener(addr, proxy_engine.clone(), proxy_workers);
             }
         }
@@ -941,31 +874,31 @@ async fn run_server(args: Args) -> Result<(), String> {
 
     println!("\n┌──────────────────────────────────────────────────────────────────┐");
     println!("│  ⚡ Ferrix v{:<52}│", env!("CARGO_PKG_VERSION"));
-    println!("│     Reverse Proxy & Control Plane em execução                    │");
+    println!("│     Reverse Proxy & Control Plane running                        │");
     println!("├──────────────────────────────────────────────────────────────────┤");
     for port_url in &proxy_ports_summary {
         println!("│  🌐 Proxy:             {:<42}│", port_url);
     }
     println!("│  ⚙️  Control Plane API: http://{:<42}│", admin_listen);
-    println!("│  📄 Configuração:      {:<42}│", config_path);
+    println!("│  📄 Configuration:     {:<42}│", config_path);
     println!("│                                                                  │");
-    println!("│  💡 Dica: Execute 'ferrix --help' para ver todos os comandos.   │");
-    println!("│  🛑 Pressione Ctrl+C para encerrar o servidor.                   │");
+    println!("│  💡 Tip: Run 'ferrix --help' to see all commands.                │");
+    println!("│  🛑 Press Ctrl+C to shut down the server.                        │");
     println!("└──────────────────────────────────────────────────────────────────┘\n");
 
     #[cfg(unix)]
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        .map_err(|e| format!("Falha ao configurar listener SIGHUP: {}", e))?;
+        .map_err(|e| format!("Failed to configure SIGHUP listener: {}", e))?;
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| format!("Falha ao configurar listener SIGTERM: {}", e))?;
+        .map_err(|e| format!("Failed to configure SIGTERM listener: {}", e))?;
 
     loop {
         #[cfg(unix)]
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!("\n🛑 Encerrando Ferrix com segurança... Até logo!");
+                println!("\n🛑 Gracefully shutting down Ferrix... Goodbye!");
                 info!("Shutdown signal received (Ctrl+C), gracefully exiting Ferrix...");
                 break;
             }
@@ -974,19 +907,19 @@ async fn run_server(args: Args) -> Result<(), String> {
                 break;
             }
             _ = sighup.recv() => {
-                info!("SIGHUP recebido: recarregando configuração de {}", config_path);
+                info!("SIGHUP received: reloading configuration from {}", config_path);
                 match FerrixConfig::load_or_create(&config_path_buf) {
                     Ok(ConfigLoad::Loaded(new_cfg)) | Ok(ConfigLoad::Created { config: new_cfg, .. }) => {
                         let report = validate(&new_cfg);
                         if report.is_valid() {
                             store.apply(new_cfg);
-                            info!("✔ Configuração recarregada com sucesso!");
+                            info!("✔ Configuration reloaded successfully!");
                         } else {
-                            warn!("A nova configuração tem erros de validação; mantendo a anterior.");
+                            warn!("New configuration has validation errors; keeping current config.");
                         }
                     }
                     Err(e) => {
-                        warn!("Erro ao recarregar configuração: {}", e);
+                        warn!("Error reloading configuration: {}", e);
                     }
                 }
             }
@@ -996,8 +929,8 @@ async fn run_server(args: Args) -> Result<(), String> {
         {
             tokio::signal::ctrl_c()
                 .await
-                .map_err(|e| format!("falha ao aguardar o sinal de encerramento: {}", e))?;
-            println!("\n🛑 Encerrando Ferrix com segurança... Até logo!");
+                .map_err(|e| format!("failed to wait for shutdown signal: {}", e))?;
+            println!("\n🛑 Gracefully shutting down Ferrix... Goodbye!");
             info!("Shutdown signal received, gracefully exiting Ferrix...");
             break;
         }

@@ -47,28 +47,28 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
 
   const handleDelete = async (name: string) => {
     const ok = await confirm({
-      title: "Remover pool de upstream?",
-      description: `Qualquer rota que aponte para "${name}" passará a responder 502 até ser reconfigurada.`,
-      confirmLabel: "Remover",
+      title: "Delete upstream pool?",
+      description: `Any route pointing to "${name}" will return 502 until reconfigured.`,
+      confirmLabel: "Delete",
       tone: "danger",
     });
     if (!ok) return;
     try {
       await onDeleteUpstream(name);
-      toast.success(`Upstream "${name}" removido.`);
+      toast.success(`Upstream "${name}" deleted.`);
     } catch (err: any) {
-      toast.error(err.message || "Falha ao remover o upstream");
+      toast.error(err.message || "Failed to delete upstream");
     }
   };
 
   const handleSave = async (upstream: UpstreamConfig) => {
     try {
       await onSaveUpstream(upstream);
-      toast.success(`Upstream "${upstream.name}" salvo e recarregado a quente.`);
+      toast.success(`Upstream "${upstream.name}" saved and hot-reloaded.`);
       setIsModalOpen(false);
     } catch (err: any) {
       const report = err.body?.report;
-      throw new Error(report?.summary || err.message || "Falha ao salvar o upstream");
+      throw new Error(report?.summary || err.message || "Failed to save upstream");
     }
   };
 
@@ -87,23 +87,23 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-content-primary tracking-tight">
-            Pools de Upstream
+            Upstream Pools
           </h2>
           <p className="text-xs text-content-muted">
-            Servidores de backend, algoritmo de balanceamento e health checks ativos
+            Backend servers, load balancing algorithms, and active health checks
           </p>
         </div>
         <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={handleCreate}>
-          Novo Pool
+          New Pool
         </Button>
       </div>
 
       {upstreams.length === 0 ? (
         <EmptyState
           icon={<Server className="w-6 h-6" />}
-          title="Nenhum upstream ainda"
-          description="Um upstream é um conjunto de servidores de backend que dividem a carga — crie o primeiro para uma rota de proxy poder apontar para ele."
-          actionLabel="Criar o primeiro upstream"
+          title="No upstreams yet"
+          description="An upstream is a pool of backend servers that share load — create the first one so proxy routes can forward traffic to it."
+          actionLabel="Create first upstream"
           onAction={handleCreate}
         />
       ) : (
@@ -128,13 +128,13 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
                         <Badge tone="info">{ALGORITHM_LABEL[u.config.algorithm]}</Badge>
                         {!u.config.verify_tls && (
                           <Badge tone="warning">
-                            <ShieldOff className="w-3 h-3" /> TLS não verificado
+                            <ShieldOff className="w-3 h-3" /> TLS not verified
                           </Badge>
                         )}
                       </div>
                       <div className="flex items-center gap-3 mt-1 text-xs text-content-muted">
                         <span>
-                          Saúde:{" "}
+                          Health:{" "}
                           <span className="text-brand-400 font-bold">
                             {healthyTargets}/{totalTargets} online
                           </span>
@@ -150,7 +150,7 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => handleEdit(u)} title="Editar">
+                    <Button variant="ghost" size="sm" onClick={() => handleEdit(u)} title="Edit">
                       <Edit2 className="w-4 h-4" />
                     </Button>
                     {upstreams.length > 1 && (
@@ -158,7 +158,7 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
                         variant="ghost"
                         size="sm"
                         onClick={() => handleDelete(u.name)}
-                        title="Remover"
+                        title="Delete"
                         className="hover:!text-danger-400"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -169,7 +169,7 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
 
                 <div className="mt-5 space-y-3">
                   <span className="text-xs font-semibold text-content-muted uppercase tracking-wider block">
-                    Servidores ({totalTargets})
+                    Servers ({totalTargets})
                   </span>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -211,17 +211,17 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
 
                           <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border-subtle text-[11px] text-content-muted">
                             <div>
-                              <span className="block">Peso</span>
+                              <span className="block">Weight</span>
                               <span className="text-content-secondary">{target.weight}</span>
                             </div>
                             <div>
-                              <span className="block">Latência</span>
+                              <span className="block">Latency</span>
                               <span className="text-brand-400 font-bold">
                                 {status?.latency_ms !== undefined ? `${status.latency_ms} ms` : "—"}
                               </span>
                             </div>
                             <div>
-                              <span className="block">Falhas / Máx</span>
+                              <span className="block">Fails / Max</span>
                               <span
                                 className={
                                   status && status.consecutive_fails > 0
@@ -234,7 +234,7 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
                             </div>
                             {target.max_conns != null && (
                               <div className="col-span-3 pt-1">
-                                <span>Máx. conexões simultâneas: </span>
+                                <span>Max concurrent connections: </span>
                                 <span className="text-content-secondary">{target.max_conns}</span>
                               </div>
                             )}
@@ -260,3 +260,4 @@ export const Upstreams: React.FC<UpstreamsProps> = ({
     </div>
   );
 };
+

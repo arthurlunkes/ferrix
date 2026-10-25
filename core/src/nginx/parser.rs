@@ -1,17 +1,10 @@
-//! Monta a árvore de diretivas de um `nginx.conf`.
-//!
-//! A árvore é genérica de propósito: o parser não sabe que `server` é um virtual host nem
-//! que `proxy_pass` faz proxy. Ele só reconhece a forma `nome args;` e `nome args { ... }`.
-//! Toda a interpretação fica no conversor, e o que ele não souber traduzir vira linha no
-//! relatório de migração em vez de erro de sintaxe.
-
 use super::lexer::{tokenize, LexError, Token};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Directive {
     pub name: String,
     pub args: Vec<String>,
-    /// `Some` para diretivas de bloco, `None` para as terminadas em ponto e vírgula.
+
     pub block: Option<Vec<Directive>>,
     pub line: usize,
 }
@@ -21,7 +14,6 @@ impl Directive {
         self.args.get(index).map(|s| s.as_str())
     }
 
-    /// Reconstrói o texto original aproximado, para citar no relatório.
     pub fn source(&self) -> String {
         if self.args.is_empty() {
             format!("{};", self.name)
@@ -30,7 +22,6 @@ impl Directive {
         }
     }
 
-    /// Filhos diretos com um dado nome.
     pub fn children(&self, name: &str) -> Vec<&Directive> {
         match &self.block {
             Some(items) => items.iter().filter(|d| d.name == name).collect(),
@@ -38,7 +29,6 @@ impl Directive {
         }
     }
 
-    /// Primeiro filho direto com um dado nome.
     pub fn child(&self, name: &str) -> Option<&Directive> {
         self.block
             .as_ref()
@@ -67,7 +57,6 @@ impl From<LexError> for ParseError {
     }
 }
 
-/// Interpreta um `nginx.conf` inteiro, devolvendo as diretivas de nível superior.
 pub fn parse(input: &str) -> Result<Vec<Directive>, ParseError> {
     let tokens = tokenize(input)?;
     let mut cursor = 0;
@@ -87,8 +76,6 @@ fn parse_block(
     cursor: &mut usize,
     depth: usize,
 ) -> Result<Vec<Directive>, ParseError> {
-    // Guarda contra aninhamento absurdo, que só apareceria em entrada malformada ou
-    // maliciosa e estouraria a pilha.
     if depth > 64 {
         return Err(ParseError {
             line: tokens.get(*cursor).map(|t| t.line).unwrap_or(0),
@@ -104,14 +91,12 @@ fn parse_block(
         match &spanned.token {
             Token::CloseBrace => {
                 if depth == 0 {
-                    // Deixa o chamador de topo reportar a chave sobrando.
                     return Ok(directives);
                 }
                 *cursor += 1;
                 return Ok(directives);
             }
             Token::Semicolon => {
-                // Ponto e vírgula solto: ignorado, como o nginx faz com linha vazia.
                 *cursor += 1;
             }
             Token::OpenBrace => {
@@ -182,7 +167,6 @@ fn parse_block(
     Ok(directives)
 }
 
-/// Percorre a árvore inteira, incluindo blocos aninhados.
 pub fn walk<'a>(directives: &'a [Directive], visit: &mut impl FnMut(&'a Directive)) {
     for d in directives {
         visit(d);

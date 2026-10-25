@@ -1,10 +1,3 @@
-//! Validação de configuração — o equivalente ao `nginx -t`.
-//!
-//! Antes disto, `POST /api/config` só checava se a lista de vhosts estava não-vazia, então
-//! era possível aplicar em produção uma configuração que apontava para um upstream
-//! inexistente ou trazia um regex que não compila. Aqui os problemas aparecem antes de a
-//! configuração entrar no ar.
-
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -16,16 +9,15 @@ use crate::net::cidr::{listen_addr_is_loopback, IpRule};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    /// Impede a configuração de ser aplicada.
     Error,
-    /// Aplica, mas quase certamente não é o que se queria.
+
     Warning,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationIssue {
     pub severity: Severity,
-    /// Onde o problema está, no formato `vhosts[0].routes[1].upstream_name`.
+
     pub path: String,
     pub message: String,
 }
@@ -66,7 +58,6 @@ impl ValidationReport {
         self.errors().next().is_none()
     }
 
-    /// Resumo em uma linha por problema, para log e para a resposta da API.
     pub fn summary(&self) -> String {
         if self.issues.is_empty() {
             return "configuração válida".to_string();
@@ -135,9 +126,6 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
         if let Some(tls) = &vhost.tls {
             for (field, path) in [("cert_path", &tls.cert_path), ("key_path", &tls.key_path)] {
                 if !Path::new(path).is_file() {
-                    // Aviso, não erro: como em `static_root`, o arquivo pode chegar depois
-                    // (montado por um volume, por exemplo), então travar a inicialização
-                    // por isso seria mais estrito do que vale a pena.
                     report.warn(
                         format!("{}.tls.{}", base, field),
                         format!("o arquivo '{}' não existe no momento", path),
@@ -152,10 +140,6 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     report
 }
 
-/// Hoje só o primeiro vhost com `tls` declarado numa porta é servido — não há SNI
-/// multi-certificado ainda. Um segundo vhost TLS na mesma porta não dá erro nenhum na
-/// hora, e o certificado dele simplesmente nunca é usado; vale avisar durante a validação
-/// em vez de deixar essa surpresa para quando alguém testar o domínio errado.
 fn validate_shared_tls_ports(cfg: &FerrixConfig, report: &mut ValidationReport) {
     let mut first_tls_vhost_by_port: HashMap<u16, &str> = HashMap::new();
 
@@ -206,8 +190,6 @@ fn validate_admin_auth(cfg: &FerrixConfig, report: &mut ValidationReport) {
     let auth = &cfg.admin.auth;
     match auth.mode {
         AdminAuthMode::None => {
-            // A API admin reescreve e persiste a configuração inteira. Exposta sem
-            // autenticação, é acesso total ao proxy para quem alcançar a porta.
             if !listen_addr_is_loopback(&cfg.admin.listen) {
                 report.error(
                     "admin.auth.mode",
@@ -244,8 +226,6 @@ fn validate_real_ip(cfg: &FerrixConfig, report: &mut ValidationReport) {
         report,
     );
 
-    // Confiar no header sem lista de proxies confiáveis deixa qualquer cliente forjar o
-    // próprio IP, o que anula rate limit e ACL de uma vez só.
     if cfg.real_ip.header != super::RealIpHeader::None && cfg.real_ip.trusted_proxies.is_empty() {
         report.error(
             "real_ip.trusted_proxies",
@@ -346,8 +326,6 @@ fn validate_vhost_routes(
             );
         }
 
-        // Padrão idêntico a um declarado antes: a segunda nunca é alcançada, porque o
-        // desempate preserva a ordem de declaração.
         if !seen_patterns.insert((route.match_type, route.path_prefix.as_str())) {
             report.warn(
                 format!("{}.path_prefix", rpath),
@@ -389,7 +367,7 @@ fn validate_vhost_routes(
                 ),
                 Some(root) => {
                     let p = Path::new(root);
-                    // Aviso e não erro: o diretório pode ser um volume montado depois.
+
                     if !p.exists() {
                         report.warn(
                             format!("{}.static_root", rpath),
@@ -455,7 +433,6 @@ fn validate_ip_list(entries: &[String], path: &str, report: &mut ValidationRepor
     }
 }
 
-/// Compila o padrão de uma rota regex, aplicando o modo insensível quando for o caso.
 pub fn compile_route_regex(match_type: RouteMatchType, pattern: &str) -> Result<Regex, String> {
     let source = if match_type == RouteMatchType::RegexCaseInsensitive {
         format!("(?i){}", pattern)
@@ -470,10 +447,9 @@ mod tests {
     use super::*;
     use crate::config::*;
 
-    /// Uma config default precisa validar limpa, exceto pelo aviso do diretório de demo.
     fn base_config() -> FerrixConfig {
         let mut cfg = FerrixConfig::default();
-        // Loopback para não disparar a exigência de autenticação da API admin.
+
         cfg.admin.listen = "127.0.0.1:8080".to_string();
         cfg
     }
@@ -537,7 +513,7 @@ mod tests {
         ];
 
         let report = validate(&cfg);
-        // É aviso, não erro: a config funciona, só que a segunda rota é letra morta.
+
         assert!(report.is_valid());
         assert!(report.summary().contains("nunca será alcançada"));
     }

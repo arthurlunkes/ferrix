@@ -2,46 +2,46 @@
   <img src="assets/ferrix-banner.png" alt="Ferrix Banner" width="100%">
 </p>
 
-# Documentação Oficial do Ferrix
+# Ferrix Official Documentation
 
-Bem-vindo à documentação completa do **Ferrix** — um servidor web e reverse proxy de alto desempenho inspirado no Nginx, desenvolvido em **Rust** e equipado nativamente com um **Dashboard Web em React** e uma **API REST** para gerenciamento dinâmico em tempo real (_zero-downtime hot-reload_).
+Welcome to the official documentation for **Ferrix** — a high-performance web server and reverse proxy inspired by Nginx, built in **Rust** (Tokio, Hyper, Axum), featuring a modern **React Web Dashboard** and a **RESTful Control Plane API** for zero-downtime hot reloading.
 
 ---
 
-## 📚 Índice da Documentação
+## 📚 Table of Contents
 
-1. [**01. Visão Geral e Comparativo**](01-visao-geral.md)
-   - O que é o Ferrix e motivação do projeto.
-   - Comparação direta com Nginx e Caddy.
-   - Recursos e vantagens de segurança e concorrência do Rust.
+1. [**01. Overview and Comparison**](01-visao-geral.md)
+   - What Ferrix is and project motivation.
+   - Architectural comparison with Nginx and Caddy.
+   - Memory safety and concurrency advantages of Rust.
 
-2. [**02. Instalação e Execução**](02-instalacao-e-execucao.md)
-   - Pré-requisitos de sistema.
-   - Compilação do backend (Rust) e frontend (React).
-   - Como rodar via CLI, flags disponíveis e execução em segundo plano.
-   - Exemplo de containerização com Docker.
+2. [**02. Installation and Execution**](02-instalacao-e-execucao.md)
+   - System prerequisites.
+   - Building the core proxy (Rust) and dashboard (React).
+   - Running via CLI, command flags, and background daemon execution.
+   - Containerization with Docker.
 
-3. [**03. Arquitetura Interna**](03-arquitetura.md)
-   - Runtime assíncrono com Tokio, Hyper e Axum.
-   - Hot-Reload Zero Downtime via ponteiros atômicos (`ArcSwap`).
-   - Coletor de métricas, buffer circular de logs e Server-Sent Events (SSE).
-   - Estrutura de módulos do código fonte.
+3. [**03. Internal Architecture**](03-arquitetura.md)
+   - Asynchronous runtime with Tokio, Hyper, and Axum.
+   - Zero-Downtime Hot-Reload via atomic pointer swaps (`ArcSwap`).
+   - Metric collector, lock-free circular log ring buffer, and Server-Sent Events (SSE).
+   - Codebase structure and modularity.
 
-4. [**04. Guia de Recursos e Configuração**](04-guia-de-configuracao.md)
-   - Formato do arquivo `ferrix.json`.
-   - Virtual Hosts e roteamento por domínio/prefixo.
-   - Algoritmos de Load Balancing (Round-Robin, Weighted, Least Connections, IP Hash, Random).
-   - Health Checks ativos e failover automático (_proxy_next_upstream_).
-   - Túnel transparente para WebSockets.
-   - Arquivos estáticos e diretiva `try_files` para Single Page Applications (SPAs).
-   - Rate Limiting (Token Bucket), IP ACL (Allow/Deny) e Basic Auth.
+4. [**04. Feature & Configuration Guide**](04-guia-de-configuracao.md)
+   - `ferrix.json` configuration structure.
+   - Virtual Hosts, domain matching, and prefix/regex routing rules.
+   - Load balancing algorithms (Round-Robin, Weighted, Least Connections, IP Hash, Random).
+   - Active health checks and automated failover (`proxy_next_upstream`).
+   - Transparent WebSocket tunneling.
+   - Static file serving and `try_files` for Single Page Applications (SPAs).
+   - Rate limiting (Token Bucket), IP CIDR ACLs (Allow/Deny), and HTTP Basic Auth.
 
-5. [**05. Referência da API REST**](05-api-rest.md)
-   - Especificação detalhada de todos os endpoints HTTP e canal SSE.
-   - Exemplos práticos de chamadas com `curl` e payloads JSON.
-   - CRUD de Virtual Hosts e Upstreams via API.
+5. [**05. REST API Reference**](05-api-rest.md)
+   - Complete endpoint specification and SSE live stream.
+   - Practical `curl` examples and JSON payloads.
+   - CRUD management for Virtual Hosts and Upstreams via API.
 
-6. [**06. Manual do Painel Web (React Dashboard)**](06-dashboard-web.md)
-   - Visão geral das telas (Dashboard, Virtual Hosts, Live Requests, Upstreams, Config Editor).
-   - Inspeção de requisições ao vivo em tempo real.
-   - Gestão visual sem necessidade de tocar em arquivos de configuração.
+6. [**06. Web Dashboard Manual**](06-dashboard-web.md)
+   - Overview of all views (Dashboard, Virtual Hosts, Live Requests, Upstreams, Nginx Import, Config Editor).
+   - Real-time request inspection and telemetry.
+   - Visual configuration management without manually editing files.

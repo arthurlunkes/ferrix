@@ -1,16 +1,3 @@
-//! Roda o importador de `nginx.conf` contra os 21 exemplos reais do repositório
-//! `learning-NGINX`, copiados para `tests/fixtures/nginx/`.
-//!
-//! O critério não é "todo mundo migra 100%" — vários exemplos usam recursos que o Ferrix
-//! não tem ainda (cache, TLS, WAF, njs, stream TCP/UDP). O critério é:
-//!
-//! 1. Todo arquivo parseia sem erro de sintaxe.
-//! 2. A configuração resultante tem pelo menos um virtual host.
-//! 3. O relatório de migração aponta, com arquivo e linha, tudo que não foi convertido —
-//!    nada desaparece em silêncio.
-//! 4. A configuração resultante passa pela validação (`nginx -t` do Ferrix), a menos que
-//!    o próprio exemplo dependa de algo fora do escopo (ex.: nenhum `server` migrável).
-
 use std::path::Path;
 
 use ferrix::config::validate::validate;
@@ -18,9 +5,6 @@ use ferrix::nginx::convert::import_file;
 
 const FIXTURES_ROOT: &str = "tests/fixtures/nginx";
 
-/// Todo `nginx.conf` de nível superior do corpus, um por exemplo do learning-NGINX. Os
-/// `.conf` dentro de `snippets/`, `borda/`, `tls-alfa/` etc. são incluídos via `include`
-/// pelos arquivos aqui listados, então não entram nesta lista.
 fn top_level_configs() -> Vec<std::path::PathBuf> {
     let root = Path::new(FIXTURES_ROOT);
     let mut found = Vec::new();
@@ -46,8 +30,6 @@ fn top_level_configs() -> Vec<std::path::PathBuf> {
 
 #[test]
 fn fixtures_directory_is_not_empty() {
-    // Se isto falhar, o corpus não foi copiado — o teste abaixo passaria vazio e sem dizer
-    // nada, o que é pior que falhar alto.
     let configs = top_level_configs();
     assert!(
         configs.len() >= 15,
@@ -107,17 +89,11 @@ fn every_unsupported_directive_is_reported_with_a_line_number() {
     }
 }
 
-/// Cada exemplo tem seu próprio recurso central; a asserção documenta o que se espera dele
-/// em vez de só rodar o importador no vácuo.
 struct ExampleExpectation {
-    /// Sufixo do caminho, para identificar o exemplo mesmo sob `tests/fixtures/nginx/N-nome/`.
     dir_contains: &'static str,
     min_vhosts: usize,
     min_upstreams: usize,
-    /// Diretivas que este exemplo usa e que o Ferrix ainda não converte — a lista serve de
-    /// documentação viva do gap de paridade, e o teste falha se alguma passar a ser
-    /// silenciosamente ignorada (sem nota) ou se de repente for suportada sem que o teste
-    /// seja atualizado (o que avisa quando fechamos uma lacuna).
+
     expected_unsupported: &'static [&'static str],
 }
 
@@ -138,17 +114,14 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         dir_contains: "4-HTTPS_TLS1-3_HTTP2",
         min_vhosts: 1,
         min_upstreams: 0,
-        // ssl_certificate/ssl_certificate_key agora são capturados (ver o teste dedicado
-        // abaixo) e http2 já liga sozinho por ALPN; ssl_ciphers/ssl_protocols/etc. são uma
-        // limitação definitiva do rustls (ver reason_for) — reportada como `Ignored`, não
-        // `Unsupported`, porque não é um item de fase futura, então não entra nesta lista.
+
         expected_unsupported: &[],
     },
     ExampleExpectation {
         dir_contains: "9-loadbalance_multitenant",
         min_vhosts: 1,
         min_upstreams: 1,
-        // auth_request delega a autenticação a um subrequest — sem equivalente no Ferrix.
+
         expected_unsupported: &["auth_request"],
     },
     ExampleExpectation {
@@ -161,16 +134,14 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         dir_contains: "11-cache",
         min_vhosts: 1,
         min_upstreams: 1,
-        // proxy_cache/proxy_cache_path/proxy_cache_valid/proxy_cache_bypass já convertem
-        // (ver o teste dedicado abaixo); o ajuste fino (lock, background_update, chave
-        // customizada, use_stale) ainda não tem equivalente.
+
         expected_unsupported: &["proxy_cache_lock", "proxy_cache_key", "proxy_no_cache"],
     },
     ExampleExpectation {
         dir_contains: "12-compressao_estaticos_spa",
         min_vhosts: 1,
         min_upstreams: 0,
-        // Compressão é a Fase 2.
+
         expected_unsupported: &["gzip"],
     },
     ExampleExpectation {
@@ -183,23 +154,21 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         dir_contains: "14-controle_acesso",
         min_vhosts: 1,
         min_upstreams: 0,
-        // mTLS depende de TLS, que é a Fase 2.
+
         expected_unsupported: &["ssl_client_certificate"],
     },
     ExampleExpectation {
         dir_contains: "15-canary_blue_green",
         min_vhosts: 1,
         min_upstreams: 2,
-        // Sorteio por variável não existe; a rota que depende de $destino_canary não migra.
+
         expected_unsupported: &["split_clients", "map"],
     },
     ExampleExpectation {
         dir_contains: "19-waf_modsecurity",
         min_vhosts: 1,
         min_upstreams: 0,
-        // O nginx.conf deste exemplo é a variante "sem-waf" de comparação: só um proxy_pass
-        // simples. As regras do ModSecurity vivem em regras/excecoes.conf, num formato
-        // próprio (SecRule) que não é sintaxe de nginx e por isso nem chega ao parser.
+
         expected_unsupported: &[],
     },
     ExampleExpectation {
@@ -260,8 +229,6 @@ fn representative_examples_match_their_documented_expectation() {
     assert_eq!(checked.len(), EXPECTATIONS.len());
 }
 
-/// A configuração migrada precisa passar pela mesma validação que o Ferrix roda antes de
-/// subir — o importador não deve produzir algo que a própria validação rejeitaria.
 #[test]
 fn migrated_configs_pass_validation_once_admin_auth_is_set() {
     let mut failures = Vec::new();
@@ -269,9 +236,6 @@ fn migrated_configs_pass_validation_once_admin_auth_is_set() {
     for path in top_level_configs() {
         let mut result = import_file(&path).unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
 
-        // O importador não decide política de administração — isso é uma escolha de
-        // implantação. Para isolar o teste ao que o importador de fato produz, a
-        // autenticação admin é fixada aqui, como a UI faria antes de aplicar.
         result.config.admin.listen = "127.0.0.1:8080".to_string();
 
         let report = validate(&result.config);
@@ -287,9 +251,6 @@ fn migrated_configs_pass_validation_once_admin_auth_is_set() {
     );
 }
 
-/// Nenhuma rota deve sair da migração menos protegida do que estava: uma `location` com
-/// `auth_basic_user_file` (impossível de converter, pois guarda hashes) precisa continuar
-/// com uma credencial — nunca aberta.
 #[test]
 fn locations_protected_by_htpasswd_stay_protected_after_migration() {
     let path = top_level_configs()
@@ -311,8 +272,6 @@ fn locations_protected_by_htpasswd_stay_protected_after_migration() {
         })
         .collect();
 
-    // Pelo menos uma rota do exemplo usa auth_basic_user_file; todas as que usam devem
-    // ter saído com basic_auth preenchido, nunca `None`.
     let had_auth_basic_user_file = result
         .report
         .notes
@@ -334,8 +293,6 @@ fn locations_protected_by_htpasswd_stay_protected_after_migration() {
     }
 }
 
-/// O exemplo 4 do learning-NGINX é exatamente o caso que motivou o suporte a TLS no
-/// importador: `listen 443 ssl` com `ssl_certificate`/`ssl_certificate_key` de verdade.
 #[test]
 fn https_example_gets_tls_populated_on_its_vhost() {
     let path = top_level_configs()

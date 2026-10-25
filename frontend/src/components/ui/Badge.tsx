@@ -22,3 +22,4 @@ export const Badge: React.FC<{
     {children}
   </span>
 );
+

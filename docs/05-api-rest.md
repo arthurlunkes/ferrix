@@ -1,35 +1,35 @@
-# 05. Referência da API REST
+# 05. REST API Reference
 
-O Ferrix expõe uma API REST moderna na porta administrativa (padrão `8080`) para consulta de métricas, histórico de requisições, logs ao vivo e gestão dinâmica de configurações.
-
----
-
-## 📡 Resumo dos Endpoints
-
-| Método   | Caminho                | Descrição                                                       |
-| -------- | ---------------------- | --------------------------------------------------------------- |
-| `GET`    | `/api/status`          | Informações de integridade, versão e uptime                     |
-| `GET`    | `/api/metrics`         | Snapshot de métricas em tempo real (RPS, latências, contadores) |
-| `GET`    | `/api/logs`            | Consulta histórica de logs com filtros e paginação              |
-| `GET`    | `/api/logs/stream`     | Stream ao vivo via Server-Sent Events (SSE)                     |
-| `GET`    | `/api/config`          | Retorna a configuração global ativa                             |
-| `POST`   | `/api/config`          | Aplica uma nova configuração global com hot-reload              |
-| `GET`    | `/api/vhosts`          | Lista todos os Virtual Hosts                                    |
-| `POST`   | `/api/vhosts`          | Cria ou atualiza um Virtual Host                                |
-| `DELETE` | `/api/vhosts/:id`      | Remove um Virtual Host                                          |
-| `GET`    | `/api/upstreams`       | Lista todos os Upstreams e status dos nós                       |
-| `POST`   | `/api/upstreams`       | Cria ou atualiza um pool de Upstream                            |
-| `DELETE` | `/api/upstreams/:name` | Remove um pool de Upstream                                      |
+Ferrix exposes a modern REST API on its administrative port (default `8080` / `8081`) for telemetry metrics, historical request audits, real-time logs, and dynamic zero-downtime configuration management.
 
 ---
 
-## 1. Status do Servidor
+## 📡 Endpoints Summary
+
+| Method   | Path                   | Description                                                |
+| -------- | ---------------------- | ---------------------------------------------------------- |
+| `GET`    | `/api/status`          | Health, process info, version, and uptime                  |
+| `GET`    | `/api/metrics`         | Real-time telemetry snapshot (RPS, latencies, counters)    |
+| `GET`    | `/api/logs`            | Historical request logs with filters and pagination        |
+| `GET`    | `/api/logs/stream`     | Live event stream via Server-Sent Events (SSE)             |
+| `GET`    | `/api/config`          | Returns active global configuration                        |
+| `POST`   | `/api/config`          | Applies new configuration with zero-downtime hot-reload    |
+| `GET`    | `/api/vhosts`          | Lists all Virtual Hosts                                    |
+| `POST`   | `/api/vhosts`          | Creates or updates a Virtual Host                          |
+| `DELETE` | `/api/vhosts/:id`      | Deletes a Virtual Host                                     |
+| `GET`    | `/api/upstreams`       | Lists all Upstreams and health status of targets           |
+| `POST`   | `/api/upstreams`       | Creates or updates an Upstream pool                        |
+| `DELETE` | `/api/upstreams/:name` | Removes an Upstream pool                                   |
+
+---
+
+## 1. Server Status
 
 ### `GET /api/status`
 
-Retorna dados gerais de operação e uptime do processo.
+Returns process metadata, configuration summary, and active uptime.
 
-**Exemplo de Resposta:**
+**Example Response:**
 
 ```json
 {
@@ -46,13 +46,13 @@ Retorna dados gerais de operação e uptime do processo.
 
 ---
 
-## 2. Métricas de Desempenho
+## 2. Telemetry & Metrics
 
 ### `GET /api/metrics`
 
-Retorna estatísticas acumuladas e instantâneas de vazão e latência.
+Returns throughput, active connection metrics, status code aggregates, and latency percentiles.
 
-**Exemplo de Resposta:**
+**Example Response:**
 
 ```json
 {
@@ -73,25 +73,25 @@ Retorna estatísticas acumuladas e instantâneas de vazão e latência.
 
 ---
 
-## 3. Logs de Requisições
+## 3. Request Logs
 
 ### `GET /api/logs`
 
-Permite filtrar o buffer recente de requisições.
+Query the recent ring-buffer of processed requests.
 
-**Parâmetros de Query:**
+**Query Parameters:**
 
-- `limit` (opcional, padrão 100, máx 500): Quantidade de itens retornados.
-- `status` (opcional): Código exato ou faixa (ex: `200` ou `400` para 4xx).
-- `q` (opcional): Termo de busca textual em URL, IP ou Host.
+- `limit` (optional, default 100, max 500): Number of entries to return.
+- `status` (optional): Exact status code or range prefix (e.g., `200` or `400` for 4xx errors).
+- `q` (optional): Text search matching URI, Client IP, or Host header.
 
-**Exemplo de Chamada:**
+**Example Request:**
 
 ```bash
 curl "http://localhost:8080/api/logs?limit=10&status=400&q=api"
 ```
 
-**Exemplo de Resposta:**
+**Example Response:**
 
 ```json
 [
@@ -101,7 +101,7 @@ curl "http://localhost:8080/api/logs?limit=10&status=400&q=api"
     "client_ip": "192.168.1.50",
     "method": "POST",
     "uri": "/api/users",
-    "host": "meudominio.com",
+    "host": "mydomain.com",
     "status": 200,
     "latency_ms": 2.14,
     "bytes_sent": 420,
@@ -115,9 +115,9 @@ curl "http://localhost:8080/api/logs?limit=10&status=400&q=api"
 
 ### `GET /api/logs/stream` (SSE)
 
-Canal em tempo real que emite eventos do tipo `request` sempre que uma requisição é concluída pelo proxy.
+Real-time push channel streaming `request` events whenever a proxy transaction finishes.
 
-**Exemplo de Consumo via JavaScript:**
+**JavaScript EventSource Example:**
 
 ```javascript
 const es = new EventSource("http://localhost:8080/api/logs/stream");
@@ -131,39 +131,39 @@ es.addEventListener("request", (event) => {
 
 ---
 
-## 4. Gestão de Configuração e Hot-Reload
+## 4. Configuration Management & Hot-Reload
 
 ### `GET /api/config`
 
-Retorna a configuração completa ativa no formato JSON.
+Retrieves the currently active JSON configuration.
 
 ### `POST /api/config`
 
-Substitui a configuração global, salva em disco e aplica o hot-reload imediatamente.
+Overwrites global configuration, persists to disk, and executes atomic hot-reload.
 
-**Exemplo via curl:**
+**curl Example:**
 
 ```bash
 curl -X POST http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
-  -d @nova_config.json
+  -d @new_config.json
 ```
 
 ---
 
-## 5. CRUD de Virtual Hosts
+## 5. Virtual Hosts CRUD
 
 ### `POST /api/vhosts`
 
-Cria ou atualiza um virtual host. Se o `id` já existir, ele é atualizado; caso contrário, é adicionado.
+Creates or updates a Virtual Host. If `id` already exists, it is updated in place; otherwise, a new host is appended.
 
 ```bash
 curl -X POST http://localhost:8080/api/vhosts \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "vhost-novo",
-    "name": "Serviço de Autenticação",
-    "server_names": ["auth.meudominio.com"],
+    "id": "new-vhost",
+    "name": "Auth Gateway Service",
+    "server_names": ["auth.mydomain.com"],
     "listen_port": 8000,
     "headers": {
       "X-Service": "Auth-Gateway"
@@ -172,7 +172,7 @@ curl -X POST http://localhost:8080/api/vhosts \
     "denied_ips": [],
     "routes": [
       {
-        "id": "rota-auth",
+        "id": "auth-route",
         "path_prefix": "/",
         "strip_prefix": false,
         "target_type": "proxy_upstream",
@@ -187,8 +187,8 @@ curl -X POST http://localhost:8080/api/vhosts \
 
 ### `DELETE /api/vhosts/:id`
 
-Remove um host virtual e recarrega a tabela de roteamento.
+Deletes a Virtual Host and reloads routing tables.
 
 ```bash
-curl -X DELETE http://localhost:8080/api/vhosts/vhost-novo
+curl -X DELETE http://localhost:8080/api/vhosts/new-vhost
 ```

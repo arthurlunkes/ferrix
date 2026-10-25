@@ -43,7 +43,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
     { time: string; rps: number; latency: number }[]
   >([]);
 
-  // Update chart data series
   useEffect(() => {
     if (!metrics) return;
     const now = new Date();
@@ -116,7 +115,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Metrics Row */}
+      {}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           title="Total Requests"
@@ -148,9 +147,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
         />
       </div>
 
-      {/* Charts Row */}
+      {}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Real-time Traffic Area Chart */}
+        {}
         <div className="lg:col-span-2 bg-[#111827]/90 border border-gray-800 rounded-2xl p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -222,7 +221,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Status Codes Distribution */}
+        {}
         <div className="bg-[#111827]/90 border border-gray-800 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
           <div>
             <h3 className="text-base font-bold text-white">
@@ -296,7 +295,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      {/* Live Recent Requests Stream Preview */}
+      {}
       <div className="bg-[#111827]/90 border border-gray-800 rounded-2xl p-6 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
@@ -366,7 +365,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               {liveLogs.length === 0 && (
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-gray-500">
-                    No requests recorded yet. Send traffic to http://localhost:
+                    No requests recorded yet. Send traffic to http:
                     {status?.proxy_listen.split(":")[1] || "8000"}
                   </td>
                 </tr>
@@ -383,3 +382,4 @@ export const Dashboard: React.FC<DashboardProps> = ({
     </div>
   );
 };
+

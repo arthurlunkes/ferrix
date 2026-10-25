@@ -41,8 +41,6 @@ pub fn create_admin_router(state: AdminState) -> Router {
             get(handlers::get_upstreams).post(handlers::save_upstream),
         )
         .route("/upstreams/{name}", delete(handlers::delete_upstream))
-        // A camada de autenticação envolve toda a API: estes endpoints leem e reescrevem
-        // a configuração inteira do proxy, e o POST em /config persiste em disco.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_auth,
@@ -62,9 +60,6 @@ pub fn create_admin_router(state: AdminState) -> Router {
         )
         .nest("/api", api_router);
 
-    // Sem origens declaradas não há camada de CORS: o painel é servido pelo mesmo
-    // servidor, então nada precisa ser liberado. A configuração anterior liberava
-    // qualquer origem, método e cabeçalho.
     let origins = &state.store.config().admin.cors_origins;
     if !origins.is_empty() {
         let parsed: Vec<HeaderValue> = origins
@@ -83,7 +78,6 @@ pub fn create_admin_router(state: AdminState) -> Router {
     router
 }
 
-/// Exige credencial válida antes de qualquer operação da API.
 async fn require_admin_auth(
     State(state): State<AdminState>,
     req: Request,
@@ -96,8 +90,7 @@ async fn require_admin_auth(
         AdminAuthMode::None => true,
         AdminAuthMode::Token => {
             let expected = auth.token.as_deref().unwrap_or("");
-            // Um token vazio nunca autoriza: sem isto, uma configuração pela metade
-            // deixaria a API aberta acreditando estar protegida.
+
             !expected.is_empty()
                 && presented_token(&req).is_some_and(|t| constant_time_eq(&t, expected))
         }
@@ -119,7 +112,7 @@ async fn require_admin_auth(
 
     let mut resp = (
         StatusCode::UNAUTHORIZED,
-        "401 Unauthorized - a API de administração do Ferrix exige autenticação",
+        "401 Unauthorized - The Ferrix Admin API requires authentication",
     )
         .into_response();
 
@@ -132,7 +125,6 @@ async fn require_admin_auth(
     resp
 }
 
-/// Aceita o token como `Authorization: Bearer ...` ou no cabeçalho `X-Ferrix-Token`.
 fn presented_token(req: &Request) -> Option<String> {
     let headers = req.headers();
     if let Some(value) = headers
@@ -165,8 +157,6 @@ fn presented_token(req: &Request) -> Option<String> {
     None
 }
 
-/// Comparação em tempo constante, para que o tempo de resposta não revele quantos
-/// caracteres do token estavam certos.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -224,7 +214,7 @@ mod tests {
     #[test]
     fn no_credential_yields_no_token() {
         assert!(presented_token(&request_with(&[])).is_none());
-        // Um esquema diferente de Bearer não é aceito como token.
+
         assert!(presented_token(&request_with(&[("authorization", "Basic eA==")])).is_none());
     }
 }

@@ -29,7 +29,7 @@ pub struct ServerStatus {
     pub proxy_listen: String,
     pub total_vhosts: usize,
     pub total_upstreams: usize,
-    /// Se a API de administração está protegida. O painel mostra um aviso quando não está.
+
     pub admin_auth_enabled: bool,
 }
 
@@ -76,7 +76,6 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
     Json((*state.store.config()).clone())
 }
 
-/// Verifica uma configuração sem aplicá-la — o equivalente a `nginx -t`.
 pub async fn validate_config(
     State(_state): State<AdminState>,
     Json(candidate): Json<FerrixConfig>,
@@ -88,16 +87,13 @@ pub async fn update_config(
     State(state): State<AdminState>,
     Json(new_config): Json<FerrixConfig>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Uma configuração inválida não entra no ar. Antes, qualquer JSON que
-    // desserializasse era aceito — dava para aplicar uma rota apontando para um upstream
-    // inexistente e só descobrir no primeiro 502.
     let report = validate(&new_config);
     if !report.is_valid() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "status": "invalid",
-                "message": "a configuração tem erros e não foi aplicada",
+                "message": "Configuration contains errors and was not applied",
                 "report": report_payload(&report),
             })),
         ));
@@ -110,7 +106,7 @@ pub async fn update_config(
         )
     })?;
 
-    info!("Configuração validada, persistida e recarregada a quente");
+    info!("Configuration validated, persisted, and hot-reloaded successfully");
     Ok(Json(serde_json::json!({
         "status": "success",
         "message": "Configuration updated and hot-reloaded successfully",
@@ -132,20 +128,16 @@ pub struct RouteTestResponse {
     pub matched: bool,
     pub vhost_id: Option<String>,
     pub vhost_name: Option<String>,
-    /// Por que este host foi eleito — nome exato, curinga, regex, fallback.
+
     pub vhost_reason: Option<String>,
     pub route_id: Option<String>,
     pub route_pattern: Option<String>,
-    /// Por que esta rota venceu — match exato, prefixo prioritário, regex, prefixo mais longo.
+
     pub route_reason: Option<String>,
     pub target: Option<String>,
     pub explanation: String,
 }
 
-/// Responde qual host e qual rota atenderiam uma requisição, e por qual regra.
-///
-/// Existe porque a precedência do nginx é difícil de prever de cabeça: é fácil escrever
-/// uma rota que nunca é alcançada e só descobrir em produção.
 pub async fn route_test(
     State(state): State<AdminState>,
     Json(req): Json<RouteTestRequest>,
@@ -173,7 +165,7 @@ pub async fn route_test(
             route_pattern: None,
             route_reason: None,
             target: None,
-            explanation: "nenhum virtual host configurado atende esta requisição".to_string(),
+            explanation: "No configured virtual host matches this request".to_string(),
         });
     };
 
@@ -190,7 +182,7 @@ pub async fn route_test(
             route_reason: None,
             target: None,
             explanation: format!(
-                "o host '{}' foi escolhido por {}, mas nenhuma rota casa com '{}' — resposta 404",
+                "Host '{}' matched by {}, but no route matches '{}' — 404 response",
                 vhost.name,
                 vm.reason.as_str(),
                 req.path
@@ -207,10 +199,10 @@ pub async fn route_test(
         RouteTargetType::StaticFiles => route
             .static_root
             .clone()
-            .map(|r| format!("arquivos em '{}'", r)),
+            .map(|r| format!("files in '{}'", r)),
         RouteTargetType::Redirect => route.redirect_url.clone().map(|u| {
             format!(
-                "redirecionamento {} para {}",
+                "redirect {} to {}",
                 route.redirect_code.unwrap_or(302),
                 u
             )
@@ -227,17 +219,15 @@ pub async fn route_test(
         route_reason: Some(rm.reason.as_str().to_string()),
         target: target.clone(),
         explanation: format!(
-            "host '{}' escolhido por {}; rota '{}' venceu por {}; destino: {}",
+            "Host '{}' chosen by {}; route '{}' matched by {}; target: {}",
             vhost.name,
             vm.reason.as_str(),
             route.path_prefix,
             rm.reason.as_str(),
-            target.as_deref().unwrap_or("não configurado")
+            target.as_deref().unwrap_or("not configured")
         ),
     })
 }
-
-// -- Virtual hosts -----------------------------------------------------------
 
 pub async fn get_vhosts(State(state): State<AdminState>) -> impl IntoResponse {
     Json(state.store.config().vhosts.clone())
@@ -254,7 +244,7 @@ pub async fn save_vhost(
         None => cfg.vhosts.push(vhost),
     }
 
-    apply_validated(&state, cfg, "Virtual host salvo e configuração recarregada")
+    apply_validated(&state, cfg, "Virtual host saved and configuration reloaded")
 }
 
 pub async fn delete_vhost(
@@ -266,17 +256,15 @@ pub async fn delete_vhost(
     cfg.vhosts.retain(|v| v.id != id);
 
     if cfg.vhosts.len() == before {
-        return Err(not_found(format!("virtual host '{}' não encontrado", id)));
+        return Err(not_found(format!("Virtual host '{}' not found", id)));
     }
 
     apply_validated(
         &state,
         cfg,
-        "Virtual host removido e configuração recarregada",
+        "Virtual host deleted and configuration reloaded",
     )
 }
-
-// -- Upstreams ---------------------------------------------------------------
 
 pub async fn get_upstreams(State(state): State<AdminState>) -> impl IntoResponse {
     let cfg = state.store.config();
@@ -313,7 +301,7 @@ pub async fn save_upstream(
     let mut cfg = (*state.store.config()).clone();
     cfg.upstreams.insert(upstream.name.clone(), upstream);
 
-    apply_validated(&state, cfg, "Upstream salvo e configuração recarregada")
+    apply_validated(&state, cfg, "Upstream saved and configuration reloaded")
 }
 
 pub async fn delete_upstream(
@@ -322,16 +310,12 @@ pub async fn delete_upstream(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut cfg = (*state.store.config()).clone();
     if cfg.upstreams.remove(&name).is_none() {
-        return Err(not_found(format!("upstream '{}' não encontrado", name)));
+        return Err(not_found(format!("Upstream '{}' not found", name)));
     }
 
-    // A validação pega o caso comum de remover um pool que alguma rota ainda usa.
-    apply_validated(&state, cfg, "Upstream removido e configuração recarregada")
+    apply_validated(&state, cfg, "Upstream deleted and configuration reloaded")
 }
 
-// -- Auxiliares --------------------------------------------------------------
-
-/// Valida, persiste e aplica — o caminho único por onde toda alteração passa.
 fn apply_validated(
     state: &AdminState,
     cfg: FerrixConfig,
@@ -343,7 +327,7 @@ fn apply_validated(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "status": "invalid",
-                "message": "a alteração deixaria a configuração inválida e não foi aplicada",
+                "message": "Change would leave configuration in an invalid state and was not applied",
                 "report": report_payload(&report),
             })),
         ));
@@ -380,19 +364,12 @@ fn not_found(message: String) -> (StatusCode, Json<serde_json::Value>) {
 
 #[derive(Debug, Deserialize)]
 pub struct ImportNginxRequest {
-    /// O conteúdo do `nginx.conf`, colado ou enviado pela tela de importação.
     pub source: String,
-    /// Só para citar nas linhas do relatório; não precisa existir no disco do servidor.
+
     #[serde(default)]
     pub file_name: Option<String>,
 }
 
-/// Converte um `nginx.conf` colado na tela de importação, sem aplicar nada.
-///
-/// Não resolve `include`: o servidor só recebeu o texto que o navegador enviou, sem
-/// acesso ao resto da árvore de configuração de quem está migrando. Um `include` que
-/// aponte para outro arquivo aparece no relatório como não migrado, com a linha exata —
-/// quem precisa seguir `include`s usa `ferrix import` na máquina onde os arquivos estão.
 pub async fn import_nginx(Json(req): Json<ImportNginxRequest>) -> impl IntoResponse {
     let file_name = req.file_name.unwrap_or_else(|| "nginx.conf".to_string());
 
@@ -414,7 +391,7 @@ pub async fn import_nginx(Json(req): Json<ImportNginxRequest>) -> impl IntoRespo
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "status": "error",
-                "message": format!("erro de sintaxe: {}", e),
+                "message": format!("Syntax error: {}", e),
             })),
         )
             .into_response(),

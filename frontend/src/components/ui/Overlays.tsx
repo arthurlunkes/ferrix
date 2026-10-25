@@ -3,10 +3,6 @@ import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
-// ---------------------------------------------------------------------------
-// Toast — substitui os `alert()` que os modais antigos usavam para erro/sucesso.
-// ---------------------------------------------------------------------------
-
 type ToastTone = "success" | "error" | "info";
 
 interface ToastItem {
@@ -46,9 +42,6 @@ const TOAST_BORDER: Record<ToastTone, string> = {
   info: "border-info-500/30",
 };
 
-/** Provedor único para toasts e diálogos de confirmação — o `alert()`/`confirm()` do
- * navegador que os componentes antigos usavam trava a aba inteira e não combina com o
- * resto do painel. `useToast()` e `useConfirm()` chamam isto por baixo. */
 export const OverlayProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
@@ -94,7 +87,7 @@ export const OverlayProvider: React.FC<{ children: React.ReactNode }> = ({ child
       <ConfirmContext.Provider value={confirmApi}>
         {children}
 
-        {/* Pilha de toasts, canto superior direito. */}
+        {}
         <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 w-80 pointer-events-none">
           {toasts.map((t) => (
             <div
@@ -106,7 +99,7 @@ export const OverlayProvider: React.FC<{ children: React.ReactNode }> = ({ child
               <button
                 onClick={() => dismiss(t.id)}
                 className="text-content-muted hover:text-content-primary transition"
-                aria-label="Descartar"
+                aria-label="Dismiss"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -124,13 +117,13 @@ export const OverlayProvider: React.FC<{ children: React.ReactNode }> = ({ child
           footer={
             <>
               <Button variant="ghost" onClick={() => closeConfirm(false)}>
-                {confirmState?.cancelLabel ?? "Cancelar"}
+                {confirmState?.cancelLabel ?? "Cancel"}
               </Button>
               <Button
                 variant={confirmState?.tone === "danger" ? "danger" : "primary"}
                 onClick={() => closeConfirm(true)}
               >
-                {confirmState?.confirmLabel ?? "Confirmar"}
+                {confirmState?.confirmLabel ?? "Confirm"}
               </Button>
             </>
           }
@@ -155,3 +148,4 @@ export function useConfirm(): ConfirmApi {
   if (!ctx) throw new Error("useConfirm precisa estar dentro de <OverlayProvider>");
   return ctx;
 }
+

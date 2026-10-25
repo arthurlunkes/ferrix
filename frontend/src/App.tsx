@@ -63,7 +63,7 @@ export function App() {
       setLiveLogs(historicalLogs);
     } catch (err: any) {
       if (err?.status !== 401) {
-        toast.error(`Falha ao carregar dados do Ferrix: ${err.message || err}`);
+        toast.error(`Failed to load Ferrix data: ${err.message || err}`);
       }
     } finally {
       setInitialLoading(false);
@@ -73,8 +73,6 @@ export function App() {
   useEffect(() => {
     loadAllData();
 
-    // Métricas e saúde dos upstreams em cadência curta; o resto do estado não muda
-    // sozinho no servidor, então rebuscá-lo a cada tick seria desperdício.
     const interval = setInterval(async () => {
       try {
         const [mt, up, st] = await Promise.all([
@@ -86,19 +84,16 @@ export function App() {
         setUpstreams(up);
         setStatus(st);
       } catch {
-        // Poll silencioso: uma falha isolada não merece interromper o usuário a cada 2,5s.
+
       }
     }, 2500);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
-    // Sem token válido não há por que tentar: o stream só falharia e ficaria
-    // reconectando às cegas, já que o EventSource não deixa o JS ver o motivo de um
-    // erro (nem 401 nem qualquer outro status). Reautenticar troca `isAuthenticated`
-    // para true e este efeito reabre a conexão já com o token novo.
+
     if (!isAuthenticated) {
       setSseConnected(false);
       return;
@@ -234,3 +229,4 @@ export function App() {
 }
 
 export default App;
+

@@ -1,34 +1,34 @@
-# 03. Arquitetura Interna
+# 03. Internal Architecture
 
-O **Ferrix** foi desenhado segundo princípios modernos de sistemas distribuídos e servidores de rede assíncronos. Esta seção detalha os componentes internos e como eles colaboram para entregar alta vazão e zero downtime.
+**Ferrix** is engineered around modern distributed systems principles and asynchronous network I/O. This section explains the internal components and how they cooperate to deliver high throughput and zero-downtime operation.
 
 ---
 
-## 🏛️ Visão Estrutural
+## 🏛️ Structural Overview
 
 ```
                           ┌────────────────────────────────────────────────────────┐
                           │                      FERRIX PROCESS                    │
                           │                                                        │
-Incoming HTTP / WS  ─────►│  Proxy Listener (Port 8000 / HTTP Config)              │
+Incoming HTTP / WS  ─────►│  Proxy Listener (Port 8000 / Configurable)             │
                           │  ├── Client Address Extractor (ConnectInfo)            │
                           │  ├── Host Header Matcher (VirtualHost Finder)          │
                           │  ├── Middleware Pipeline (IP ACL, RateLimit, Auth)     │
-                          │  ├── Route Rule Prefix Matcher                         │
+                          │  ├── Route Rule Prefix & Regex Matcher                 │
                           │  │   ├── Target: Static File Server (Zero-Copy)        │
-                          │  │   ├── Target: HTTP Redirect (301/302)               │
+                          │  │   ├── Target: HTTP Redirect (301/302/307/308)       │
                           │  │   └── Target: Upstream Pool (Load Balancer)         │
                           │  │       ├── WS Upgrade: Tokio Bidirectional Tunnel   │
-                          │  │       └── HTTP: Reqwest/Hyper Pool with Failover    │
+                          │  │       └── HTTP: Hyper / Reqwest Client + Failover   │
                           │  │                                                     │
                           │  └── Telemetry Interceptor                             │
                           │      ├── Atomic Counters (2xx, 3xx, 4xx, 5xx, Bytes)   │
-                          │      ├── Ring Buffer (Recent 1000 logs)                │
+                          │      ├── Lock-Free Ring Buffer (Recent 1000 logs)      │
                           │      └── Broadcast Channel (tokio::sync::broadcast)    │
                           │                     │                                  │
                           │                     ▼                                  │
-Browser / REST API  ─────►│  Admin Listener (Port 8080)                            │
-                          │  ├── REST API Handlers (/api/status, /api/config, etc) │
+Browser / REST API  ─────►│  Admin Listener (Port 8081 / Configurable)             │
+                          │  ├── REST API Handlers (/status, /config, etc.)        │
                           │  ├── Server-Sent Events (SSE Stream)                   │
                           │  └── Embedded React SPA (rust-embed Assets)            │
                           └────────────────────────────────────────────────────────┘
@@ -38,62 +38,61 @@ Browser / REST API  ─────►│  Admin Listener (Port 8080)           
 
 ## ⚡ Zero-Downtime Hot Reload via `ArcSwap`
 
-No Nginx tradicional, para recarregar a configuração sem parar o servidor (`nginx -s reload`), o processo pai cria novos processos filhos e aguarda os antigos terminarem as conexões existentes (_graceful worker restart_).
+In traditional Nginx, reloading configuration without stopping the server (`nginx -s reload`) relies on the master process spawning new worker processes and waiting for old ones to terminate active connections (*graceful worker restart*).
 
-No Ferrix, como o Rust possui primitivas atômicas de ponteiros seguros, usamos o crate **`arc-swap`** (`ArcSwap<FerrixConfig>`):
+In Ferrix, taking advantage of Rust's atomic pointer primitives, we use the **`arc-swap`** crate (`ArcSwap<FerrixConfig>`):
 
-1. O estado de configuração do servidor é empacotado em um ponteiro atômico:
+1. The runtime configuration is wrapped in an atomic pointer:
    ```rust
    pub shared_config: Arc<ArcSwap<FerrixConfig>>
    ```
-2. Durante o processamento de tráfego, as threads de trabalho do Tokio fazem apenas um empréstimo rápido (`shared_config.load()`), que tem custo de apenas uma instrução atômica de CPU (sem locks e sem contenção de mutex).
-3. Quando uma nova configuração é enviada pela interface web ou pela API REST:
-   - A configuração é validada;
-   - É gravada com segurança no arquivo `ferrix.json` no disco;
-   - É armazenada no ponteiro atômico via `shared_config.store(Arc::new(nova_config))`.
-4. Todas as novas conexões passam a enxergar imediatamente a nova tabela de rotas e backends, enquanto requisições que já estavam no meio do caminho completam normalmente.
-5. **Resultado**: Zero downtime, zero perda de conexões e tempo de recarga menor que 1 milissegundo.
+2. During request processing, Tokio worker threads perform a quick lock-free load (`shared_config.load()`), requiring only a single atomic CPU instruction (no mutex locks, zero lock contention).
+3. When new configuration is submitted through the web dashboard or REST API:
+   - The configuration is validated;
+   - Persisted safely to `ferrix.json` on disk;
+   - Stored atomically into the pointer via `shared_config.store(Arc::new(new_config))`.
+4. All incoming connections immediately see the updated routing table, while in-flight requests complete uninterrupted.
+5. **Result**: Zero downtime, zero dropped connections, and sub-millisecond reload latency.
 
 ---
 
-## 🔄 Túnel WebSocket Bidirecional Full-Duplex
+## 🔄 Full-Duplex Bidirectional WebSocket Tunnel
 
-Quando um cliente envia uma requisição com os headers `Upgrade: websocket` e `Connection: Upgrade`, o Ferrix detecta automaticamente a intenção de upgrade:
+When a client sends a request with `Upgrade: websocket` and `Connection: Upgrade` headers, Ferrix automatically initiates a protocol upgrade:
 
-1. O handshake inicial é processado pelo Axum através de `WebSocketUpgrade::from_request_parts`.
-2. Em paralelo, o Ferrix conecta-se assincronamente ao nó de backend selecionado pelo algoritmo de balanceamento via `tokio_tungstenite::connect_async`.
-3. Ao completar a conexão com o backend, as duas pontas (Cliente e Servidor Upstream) são conectadas usando tarefas assíncronas concorrentes:
-   - Tarefa A: lê frames do cliente e encaminha para o backend.
-   - Tarefa B: lê frames do backend e devolve para o cliente.
-4. Quando uma das pontas envia um frame de `Close`, o túnel é finalizado de forma limpa.
-
----
-
-## 📊 Telemetria, Métricas e Server-Sent Events (SSE)
-
-O subsistema de telemetria foi projetado para não causar gargalo no caminho crítico das requisições:
-
-- **Contadores Atômicos**: `total_requests`, `active_connections`, `status_2xx`, `status_3xx`, `status_4xx`, `status_5xx` e `total_bytes_sent` usam `AtomicU64` com ordenação `Ordering::Relaxed` (sem travar threads).
-- **Cálculo de Percentis de Latência (p50, p95, p99)**: Mantido em uma fila circular (`VecDeque<f64>`) com as últimas 1.000 requisições.
-- **Transmissão em Tempo Real**: Cada requisição finalizada emite um `RequestLog` para um canal de broadcast assíncrono (`tokio::sync::broadcast::Sender`).
-- **Endpoint SSE (`/api/logs/stream`)**: A interface web consome esse stream via `EventSource`, atualizando a tabela de requisições ao vivo sem precisar fazer polling repetitivo.
+1. The initial handshake is processed via Axum's `WebSocketUpgrade`.
+2. Concurrently, Ferrix establishes an asynchronous connection to the target backend chosen by the load balancing algorithm using `tokio_tungstenite::connect_async`.
+3. Once connected, two concurrent asynchronous tasks bridge the client and upstream:
+   - Task A: reads frames from the client and forwards them to the backend.
+   - Task B: reads frames from the backend and relays them to the client.
+4. When either peer sends a `Close` frame, the tunnel terminates cleanly.
 
 ---
 
-## 📁 Estrutura de Arquivos do Backend
+## 📊 Telemetry, Metrics, and Server-Sent Events (SSE)
 
-| Arquivo                     | Responsabilidade                                                                           |
+The telemetry subsystem is designed to introduce zero overhead to the critical request path:
+
+- **Atomic Counters**: `total_requests`, `active_connections`, `status_2xx`, `status_3xx`, `status_4xx`, `status_5xx`, and `total_bytes_sent` utilize `AtomicU64` with relaxed ordering (`Ordering::Relaxed`).
+- **Latency Percentiles (p50, p95, p99)**: Computed over a circular ring buffer tracking the last 1,000 requests.
+- **Real-Time Streaming**: Each finished request emits a `RequestLog` to an asynchronous broadcast channel (`tokio::sync::broadcast::Sender`).
+- **SSE Endpoint (`/api/logs/stream`)**: The React dashboard consumes this event stream over `EventSource`, updating the live requests table without polling.
+
+---
+
+## 📁 Source Code Organization
+
+| Module / Path               | Responsibility                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------ |
-| `src/main.rs`               | Inicialização do runtime Tokio, parsing de CLI e spawn dos listeners (Proxy e Admin).      |
-| `src/config.rs`             | Estruturas de dados de configuração (VHost, Route, Upstream, etc.) e serialização JSON.    |
-| `src/proxy/mod.rs`          | Engine principal de roteamento, correspondência de domínio, failover HTTP e orquestração.  |
-| `src/proxy/upstream.rs`     | Gerenciamento de pools de upstream e implementação dos 5 algoritmos de balanceamento.      |
-| `src/proxy/websocket.rs`    | Túnel bidirecional full-duplex de WebSocket.                                               |
-| `src/proxy/static_files.rs` | Servidor de arquivos estáticos com detecção de MIME e diretiva `try_files`.                |
-| `src/proxy/middleware.rs`   | Rate Limiter (Token Bucket), IP Access Control e HTTP Basic Auth.                          |
-| `src/admin/mod.rs`          | Servidor HTTP administrativo, suporte a CORS e entrega de assets embutidos (`rust-embed`). |
-| `src/admin/handlers.rs`     | Handlers REST da API de gestão (`/status`, `/metrics`, `/config`, etc.).                   |
-| `src/admin/sse.rs`          | Adaptador do canal broadcast para Server-Sent Events (SSE).                                |
-| `src/metrics/mod.rs`        | Coletor de métricas estatísticas e percentis de latência.                                  |
-| `src/metrics/logger.rs`     | Estrutura de dados `RequestLog`.                                                           |
-| `src/health/checker.rs`     | Background worker que pinga periodicamente os servidores upstream.                         |
+| `core/src/main.rs`          | Tokio runtime bootstrapping, CLI parsing, signal handling, and listener spawning.          |
+| `core/src/config/`          | Configuration models (`VirtualHost`, `RouteRule`, `UpstreamConfig`) and JSON store.        |
+| `core/src/proxy/mod.rs`     | Main routing engine, domain matching, failover logic, and reverse proxy handler.          |
+| `core/src/proxy/upstream.rs`| Upstream pool management and implementation of all 5 load balancing algorithms.            |
+| `core/src/proxy/websocket.rs`| Full-duplex bidirectional WebSocket tunneling.                                            |
+| `core/src/proxy/static_files.rs`| Static file serving with MIME detection and `try_files` SPA routing.                   |
+| `core/src/proxy/middleware.rs`| Rate limiting (Token Bucket), IP CIDR access control lists, and HTTP Basic Auth.         |
+| `core/src/admin/mod.rs`     | Control plane HTTP router, CORS configuration, and embedded static asset delivery.         |
+| `core/src/admin/handlers.rs`| REST API handlers (`/status`, `/metrics`, `/config`, etc.).                                |
+| `core/src/admin/sse.rs`     | Broadcast channel adapter for Server-Sent Events (SSE).                                    |
+| `core/src/metrics/mod.rs`   | Statistical metrics collection and latency percentile calculations.                        |
+| `core/src/health/checker.rs`| Background health checker pinging upstream backends periodically.                          |

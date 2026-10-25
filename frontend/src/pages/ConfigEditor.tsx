@@ -37,7 +37,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     try {
       return JSON.parse(jsonText);
     } catch (err: any) {
-      setError(`JSON inválido: ${err.message}`);
+      setError(`Invalid JSON: ${err.message}`);
       return null;
     }
   };
@@ -65,14 +65,14 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
       if (report.valid) {
         setSuccess(
           report.issues.length > 0
-            ? "Configuração válida — apenas avisos, sem erros."
-            : "Configuração válida, sem pendências.",
+            ? "Valid configuration — warnings only, no errors."
+            : "Valid configuration, no issues found.",
         );
       } else {
-        setError("A configuração tem erros e não pode ser aplicada ainda.");
+        setError("Configuration has errors and cannot be applied yet.");
       }
     } catch (err: any) {
-      showIssuesFrom(err, "Falha ao validar a configuração");
+      showIssuesFrom(err, "Failed to validate configuration");
     } finally {
       setValidating(false);
     }
@@ -88,10 +88,10 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     setSaving(true);
     try {
       await onSaveConfig(parsed);
-      setSuccess("Configuração validada, salva em disco e recarregada a quente!");
+      setSuccess("Configuration validated, saved to disk, and hot-reloaded!");
       setTimeout(() => setSuccess(null), 5000);
     } catch (err: any) {
-      showIssuesFrom(err, "Falha ao aplicar a configuração");
+      showIssuesFrom(err, "Failed to apply configuration");
     } finally {
       setSaving(false);
     }
@@ -128,7 +128,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
         setError(null);
         setIssues([]);
       } catch (err: any) {
-        setError(`Falha ao interpretar o arquivo: ${err.message}`);
+        setError(`Failed to parse file: ${err.message}`);
       }
     };
     reader.readAsText(file);
@@ -139,24 +139,24 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-content-primary tracking-tight">
-            Editor de Configuração
+            Configuration Editor
           </h2>
           <p className="text-xs text-content-muted">
-            JSON completo, com validação equivalente ao "nginx -t" e hot-reload sem downtime
+            Full JSON configuration with validation equivalent to "nginx -t" and zero-downtime hot-reload
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-2 hover:bg-surface-3 text-content-secondary text-xs font-medium cursor-pointer transition border border-border">
             <Upload className="w-3.5 h-3.5" />
-            Importar JSON
+            Import JSON
             <input type="file" accept=".json" onChange={handleImport} className="hidden" />
           </label>
           <Button variant="secondary" size="sm" icon={<Download className="w-3.5 h-3.5" />} onClick={handleExport}>
-            Exportar
+            Export
           </Button>
           <Button variant="secondary" size="sm" icon={<RotateCcw className="w-3.5 h-3.5" />} onClick={handleReset}>
-            Restaurar
+            Reset
           </Button>
           <Button
             variant="secondary"
@@ -165,10 +165,10 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
             loading={validating}
             onClick={handleValidate}
           >
-            Validar
+            Validate
           </Button>
           <Button variant="primary" size="sm" icon={<Save className="w-4 h-4" />} loading={saving} onClick={handleApply}>
-            Aplicar (hot-reload)
+            Apply (hot-reload)
           </Button>
         </div>
       </div>
@@ -192,9 +192,9 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
           <table className="w-full text-xs">
             <thead className="bg-surface-2 text-content-muted">
               <tr>
-                <th className="text-left font-medium px-3 py-2">Situação</th>
-                <th className="text-left font-medium px-3 py-2">Caminho</th>
-                <th className="text-left font-medium px-3 py-2">Mensagem</th>
+                <th className="text-left font-medium px-3 py-2">Severity</th>
+                <th className="text-left font-medium px-3 py-2">Path</th>
+                <th className="text-left font-medium px-3 py-2">Message</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
@@ -202,7 +202,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
                 <tr key={i}>
                   <td className="px-3 py-2">
                     <Badge tone={issue.severity === "error" ? "danger" : "warning"}>
-                      {issue.severity === "error" ? "Erro" : "Aviso"}
+                      {issue.severity === "error" ? "Error" : "Warning"}
                     </Badge>
                   </td>
                   <td className="px-3 py-2 font-mono text-content-primary whitespace-nowrap">{issue.path}</td>
@@ -226,3 +226,4 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     </div>
   );
 };
+

@@ -7,15 +7,15 @@ import { CodeBlock } from "../components/ui/CodeBlock";
 import { useToast, useConfirm } from "../components/ui/Overlays";
 import { api, FerrixConfig, ImportNginxResult, MigrationNote } from "../services/api";
 
-const PLACEHOLDER = `# Cole aqui o conteúdo do seu nginx.conf, ou de um arquivo de site (server { ... }).
+const PLACEHOLDER = `# Paste the contents of your nginx.conf here, or a site config block (server { ... }).
 #
-# "include" para outros arquivos não é seguido por aqui — cole o conteúdo já expandido,
-# ou use "ferrix import --from nginx.conf --out ferrix.json --report report.md" na
-# máquina onde os arquivos estão, que resolve os includes automaticamente.
+# Note: "include" directives to other files are not traversed here — paste pre-expanded content,
+# or use "ferrix import --from nginx.conf --out ferrix.json --report report.md" on the
+# host where the files reside, which resolves includes automatically.
 
 server {
     listen 80;
-    server_name meusite.com;
+    server_name mysite.com;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -27,22 +27,16 @@ const LEVEL_META: Record<
   MigrationNote["level"],
   { label: string; tone: "danger" | "warning" | "info" | "neutral" }
 > = {
-  unsupported: { label: "Não migrado", tone: "danger" },
-  partial: { label: "Migrado com ressalva", tone: "warning" },
-  converted: { label: "Convertido", tone: "info" },
-  // Não é uma pendência: o Ferrix decidiu de propósito não expor este ajuste (ex.:
-  // ssl_ciphers — o rustls já escolhe cifras seguras sozinho). Tom neutro para não
-  // parecer um erro a corrigir.
-  ignored: { label: "Ignorado por design", tone: "neutral" },
+  unsupported: { label: "Unsupported", tone: "danger" },
+  partial: { label: "Partially converted", tone: "warning" },
+  converted: { label: "Converted", tone: "info" },
+  ignored: { label: "Ignored by design", tone: "neutral" },
 };
 
 interface ImportNginxProps {
   onApplied: () => void;
 }
 
-/** Cola um nginx.conf, mostra o JSON convertido lado a lado com o relatório de migração
- * — o que foi convertido, o que ficou com ressalva, e o que não tem equivalente ainda —
- * e só aplica quando o usuário decide explicitamente. Nada é salvo sem essa confirmação. */
 export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
   const toast = useToast();
   const confirm = useConfirm();
@@ -54,7 +48,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
 
   const runImport = async () => {
     if (!source.trim()) {
-      toast.error("Cole o conteúdo do nginx.conf antes de converter.");
+      toast.error("Paste the nginx.conf content before converting.");
       return;
     }
     setLoading(true);
@@ -64,12 +58,12 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
       setResult(r);
       const unsupported = r.report.notes.filter((n) => n.level === "unsupported").length;
       if (unsupported > 0) {
-        toast.info(`Convertido com ${unsupported} diretiva(s) sem equivalente — confira o relatório abaixo.`);
+        toast.info(`Converted with ${unsupported} unsupported directive(s) — check report below.`);
       } else {
-        toast.success("Configuração convertida sem pendências.");
+        toast.success("Configuration converted cleanly with no issues.");
       }
     } catch (err: any) {
-      toast.error(err.message || "Falha ao converter o nginx.conf");
+      toast.error(err.message || "Failed to convert nginx.conf");
     } finally {
       setLoading(false);
     }
@@ -77,32 +71,29 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
 
   const applyConfig = async (imported: FerrixConfig) => {
     const ok = await confirm({
-      title: "Adicionar esta configuração à configuração ativa?",
+      title: "Add this configuration to the active configuration?",
       description:
-        "Os virtual hosts e upstreams convertidos são somados ao que já está rodando, com hot-reload " +
-        "imediato — a autenticação, os timeouts e o resto da configuração atual do Ferrix não são tocados. " +
-        "Revise o relatório antes de confirmar.",
-      confirmLabel: "Adicionar agora",
+        "Converted virtual hosts and upstreams will be merged into the running configuration with " +
+        "immediate zero-downtime hot-reload — authentication, timeouts, and existing settings remain untouched. " +
+        "Review the migration report before confirming.",
+      confirmLabel: "Add now",
       tone: "danger",
     });
     if (!ok) return;
 
     setApplying(true);
     try {
-      // Busca a configuração viva na hora de aplicar, não a que foi carregada quando a
-      // tela abriu: outra aba pode ter mudado algo nesse meio-tempo, e mesclar em cima de
-      // um estado velho arriscaria desfazer essa mudança sem querer.
       const live = await api.getConfig();
       const merged = mergeImportedConfig(live, imported);
       await api.updateConfig(merged);
-      toast.success("Virtual hosts e upstreams importados foram adicionados com sucesso.");
+      toast.success("Imported virtual hosts and upstreams added successfully.");
       onApplied();
     } catch (err: any) {
       const report = err.body?.report;
       toast.error(
         report?.summary
-          ? `Não foi possível aplicar: ${report.summary}`
-          : err.message || "Falha ao aplicar a configuração",
+          ? `Could not apply: ${report.summary}`
+          : err.message || "Failed to apply configuration",
       );
     } finally {
       setApplying(false);
@@ -121,13 +112,13 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold text-content-primary tracking-tight">
-          Importar configuração do nginx
+          Import Nginx Configuration
         </h2>
         <p className="text-xs text-content-muted mt-1">
-          Cole um <code className="text-brand-400">nginx.conf</code> (ou um bloco{" "}
-          <code className="text-brand-400">server {"{ }"}</code>) e veja o que o Ferrix
-          converte, o que precisa de ajuste e o que não migra ainda — antes de aplicar
-          qualquer coisa.
+          Paste an <code className="text-brand-400">nginx.conf</code> (or a{" "}
+          <code className="text-brand-400">server {"{ }"}</code> block) and see what Ferrix
+          converts, what needs manual adjustment, and what is unsupported — before applying
+          anything.
         </p>
       </div>
 
@@ -142,7 +133,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
             className="text-xs leading-relaxed"
           />
           <Button variant="primary" icon={<UploadCloud className="w-4 h-4" />} loading={loading} onClick={runImport}>
-            Converter
+            Convert
           </Button>
         </div>
 
@@ -151,8 +142,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
             <div className="h-full flex flex-col items-center justify-center text-center py-16 border border-dashed border-border rounded-2xl text-content-muted">
               <FileWarning className="w-8 h-8 mb-3" />
               <p className="text-xs max-w-xs">
-                O resultado da conversão e o relatório de migração aparecem aqui, lado a
-                lado com o JSON gerado.
+                Conversion results and migration report will appear here, alongside the generated JSON.
               </p>
             </div>
           )}
@@ -161,21 +151,17 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
             <>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <StatCard label="Virtual hosts" value={result.report.vhosts_created} />
-                <StatCard label="Rotas" value={result.report.routes_created} />
+                <StatCard label="Routes" value={result.report.routes_created} />
                 <StatCard label="Upstreams" value={result.report.upstreams_created} />
               </div>
 
-              {/* A validação aqui é do resultado isolado da conversão — antes de somar à
-                  configuração ativa. Problemas de admin/http/real_ip não valem: esses
-                  campos nunca vêm do importador, vêm sempre do servidor em execução ao
-                  aplicar (ver mergeImportedConfig). Só o que sobrar aqui é relevante. */}
               {result.validation.issues.filter((i) => !i.path.startsWith("admin") && !i.path.startsWith("real_ip")).length > 0 && (
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-warning-500/10 border border-warning-500/30 text-warning-400 text-xs">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>
-                    A conversão tem pendências fora do que o Ferrix consegue resolver
-                    sozinho (ex.: referência a um upstream inexistente) — dá para ver os
-                    detalhes no Config Editor depois de aplicar.
+                    The conversion has pending issues beyond what Ferrix can resolve
+                    automatically (e.g. reference to a missing upstream) — inspect details
+                    in the Configuration Editor after applying.
                   </span>
                 </div>
               )}
@@ -188,10 +174,10 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
                   <table className="w-full text-xs">
                     <thead className="bg-surface-2 text-content-muted sticky top-0">
                       <tr>
-                        <th className="text-left font-medium px-3 py-2">Diretiva</th>
-                        <th className="text-left font-medium px-3 py-2">Linha</th>
-                        <th className="text-left font-medium px-3 py-2">Situação</th>
-                        <th className="text-left font-medium px-3 py-2">Motivo</th>
+                        <th className="text-left font-medium px-3 py-2">Directive</th>
+                        <th className="text-left font-medium px-3 py-2">Line</th>
+                        <th className="text-left font-medium px-3 py-2">Status</th>
+                        <th className="text-left font-medium px-3 py-2">Reason</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-subtle">
@@ -224,7 +210,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
                 onClick={() => applyConfig(result.config)}
                 className="w-full"
               >
-                Aplicar esta configuração
+                Apply this configuration
               </Button>
             </>
           )}
@@ -234,7 +220,6 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
   );
 };
 
-/// Um sufixo que não colide com nada em `taken`, preservando `base` quando ele já é único.
 function uniqueId(base: string, taken: Set<string>): string {
   if (!taken.has(base)) return base;
   let n = 2;
@@ -242,20 +227,6 @@ function uniqueId(base: string, taken: Set<string>): string {
   return `${base}-${n}`;
 }
 
-/**
- * Soma os virtual hosts e upstreams importados à configuração viva, em vez de substituir
- * o objeto inteiro.
- *
- * O importador monta um `FerrixConfig` do zero — ele não tem como saber qual token de
- * administração, CORS ou timeout o servidor em execução já usa. Aplicar esse objeto
- * inteiro por cima da configuração ativa apagaria tudo isso (foi exatamente o que
- * aconteceu num teste: a autenticação do painel foi zerada por um "Aplicar" de
- * importação). Por isso `admin`, `http` e `real_ip` vêm sempre do que já está rodando.
- *
- * Os IDs de vhost e de rota que o importador gera reiniciam a contagem em cada conversão
- * (`vhost-1`, `route-1`, ...), então duas importações — ou uma importação depois que o
- * host já tem vhosts com esses mesmos IDs — colidiriam sem o remapeamento abaixo.
- */
 function mergeImportedConfig(live: FerrixConfig, imported: FerrixConfig): FerrixConfig {
   const takenVhostIds = new Set(live.vhosts.map((v) => v.id));
 
@@ -275,8 +246,7 @@ function mergeImportedConfig(live: FerrixConfig, imported: FerrixConfig): Ferrix
 
   return {
     ...live,
-    // Upstream de mesmo nome é sobrescrito de propósito: reimportar o mesmo site deve
-    // atualizar o pool, não duplicá-lo com um nome colidido.
+
     upstreams: { ...live.upstreams, ...imported.upstreams },
     vhosts: [...live.vhosts, ...mergedVhosts],
   };
@@ -288,3 +258,4 @@ const StatCard: React.FC<{ label: string; value: number }> = ({ label, value }) 
     <div className="text-[11px] text-content-muted">{label}</div>
   </div>
 );
+

@@ -1,29 +1,17 @@
-//! Matching de endereços IP contra listas de literais e blocos CIDR.
-//!
-//! Substitui a comparação por string exata que existia no controle de acesso, onde
-//! `172.31.0.0/16` nunca casava com nenhum cliente. Aceita as duas formas que aparecem em
-//! configuração de nginx: IP literal (`10.0.0.1`) e bloco (`10.0.0.0/8`), em IPv4 e IPv6.
-
 use ipnet::IpNet;
 use std::net::IpAddr;
 use std::str::FromStr;
 
-/// Uma entrada de lista de acesso já parseada.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IpRule {
-    /// `all` ou `*` — casa com qualquer endereço.
     Any,
-    /// Um endereço isolado.
+
     Addr(IpAddr),
-    /// Um bloco CIDR.
+
     Net(IpNet),
 }
 
 impl IpRule {
-    /// Interpreta uma entrada de configuração.
-    ///
-    /// Um IP sem máscara vira `Addr` em vez de um `/32`, porque a comparação direta é mais
-    /// barata que a de rede e este caminho roda a cada requisição.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let s = raw.trim();
         if s.is_empty() {
@@ -35,11 +23,11 @@ impl IpRule {
         if s.contains('/') {
             return IpNet::from_str(s)
                 .map(IpRule::Net)
-                .map_err(|e| format!("bloco CIDR inválido '{}': {}", s, e));
+                .map_err(|e| format!("Invalid CIDR block '{}': {}", s, e));
         }
         IpAddr::from_str(s)
             .map(IpRule::Addr)
-            .map_err(|e| format!("endereço IP inválido '{}': {}", s, e))
+            .map_err(|e| format!("Invalid IP address '{}': {}", s, e))
     }
 
     pub fn matches(&self, ip: IpAddr) -> bool {
@@ -47,8 +35,6 @@ impl IpRule {
             IpRule::Any => true,
             IpRule::Addr(a) => same_addr(*a, ip),
             IpRule::Net(n) => {
-                // Testa as duas representações: uma regra escrita em IPv4 deve casar com um
-                // cliente que chegou como IPv4-mapeado, e vice-versa.
                 n.contains(&ip)
                     || match (n, normalize(ip)) {
                         (IpNet::V4(_), other) if other != ip => n.contains(&other),
@@ -59,18 +45,12 @@ impl IpRule {
     }
 }
 
-/// Uma lista de regras compilada uma vez, para não reparsear a cada requisição.
 #[derive(Debug, Clone, Default)]
 pub struct IpMatcher {
     rules: Vec<IpRule>,
 }
 
 impl IpMatcher {
-    /// Compila a lista, descartando entradas inválidas e devolvendo-as junto.
-    ///
-    /// Descartar em vez de falhar mantém o proxy no ar quando uma entrada está torta; quem
-    /// precisa recusar a configuração inteira usa os erros devolvidos (é o que a validação
-    /// de config faz).
     pub fn compile(entries: &[String]) -> (Self, Vec<String>) {
         let mut rules = Vec::with_capacity(entries.len());
         let mut errors = Vec::new();
@@ -92,10 +72,6 @@ impl IpMatcher {
     }
 }
 
-/// Reduz um IPv6 que carrega um IPv4 (`::ffff:10.0.0.1`) ao IPv4 correspondente.
-///
-/// Um socket dual-stack entrega clientes IPv4 nessa forma mapeada. Sem isto, uma regra
-/// `allow 10.0.0.0/8` deixaria de fora exatamente os clientes que deveria aceitar.
 pub fn normalize(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
@@ -110,7 +86,6 @@ fn same_addr(a: IpAddr, b: IpAddr) -> bool {
     a == b || normalize(a) == normalize(b)
 }
 
-/// Verdadeiro para endereços de loopback, considerando a forma IPv4-mapeada.
 pub fn is_loopback(ip: IpAddr) -> bool {
     match normalize(ip) {
         IpAddr::V4(v4) => v4.is_loopback(),
@@ -118,11 +93,6 @@ pub fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
-/// Verdadeiro se o host de um endereço de bind atende apenas na máquina local.
-///
-/// Usado para decidir se a API de administração pode subir sem autenticação.
-/// Um host que não parseia como IP (um nome, por exemplo) é tratado como não-loopback:
-/// na dúvida, o lado seguro é exigir autenticação.
 pub fn listen_addr_is_loopback(listen: &str) -> bool {
     let host = match listen.rsplit_once(':') {
         Some((h, _port)) => h,
@@ -155,7 +125,6 @@ mod tests {
 
     #[test]
     fn cidr_block_matches_range() {
-        // O caso que motivou o módulo: a comparação por string nunca casava aqui.
         let rule = IpRule::parse("172.31.0.0/16").unwrap();
         assert!(rule.matches(ip("172.31.0.1")));
         assert!(rule.matches(ip("172.31.255.254")));
@@ -198,7 +167,6 @@ mod tests {
 
     #[test]
     fn ipv4_mapped_client_matches_ipv4_rule() {
-        // Um socket dual-stack entrega o cliente IPv4 nesta forma.
         let mapped = ip("::ffff:10.0.0.7");
         assert!(IpRule::parse("10.0.0.0/8").unwrap().matches(mapped));
         assert!(IpRule::parse("10.0.0.7").unwrap().matches(mapped));
@@ -248,7 +216,7 @@ mod tests {
         assert!(listen_addr_is_loopback("[::1]:8080"));
         assert!(!listen_addr_is_loopback("0.0.0.0:8080"));
         assert!(!listen_addr_is_loopback("192.168.1.10:8080"));
-        // Um nome desconhecido conta como exposto: na dúvida, exigir autenticação.
+
         assert!(!listen_addr_is_loopback("meu-servidor:8080"));
     }
 }

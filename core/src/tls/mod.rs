@@ -1,26 +1,11 @@
-//! Decide, a partir da configuração, quantos listeners o Ferrix precisa abrir e quais
-//! deles terminam TLS.
-//!
-//! Antes disto o proxy só ouvia uma porta (`http.listen`) para todo o tráfego, e
-//! `vhost.listen_port` era só um rótulo usado no casamento de host — nada de fato ouvia
-//! ali. Um domínio real quase sempre precisa de mais de uma porta (o próprio HTTPS já
-//! implica `80` para redirecionar e `443` para servir), então cada porta distinta
-//! declarada nos vhosts agora recebe seu próprio listener.
-
 use std::collections::BTreeMap;
 
 use crate::config::FerrixConfig;
 
-/// O que um listener de uma porta precisa saber para subir.
 #[derive(Debug, Clone)]
 pub struct PortPlan {
     pub port: u16,
-    /// `Some` quando ao menos um vhost desta porta declara `tls` — o listener sobe em
-    /// HTTPS, usando o certificado deste vhost.
-    ///
-    /// Quando mais de um vhost com `tls` compartilha a porta, hoje só o primeiro
-    /// declarado é servido (sem SNI multi-certificado ainda) — `validate` avisa sobre
-    /// isso, para não ficar surpresa silenciosa.
+
     pub tls: Option<TlsSource>,
 }
 
@@ -28,13 +13,10 @@ pub struct PortPlan {
 pub struct TlsSource {
     pub cert_path: String,
     pub key_path: String,
-    /// Nome do vhost cujo certificado foi escolhido — só para a mensagem de log.
+
     pub vhost_name: String,
 }
 
-/// Monta o plano de listeners: uma entrada por porta distinta entre `http.listen` e o
-/// `listen_port` de cada vhost, na ordem das portas (determinística, para os logs de
-/// inicialização saírem sempre na mesma ordem).
 pub fn plan_ports(config: &FerrixConfig) -> Vec<PortPlan> {
     let mut by_port: BTreeMap<u16, Option<TlsSource>> = BTreeMap::new();
 
@@ -157,8 +139,6 @@ mod tests {
 
     #[test]
     fn plain_vhost_sharing_a_tls_port_does_not_downgrade_it() {
-        // Se o primeiro vhost visto na porta não tiver `tls` mas outro tiver, a porta
-        // ainda deve subir em HTTPS — a ordem de declaração não deveria importar aqui.
         let cfg = FerrixConfig {
             vhosts: vec![
                 vhost(443, None),

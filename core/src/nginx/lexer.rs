@@ -1,12 +1,5 @@
-//! Tokenizador do formato de configuração do nginx.
-//!
-//! Trabalha só no nível léxico: separa palavras, blocos e terminadores, sem saber o que
-//! qualquer diretiva significa. Isso mantém a interpretação semântica num lugar só e
-//! permite que o relatório de migração aponte linha exata do que não foi convertido.
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
-    /// Uma palavra: nome de diretiva, argumento, padrão. Aspas já removidas.
     Word(String),
     Semicolon,
     OpenBrace,
@@ -49,7 +42,7 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
             i += 1;
             continue;
         }
-        // Comentário: vai até o fim da linha.
+
         if c == '#' {
             while i < chars.len() && chars[i] != '\n' {
                 i += 1;
@@ -89,7 +82,6 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                 while i < chars.len() {
                     let ch = chars[i];
                     if ch == '\\' && i + 1 < chars.len() {
-                        // A barra invertida protege o próximo caractere, inclusive a aspa.
                         value.push(chars[i + 1]);
                         if chars[i + 1] == '\n' {
                             line += 1;
@@ -128,7 +120,7 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                     if ch.is_whitespace() || ch == ';' || ch == '{' || ch == '}' || ch == '#' {
                         break;
                     }
-                    // Uma aspa colada a texto ainda agrupa, como em `zone=a:10m"x"`.
+
                     if ch == '"' || ch == '\'' {
                         break;
                     }
@@ -136,7 +128,6 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                     i += 1;
                 }
                 if value.is_empty() {
-                    // Nenhum caractere consumido significaria laço infinito.
                     i += 1;
                     continue;
                 }

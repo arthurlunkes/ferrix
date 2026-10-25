@@ -1,26 +1,26 @@
-# 02. Instalação e Execução
+# 02. Installation and Execution
 
-Este guia orienta como compilar, rodar e operar o **Ferrix** em ambientes de desenvolvimento e produção.
+This guide explains how to compile, run, and operate **Ferrix** in both development and production environments.
 
 ---
 
-## 📋 Pré-requisitos
+## 📋 Prerequisites
 
-- **Sistema Operacional**: Linux, macOS ou Windows.
-- **Rust Toolchain**: Versão estável (1.75 ou superior).
+- **Operating System**: Linux, macOS, or Windows.
+- **Rust Toolchain**: Stable release (1.75 or later).
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
-- **Node.js & npm** (necessário apenas caso queira customizar ou recompilar o frontend em React):
-  - Node.js 18+ (recomendado Node.js 20+).
+- **Node.js & npm** (only required if modifying or rebuilding the React dashboard):
+  - Node.js 18+ (Node.js 20+ recommended).
 
 ---
 
-## 🔨 Compilação do Projeto
+## 🔨 Building the Project
 
-O Ferrix usa o crate `rust-embed` para incluir todos os assets compilados do React (HTML, CSS e JavaScript) diretamente dentro do binário executável final. Dessa forma, você distribui **um único arquivo binário** sem depender de arquivos soltos.
+Ferrix includes the compiled React dashboard assets (HTML, CSS, JavaScript) directly into the final executable. This allows you to distribute **a single self-contained binary** with no runtime dependencies.
 
-### Passo 1: Compilar o Frontend React
+### Step 1: Build the React Frontend
 
 ```bash
 cd frontend
@@ -29,102 +29,124 @@ npm run build
 cd ..
 ```
 
-Isso gerará os arquivos estáticos na pasta `frontend/dist/`.
+This compiles static assets into `frontend/dist/`.
 
-### Passo 2: Compilar o Backend em Rust
+### Step 2: Build the Core Proxy in Rust
 
-Para ambiente de desenvolvimento:
+For development:
 
 ```bash
 cargo build
 ```
 
-O executável será gerado em: `target/debug/ferrix`.
+Binary location: `target/debug/ferrix`.
 
-Para ambiente de produção (máxima otimização e velocidade):
+For production (maximum optimizations and performance):
 
 ```bash
 cargo build --release
 ```
 
-O executável otimizado será gerado em: `target/release/ferrix`.
+Optimized binary location: `target/release/ferrix`.
 
 ---
 
-## 🚀 Execução
+## 🚀 Execution
 
-### 1. Inicialização Básica
+### 1. Basic Startup
 
 ```bash
-./target/release/ferrix
+./target/release/ferrix run
 ```
 
-Por padrão:
+By default:
+- If `ferrix.json` does not exist, Ferrix automatically generates a default initial configuration with a secure random token.
+- The control plane API and web dashboard listen at: `http://127.0.0.1:8081`.
+- The HTTP reverse proxy traffic listener binds to: `http://0.0.0.0:8000`.
 
-- Se o arquivo `ferrix.json` não existir, o Ferrix cria uma configuração inicial padrão automaticamente.
-- O painel administrativo fica disponível em: `http://localhost:8080`.
-- O tráfego de proxy reverso e servidor web escuta em: `http://localhost:8000`.
+### 2. CLI Commands & Options
 
-### 2. Flags e Parâmetros de Linha de Comando (CLI)
-
-O Ferrix aceita os seguintes argumentos:
+Ferrix provides an intuitive command line interface:
 
 ```text
-Usage: ferrix [OPTIONS]
+⚡ Ferrix — High-Performance Standalone Reverse Proxy & Web Server
 
-Options:
-  -c, --config <CONFIG>              Caminho para o arquivo de configuração [padrão: ferrix.json]
-      --admin-listen <ADMIN_LISTEN>  Sobrescreve o IP e porta do painel web/API (ex: 0.0.0.0:8080)
-      --http-listen <HTTP_LISTEN>    Sobrescreve o IP e porta do proxy de tráfego (ex: 0.0.0.0:80)
-  -h, --help                         Exibe o menu de ajuda
-  -V, --version                      Exibe a versão instalada
+Usage: ferrix [COMMAND] [OPTIONS]
+
+Main commands:
+  run       Start the server in foreground
+  start     Start the server in background (daemon)
+  stop      Stop the background server
+  restart   Restart the background server
+  reload    Reload configuration without dropping active connections
+  status    Check if the server is currently running
+  test      Test configuration file syntax (shortcut: ferrix -t)
+  import    Import and convert existing nginx.conf configurations
+
+Global options:
+  -c, --config <FILE>      Configuration file path [default: ferrix.json]
+  -t, --test               Test configuration file syntax and exit
+  -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
+  -h, --help               Display all detailed help options
+  -V, --version            Display installed Ferrix version
 ```
 
-#### Exemplos:
+#### Examples:
 
-Rodar com arquivo de configuração específico:
+Run with a custom configuration file:
 
 ```bash
-./target/release/ferrix --config /etc/ferrix/production.json
+./target/release/ferrix run --config /etc/ferrix/production.json
 ```
 
-Rodar em portas de produção (80 para tráfego e 8080 para admin):
+Start Ferrix as a background daemon:
 
 ```bash
-sudo ./target/release/ferrix --http-listen 0.0.0.0:80 --admin-listen 127.0.0.1:8080
+./target/release/ferrix start
+```
+
+Check runtime status and health:
+
+```bash
+./target/release/ferrix status
+```
+
+Test syntax without applying:
+
+```bash
+./target/release/ferrix -t
 ```
 
 ---
 
-## 🧪 Ambiente de Teste com Backends Mock
+## 🧪 Testing with Mock Backends
 
-Para experimentar o balanceamento de carga, você pode usar o arquivo `test_backends.js` fornecido na raiz:
+To experiment with load balancing, you can run the provided `test_backends.js` script:
 
 ```bash
-# Em um terminal:
+# In terminal 1:
 node test_backends.js
 
-# Saída esperada:
+# Expected output:
 # [Backend-1] listening on http://127.0.0.1:9001
 # [Backend-2] listening on http://127.0.0.1:9002
 ```
 
-Em outro terminal, inicie o Ferrix:
+In terminal 2, start Ferrix:
 
 ```bash
-./target/debug/ferrix --config ferrix.json
+./target/release/ferrix run --config ferrix.json
 ```
 
-Agora envie requisições para `http://localhost:8000/api` e observe:
-
-1. O retorno alternando entre `Backend-1` e `Backend-2`.
-2. As métricas e os logs aparecendo instantaneamente no painel em `http://localhost:8080`.
+Send requests to `http://localhost:8000/api` and verify:
+1. Responses alternating between `Backend-1` and `Backend-2`.
+2. Live metrics and request logs appearing in real time on the web dashboard at `http://localhost:8081`.
 
 ---
 
-## 🐳 Execução via Docker (Opcional)
+## 🐳 Docker Deployment (Optional)
 
-Exemplo de `Dockerfile` multi-stage para gerar uma imagem minúscula:
+Multi-stage `Dockerfile` example to produce a minimal container image:
 
 ```dockerfile
 # Stage 1: Build React UI
@@ -140,7 +162,7 @@ FROM rust:1.80-alpine AS rust-builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 COPY Cargo.* ./
-COPY src/ src/
+COPY core/ core/
 COPY --from=ui-builder /app/frontend/dist frontend/dist
 RUN cargo build --release
 
@@ -149,6 +171,6 @@ FROM alpine:3.20
 WORKDIR /app
 COPY --from=rust-builder /app/target/release/ferrix /usr/local/bin/ferrix
 COPY ferrix.json ./
-EXPOSE 8000 8080
-CMD ["ferrix", "--config", "ferrix.json"]
+EXPOSE 8000 8081
+CMD ["ferrix", "run", "--config", "ferrix.json"]
 ```

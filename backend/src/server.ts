@@ -9,11 +9,9 @@ const PORT = process.env.PORT || 8080;
 const CORE_URL = process.env.FERRIX_CORE_URL || "http://127.0.0.1:8081";
 const ADMIN_TOKEN = process.env.FERRIX_ADMIN_TOKEN || "";
 
-// Middlewares
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Helper para obter token de autorização da requisição
 function getRequestAuth(req: Request): string | undefined {
   const auth = req.headers["authorization"];
   if (auth) return auth;
@@ -31,7 +29,6 @@ function getRequestAuth(req: Request): string | undefined {
   return undefined;
 }
 
-// Helper genérico para encaminhar requisições REST para o Ferrix Core
 async function proxyToCore(
   req: Request,
   res: Response,
@@ -40,7 +37,7 @@ async function proxyToCore(
 ) {
   try {
     const coreUrl = new URL(targetPath, CORE_URL);
-    // Preservar query params
+
     for (const [k, v] of Object.entries(req.query)) {
       if (v !== undefined) {
         coreUrl.searchParams.append(k, String(v));
@@ -83,20 +80,16 @@ async function proxyToCore(
     }
   } catch (err: any) {
     console.error(
-      `[Ferrix Backend] Erro ao conectar ao Core em ${CORE_URL}${targetPath}:`,
+      `[Ferrix Backend] Error connecting to Core at ${CORE_URL}${targetPath}:`,
       err.message,
     );
     res.status(502).json({
       error: "Core Unreachable",
-      message: `Não foi possível comunicar com o Ferrix Core em ${CORE_URL}. Verifique se o processo está em execução.`,
+      message: `Could not connect to Ferrix Core at ${CORE_URL}. Check if the process is running.`,
       details: err.message,
     });
   }
 }
-
-// =============================================================================
-// API REST Endpoints (Encaminhamento e Orquestração do Core)
-// =============================================================================
 
 app.get("/api/status", (req: Request, res: Response) => {
   proxyToCore(req, res, "/api/status");
@@ -110,7 +103,6 @@ app.get("/api/logs", (req: Request, res: Response) => {
   proxyToCore(req, res, "/api/logs");
 });
 
-// Proxy para Stream de Server-Sent Events (SSE)
 app.get("/api/logs/stream", (req: Request, res: Response) => {
   const token =
     req.query.token ||
@@ -136,12 +128,7 @@ app.get("/api/logs/stream", (req: Request, res: Response) => {
       },
     },
     (coreRes) => {
-      // Um 401/403/502 do Core não é um stream — repassar isso como
-      // "text/event-stream" faz o EventSource do navegador tentar interpretar um corpo
-      // de erro como evento SSE, falhar de um jeito que a API do EventSource não deixa
-      // JS inspecionar (nem o status chega ao onerror), e reconectar para sempre. Um
-      // token expirado ou trocado virava um painel preso em "Reconectando..." sem pista
-      // nenhuma do motivo.
+
       if (coreRes.statusCode !== 200) {
         res.writeHead(coreRes.statusCode || 502, {
           "Content-Type": coreRes.headers["content-type"] || "application/json",
@@ -156,10 +143,7 @@ app.get("/api/logs/stream", (req: Request, res: Response) => {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      // Sem isto, o Node só manda os headers junto do primeiro chunk do corpo. Como o
-      // SSE do Core não emite nada até haver tráfego de verdade no proxy, o EventSource
-      // do navegador nunca via nem o 200 OK — ficava esperando, expirava e reconectava
-      // para sempre, num painel aparentemente "sempre reconectando".
+
       res.flushHeaders();
 
       coreRes.on("data", (chunk) => {
@@ -230,18 +214,14 @@ app.delete("/api/upstreams/:name", (req: Request, res: Response) => {
   proxyToCore(req, res, `/api/upstreams/${req.params.name}`, "DELETE");
 });
 
-// =============================================================================
-// Servidor de Assets Estáticos do Frontend React (SPA Fallback)
-// =============================================================================
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
 
 if (fs.existsSync(frontendDistPath)) {
   console.log(
-    `[Ferrix Backend] Servindo Dashboard React embutido de: ${frontendDistPath}`,
+    `[Ferrix Backend] Serving embedded React Dashboard from: ${frontendDistPath}`,
   );
   app.use(express.static(frontendDistPath));
 
-  // SPA fallback para rotas do cliente
   app.get("*", (req: Request, res: Response, next: NextFunction) => {
     if (req.path.startsWith("/api")) return next();
     res.sendFile(path.join(frontendDistPath, "index.html"));
@@ -254,21 +234,21 @@ if (fs.existsSync(frontendDistPath)) {
       core_url: CORE_URL,
       frontend_built: false,
       message:
-        "Compile o frontend em frontend/ para servir a interface web aqui.",
+        "Build the frontend in frontend/ to serve the web interface here.",
     });
   });
 }
 
-// Inicialização do servidor
 app.listen(PORT, () => {
   console.log(
     `================================================================`,
   );
   console.log(
-    `🚀 Ferrix Backend (Node.js) escutando em http://0.0.0.0:${PORT}`,
+    `🚀 Ferrix Backend (Node.js) listening on http://0.0.0.0:${PORT}`,
   );
-  console.log(`🎯 Apontando para Ferrix Core em: ${CORE_URL}`);
+  console.log(`🎯 Targeting Ferrix Core at: ${CORE_URL}`);
   console.log(
     `================================================================`,
   );
 });
+

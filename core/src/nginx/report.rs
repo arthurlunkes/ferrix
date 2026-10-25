@@ -1,25 +1,14 @@
-//! Relatório da migração de um `nginx.conf`.
-//!
-//! O importador não inventa equivalências. Toda diretiva que ele não sabe traduzir vira
-//! uma linha aqui, com arquivo, número de linha, texto original e o motivo — porque uma
-//! migração que some silenciosamente com regras de cache, TLS ou WAF é pior que uma
-//! migração que não acontece.
-
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteLevel {
-    /// Convertido integralmente. Registrado só quando vale explicar como.
     Converted,
-    /// Convertido, mas com diferença de comportamento que precisa ser conferida.
+
     Partial,
-    /// Sem equivalente no Ferrix. Continua valendo no nginx e some na migração — um gap de
-    /// verdade, candidato a fase futura.
+
     Unsupported,
-    /// Não faz nada de propósito, não por falta de tempo: a diretiva ajusta algo que o
-    /// Ferrix decidiu não expor (ex.: `ssl_dhparam` — o rustls não implementa DHE
-    /// clássico). Diferente de `Unsupported`, não é um item pendente.
+
     Ignored,
 }
 
@@ -29,7 +18,7 @@ pub struct MigrationNote {
     pub file: String,
     pub line: usize,
     pub directive: String,
-    /// O texto original, para que dê para procurar no arquivo de origem.
+
     pub source: String,
     pub reason: String,
 }
@@ -107,7 +96,6 @@ impl MigrationReport {
         self.notes.iter().filter(|n| n.level == level).count()
     }
 
-    /// Nomes de diretivas não migradas, sem repetição, para o resumo.
     pub fn unsupported_directives(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .notes
@@ -213,7 +201,6 @@ impl MigrationReport {
         out
     }
 
-    /// Resumo curto para o terminal.
     pub fn to_text_summary(&self) -> String {
         let mut lines = vec![format!(
             "{} virtual host(s), {} rota(s), {} upstream(s) criados",
@@ -242,7 +229,6 @@ impl MigrationReport {
     }
 }
 
-/// A barra vertical quebraria a tabela markdown.
 fn escape_pipes(s: &str) -> String {
     s.replace('|', "\\|")
 }

@@ -1,10 +1,10 @@
-# 04. Guia de Recursos e Configuração
+# 04. Configuration & Features Guide
 
-O arquivo de configuração do Ferrix é armazenado em formato **JSON** (por padrão `ferrix.json`), permitindo fácil manipulação tanto visualmente quanto por scripts ou ferramentas de infraestrutura como código.
+Ferrix's configuration file is stored in **JSON** format (defaulting to `ferrix.json`), enabling straightforward manipulation visually, via scripts, or with infrastructure-as-code tools.
 
 ---
 
-## 📄 Estrutura Geral do `ferrix.json`
+## 📄 General Structure of `ferrix.json`
 
 ```json
 {
@@ -24,13 +24,13 @@ O arquivo de configuração do Ferrix é armazenado em formato **JSON** (por pad
 
 ## 🌐 Virtual Hosts (Sites)
 
-Cada Virtual Host representa um bloco de servidor (equivalente a um bloco `server { ... }` no Nginx).
+Each Virtual Host represents a server block (equivalent to an Nginx `server { ... }` block).
 
 ```json
 {
-  "id": "vhost-principal",
-  "name": "Meu Aplicativo Web",
-  "server_names": ["meudominio.com", "www.meudominio.com", "localhost"],
+  "id": "main-vhost",
+  "name": "My Web Application",
+  "server_names": ["mydomain.com", "www.mydomain.com", "localhost"],
   "listen_port": 8000,
   "headers": {
     "X-Powered-By": "Ferrix/0.1.0",
@@ -41,7 +41,7 @@ Cada Virtual Host representa um bloco de servidor (equivalente a um bloco `serve
   "denied_ips": ["192.168.1.100"],
   "basic_auth": {
     "username": "admin",
-    "password": "senha_segura_aqui"
+    "password": "secure_password_here"
   },
   "rate_limit": {
     "requests_per_second": 50,
@@ -51,35 +51,35 @@ Cada Virtual Host representa um bloco de servidor (equivalente a um bloco `serve
 }
 ```
 
-### Propriedades do Virtual Host:
+### Virtual Host Properties:
 
-- `id`: Identificador único (usado nas URLs da API REST).
-- `name`: Nome legível amigável para exibição no dashboard.
-- `server_names`: Lista de domínios ou IPs aceitos no cabeçalho `Host`. Suporta `*` para capturar todos os domínios.
-- `listen_port`: Porta de escuta do tráfego.
-- `headers`: Cabeçalhos HTTP adicionados a todas as respostas servidas por este host virtual.
-- `allowed_ips`: Lista de IPs autorizados. Se vazia, permite todos (salvo os negados).
-- `denied_ips`: Lista de IPs bloqueados (retorna `403 Forbidden`).
-- `basic_auth` (opcional): Protege todas as rotas com autenticação básica HTTP.
-- `rate_limit` (opcional): Limite global do host por IP cliente.
+- `id`: Unique identifier (used in REST API URLs).
+- `name`: Friendly human-readable name displayed on the dashboard.
+- `server_names`: List of hostnames or IPs accepted in the `Host` header. Supports `*` as a catch-all for all domains.
+- `listen_port`: Inbound traffic listening port.
+- `headers`: HTTP headers injected into all responses served by this virtual host.
+- `allowed_ips`: List of authorized IPs. If empty, all IPs are allowed (except explicitly denied ones).
+- `denied_ips`: Blocked IP addresses (returns `403 Forbidden`).
+- `basic_auth` (optional): Protects all routes with HTTP Basic Authentication.
+- `rate_limit` (optional): Global host rate limit applied per client IP.
 
 ---
 
-## 🛣️ Regras de Roteamento (Routes)
+## 🛣️ Routing Rules (Routes)
 
-Dentro de cada Virtual Host, você define regras de caminho (`routes`), equivalentes aos blocos `location` do Nginx:
+Inside each Virtual Host, you configure path routing rules (`routes`), equivalent to Nginx `location` blocks:
 
-### 1. Rota de Proxy Reverso (Reverse Proxy)
+### 1. Reverse Proxy Route
 
-Encaminha o tráfego para um pool de servidores de backend:
+Forwards traffic to a backend server pool:
 
 ```json
 {
-  "id": "rota-api",
+  "id": "api-route",
   "path_prefix": "/api",
   "strip_prefix": false,
   "target_type": "proxy_upstream",
-  "upstream_name": "meu_backend_cluster",
+  "upstream_name": "my_backend_cluster",
   "websocket_enabled": true,
   "proxy_set_headers": {
     "Host": "$host",
@@ -93,17 +93,17 @@ Encaminha o tráfego para um pool de servidores de backend:
 }
 ```
 
-- `strip_prefix`: Se `true`, remove `/api` da URL antes de enviar ao backend.
-- `websocket_enabled`: Permite conexões WebSocket de longa duração com tunneling bidirecional.
-- `proxy_set_headers`: Mapeamento de cabeçalhos enviados ao backend com variáveis especiais (`$host`, `$remote_addr`, `$proxy_add_x_forwarded_for`, `$scheme`).
+- `strip_prefix`: If `true`, strips `/api` from the URI path before forwarding to the backend.
+- `websocket_enabled`: Enables long-lived bidirectional WebSocket tunneling.
+- `proxy_set_headers`: Custom upstream headers with special variable substitution (`$host`, `$remote_addr`, `$proxy_add_x_forwarded_for`, `$scheme`).
 
-### 2. Rota de Arquivos Estáticos com Fallback SPA
+### 2. Static Files Route with SPA Fallback
 
-Serve arquivos locais e redireciona rotas virtuais para `index.html`:
+Serves local disk files and routes missing paths to `index.html`:
 
 ```json
 {
-  "id": "rota-frontend",
+  "id": "frontend-route",
   "path_prefix": "/",
   "strip_prefix": false,
   "target_type": "static_files",
@@ -113,35 +113,35 @@ Serve arquivos locais e redireciona rotas virtuais para `index.html`:
 }
 ```
 
-- `static_root`: Diretório local no disco onde os arquivos estão localizados.
-- `try_files`: Tenta primeiro o arquivo exato (`$uri`), depois o diretório com index (`$uri/`) e finalmente o fallback (`/index.html`). Ideal para React Router, Vue Router, etc.
+- `static_root`: Local disk path where files are hosted.
+- `try_files`: Checks for the exact file (`$uri`), then directory index (`$uri/`), falling back to (`/index.html`). Tailor-made for React Router, Vue Router, etc.
 
-### 3. Rota de Redirecionamento HTTP
+### 3. HTTP Redirect Route
 
-Redireciona o navegador para outra URL:
+Redirects the browser to an alternate URL:
 
 ```json
 {
-  "id": "rota-docs",
+  "id": "docs-route",
   "path_prefix": "/docs",
   "strip_prefix": false,
   "target_type": "redirect",
-  "redirect_url": "https://github.com/meu-projeto",
+  "redirect_url": "https://github.com/my-project",
   "redirect_code": 301
 }
 ```
 
 ---
 
-## ⚖️ Upstreams e Balanceamento de Carga
+## ⚖️ Upstreams and Load Balancing
 
-Os upstreams representam conjuntos de nós de backend que dividem a carga de trabalho.
+Upstreams define pools of backend servers that share incoming workload.
 
 ```json
 {
   "upstreams": {
-    "meu_backend_cluster": {
-      "name": "meu_backend_cluster",
+    "my_backend_cluster": {
+      "name": "my_backend_cluster",
       "algorithm": "round_robin",
       "targets": [
         {
@@ -168,18 +168,18 @@ Os upstreams representam conjuntos de nós de backend que dividem a carga de tra
 }
 ```
 
-### Algoritmos Suportados (`algorithm`):
+### Supported Balancing Algorithms (`algorithm`):
 
-1. **`round_robin`**: Distribui cada requisição sequencialmente entre os nós saudáveis.
-2. **`weighted_round_robin`**: Distribui proporcionalmente ao peso (`weight`) de cada servidor (ex: peso 3 recebe 3x mais requisições que peso 1).
-3. **`least_conn`**: Direciona para o nó que possui a menor quantidade de conexões ativas no instante da requisição.
-4. **`ip_hash`**: Gera um hash do IP do cliente, garantindo que o mesmo cliente caia sempre no mesmo servidor (sessão persistente).
-5. **`random`**: Distribuição aleatória uniforme.
+1. **`round_robin`**: Cycles sequentially through healthy targets.
+2. **`weighted_round_robin`**: Distributes proportionally to each server's configured `weight` (e.g., weight 3 receives 3x more requests than weight 1).
+3. **`least_conn`**: Routes to the target with the fewest active concurrent connections at request time.
+4. **`ip_hash`**: Hashes client IP to ensure continuous affinity with the same backend (sticky session).
+5. **`random`**: Uniform random distribution among healthy nodes.
 
-### Failover Automático (_proxy_next_upstream_):
+### Automatic Failover (_proxy_next_upstream_):
 
-Se um nó do pool falhar (erro de conexão de rede, timeout, ou código HTTP 502/504):
+If a pool node fails (connection error, timeout, or HTTP 502/504 status code):
 
-1. O Ferrix incrementa o contador de falhas do nó.
-2. Tenta imediatamente o próximo nó disponível no pool de candidatos.
-3. Se o número de falhas consecutivas atingir `max_fails`, o nó é marcado temporariamente como **UNHEALTHY** até que o health check ativo confirme seu retorno.
+1. Ferrix increments the node's consecutive failure counter.
+2. Immediately tries the next available target in the pool without dropping the client request.
+3. Once consecutive failures reach `max_fails`, the node is temporarily marked **UNHEALTHY** until active background health checks confirm recovery.

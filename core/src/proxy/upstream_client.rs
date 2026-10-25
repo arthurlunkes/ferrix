@@ -1,14 +1,3 @@
-//! Cliente HTTP usado para falar com os upstreams.
-//!
-//! Upstreams em `http://` vão direto pelo cliente do hyper: a requisição do cliente é
-//! repassada quase sem conversão (mesmo `HeaderMap`, mesmo tipo de corpo) e a resposta volta
-//! como `Body` nativo, preservando o tamanho exato do corpo. Antes, tudo passava pelo
-//! `reqwest`, que reconstruía URL, cabeçalhos e corpo a cada requisição — no benchmark,
-//! esse vai-e-volta custava mais da metade da vazão do proxy.
-//!
-//! Upstreams em `https://` continuam no `reqwest`, que já resolve TLS, verificação de
-//! certificado opcional e afins.
-
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, Request, Response};
 use http_body::{Body as HttpBody, Frame, SizeHint};
@@ -21,8 +10,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::Sleep;
 
-/// Por que a ida ao upstream falhou — o que decide se o `proxy_next_upstream` tenta o
-/// próximo servidor.
 #[derive(Debug)]
 pub enum UpstreamError {
     Timeout(String),
@@ -43,25 +30,18 @@ impl std::fmt::Display for UpstreamError {
     }
 }
 
-/// Corpo da requisição enviado ao upstream.
 pub enum OutgoingBody {
     Empty,
-    /// Bufferizado: pode ser reenviado a outro upstream no failover.
+
     Buffered(Bytes),
-    /// Em streaming: só pode ser enviado uma vez.
+
     Streaming(Body),
 }
 
-/// Quantos pools de conexão independentes cada cliente mantém.
-///
-/// Cada worker (thread-per-core) usa o seu, escolhido pela identidade da thread. Uma
-/// conexão com o upstream é uma tarefa do runtime da thread que a abriu; se outra thread a
-/// pegasse do pool, cada requisição voltaria a cruzar threads. Também evita que todos os
-/// workers disputem o mutex de um pool único.
 const POOL_SHARDS: usize = 64;
 
 thread_local! {
-    /// Pool desta thread, distribuído em rodízio na primeira requisição dela.
+
     static SHARD: usize = {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % POOL_SHARDS
@@ -69,7 +49,6 @@ thread_local! {
 }
 
 pub struct UpstreamClient {
-    /// Pools criados sob demanda, um por shard.
     http: Box<[std::sync::OnceLock<Client<HttpConnector, Body>>]>,
     connector: HttpConnector,
     https: reqwest::Client,
@@ -90,9 +69,6 @@ impl UpstreamClient {
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(100)
             .connect_timeout(connect_timeout)
-            // Intervalo máximo entre duas leituras, e não tempo total da resposta. É a
-            // semântica de `proxy_read_timeout` do nginx, e o que permite atravessar
-            // respostas longas e contínuas — SSE, downloads — sem cortá-las.
             .read_timeout(read_timeout)
             .danger_accept_invalid_certs(!verify_tls)
             .build()
@@ -146,17 +122,14 @@ impl UpstreamClient {
             .method(method)
             .uri(url)
             .body(body)
-            .map_err(|e| UpstreamError::Other(format!("URL de upstream inválida: {}", e)))?;
+            .map_err(|e| UpstreamError::Other(format!("Invalid upstream URL: {}", e)))?;
         *req.headers_mut() = headers;
 
-        // Até os cabeçalhos da resposta chegarem, o `read_timeout` vale como prazo de
-        // espera da primeira leitura — o mesmo que o `reqwest` fazia.
-        // Prazo calculado pelo relógio em cache: `timeout()` leria o relógio do sistema.
         let deadline = tokio::time::Instant::from_std(crate::clock::now() + self.read_timeout);
         let resp = match tokio::time::timeout_at(deadline, self.http_client().request(req)).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
-                let msg = format!("erro ao falar com o upstream: {}", e);
+                let msg = format!("Error communicating with upstream: {}", e);
                 return Err(if e.is_connect() && is_timeout_error(&e) {
                     UpstreamError::Timeout(msg)
                 } else {
@@ -165,7 +138,7 @@ impl UpstreamClient {
             }
             Err(_) => {
                 return Err(UpstreamError::Timeout(
-                    "tempo de resposta do upstream esgotado".to_string(),
+                    "Upstream response timed out".to_string(),
                 ))
             }
         };
@@ -211,7 +184,6 @@ impl UpstreamClient {
     }
 }
 
-/// Um timeout de conexão do `HttpConnector` aparece como erro de I/O `TimedOut` na cadeia.
 fn is_timeout_error(e: &hyper_util::client::legacy::Error) -> bool {
     let mut source = std::error::Error::source(e);
     while let Some(err) = source {
@@ -225,13 +197,6 @@ fn is_timeout_error(e: &hyper_util::client::legacy::Error) -> bool {
     false
 }
 
-/// Corpo de resposta com `proxy_read_timeout`: falha se o upstream ficar mais que `dur`
-/// sem mandar nada. O prazo recomeça a cada pedaço recebido, então respostas longas e
-/// contínuas (SSE, downloads) passam inteiras.
-///
-/// Rearmar o timer a cada pedaço custaria uma leitura de relógio por pedaço. Em vez
-/// disso, cada pedaço só anota a hora (do relógio em cache) e o timer, quando dispara,
-/// confere se houve atividade desde então — se houve, rearma a partir dela.
 struct ReadTimeoutBody<B> {
     inner: B,
     sleep: Pin<Box<Sleep>>,
@@ -280,8 +245,7 @@ where
                                 "tempo de leitura do upstream esgotado".into()
                             )));
                         }
-                        // Houve atividade depois que o timer foi armado: rearma para o
-                        // fim da janela contada a partir dela, e volta a esperar.
+
                         let remaining = Duration::from_millis(limit_ms - idle_ms);
                         let deadline =
                             tokio::time::Instant::from_std(crate::clock::now() + remaining);

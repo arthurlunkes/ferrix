@@ -38,16 +38,16 @@ interface VHostModalProps {
 }
 
 const MATCH_TYPE_OPTIONS: { value: RouteMatchType; label: string; hint: string }[] = [
-  { value: "prefix", label: "Prefixo", hint: "/api casa /api e /api/x, não /apifoo" },
-  { value: "prefix_literal", label: "Prefixo (literal)", hint: "igual ao nginx: /api casa /apifoo também" },
-  { value: "exact", label: "Exato", hint: "casa só o caminho inteiro" },
-  { value: "prefix_priority", label: "Prefixo prioritário (^~)", hint: "vence antes de qualquer regex" },
-  { value: "regex", label: "Expressão regular", hint: "sensível a maiúsculas" },
-  { value: "regex_case_insensitive", label: "Regex (i)", hint: "insensível a maiúsculas" },
+  { value: "prefix", label: "Prefix", hint: "/api matches /api and /api/x, not /apifoo" },
+  { value: "prefix_literal", label: "Prefix (literal)", hint: "like Nginx: /api matches /apifoo as well" },
+  { value: "exact", label: "Exact", hint: "matches only the exact full path" },
+  { value: "prefix_priority", label: "Priority prefix (^~)", hint: "takes precedence over any regex" },
+  { value: "regex", label: "Regular expression", hint: "case-sensitive" },
+  { value: "regex_case_insensitive", label: "Regex (i)", hint: "case-insensitive" },
 ];
 
 const NEXT_UPSTREAM_CONDITIONS: { value: NextUpstreamCondition; label: string }[] = [
-  { value: "error", label: "Erro de conexão" },
+  { value: "error", label: "Connection error" },
   { value: "timeout", label: "Timeout" },
   { value: "http_500", label: "HTTP 500" },
   { value: "http_502", label: "HTTP 502" },
@@ -64,10 +64,6 @@ function isRouteShadowed(routes: RouteRule[], index: number): boolean {
     .some((other) => other.match_type === r.match_type && other.path_prefix === r.path_prefix);
 }
 
-// ---------------------------------------------------------------------------
-// Editores reutilizados no nível do host e no nível da rota
-// ---------------------------------------------------------------------------
-
 const RateLimitEditor: React.FC<{
   value: RateLimitConfig | null | undefined;
   onChange: (next: RateLimitConfig | null) => void;
@@ -82,12 +78,12 @@ const RateLimitEditor: React.FC<{
             : null,
         )
       }
-      label="Limitar taxa de requisições"
-      description="Balde furado (token bucket), como o limit_req do nginx"
+      label="Rate limit requests"
+      description="Token bucket algorithm, like Nginx limit_req"
     />
     {value && (
       <div className="grid grid-cols-2 gap-3 pl-1 border-l-2 border-border-subtle ml-1.5 pl-4">
-        <Field label="Requisições / segundo">
+        <Field label="Requests / second">
           <Input
             type="number"
             min={1}
@@ -105,18 +101,18 @@ const RateLimitEditor: React.FC<{
             mono
           />
         </Field>
-        <Field label="Modo do excedente" className="col-span-2">
+        <Field label="Burst mode" className="col-span-2">
           <Select
             value={value.mode}
             onChange={(e) => onChange({ ...value, mode: e.target.value as RateLimitConfig["mode"] })}
           >
-            <option value="no_delay">Sem espera (passa direto até o burst)</option>
-            <option value="queue">Fila (espera, nunca recusa dentro do burst)</option>
-            <option value="delay">Espera parcial (as N primeiras passam livres)</option>
+            <option value="no_delay">No delay (pass through up to burst)</option>
+            <option value="queue">Queue (wait, never reject within burst)</option>
+            <option value="delay">Partial delay (first N pass without delay)</option>
           </Select>
         </Field>
         {value.mode === "delay" && (
-          <Field label="Livres antes de esperar">
+          <Field label="Delay threshold">
             <Input
               type="number"
               min={0}
@@ -126,7 +122,7 @@ const RateLimitEditor: React.FC<{
             />
           </Field>
         )}
-        <Field label="Código de recusa">
+        <Field label="Rejection status code">
           <Input
             type="number"
             value={value.status}
@@ -147,12 +143,12 @@ const LimitConnEditor: React.FC<{
     <Toggle
       checked={!!value}
       onChange={(checked) => onChange(checked ? { max_connections: 10, status: 429 } : null)}
-      label="Limitar conexões simultâneas"
-      description="Equivalente a limit_conn — por IP de cliente"
+      label="Limit concurrent connections"
+      description="Equivalent to limit_conn — per client IP"
     />
     {value && (
       <div className="grid grid-cols-2 gap-3 border-l-2 border-border-subtle ml-1.5 pl-4">
-        <Field label="Máximo simultâneo">
+        <Field label="Max concurrent">
           <Input
             type="number"
             min={1}
@@ -161,7 +157,7 @@ const LimitConnEditor: React.FC<{
             mono
           />
         </Field>
-        <Field label="Código de recusa">
+        <Field label="Rejection status code">
           <Input
             type="number"
             value={value.status}
@@ -182,20 +178,20 @@ const BasicAuthEditor: React.FC<{
     <Toggle
       checked={!!value}
       onChange={(checked) => onChange(checked ? { username: "admin", password: "" } : null)}
-      label="Exigir HTTP Basic Auth"
+      label="Require HTTP Basic Auth"
     />
     {value && (
       <div className="grid grid-cols-2 gap-3 border-l-2 border-border-subtle ml-1.5 pl-4">
-        <Field label="Usuário">
+        <Field label="Username">
           <Input value={value.username} onChange={(e) => onChange({ ...value, username: e.target.value })} />
         </Field>
-        <Field label="Senha">
+        <Field label="Password">
           <Input
             type="text"
             value={value.password}
             onChange={(e) => onChange({ ...value, password: e.target.value })}
             mono
-            placeholder="visível em texto — trate como um segredo"
+            placeholder="visible in plaintext — treat as a secret"
           />
         </Field>
       </div>
@@ -208,19 +204,15 @@ const SatisfySelector: React.FC<{ value: Satisfy; onChange: (v: Satisfy) => void
   onChange,
 }) => (
   <Field
-    label="Combinação entre ACL de IP e autenticação"
-    hint="'Ambos' exige passar nos dois; 'Qualquer um' libera com qualquer um dos dois — útil para 'rede interna OU senha'"
+    label="Combination of IP ACL and authentication"
+    hint="'All' requires passing both; 'Any' grants access if either passes — useful for 'internal network OR password'"
   >
     <Select value={value} onChange={(e) => onChange(e.target.value as Satisfy)}>
-      <option value="all">Ambos (satisfy all)</option>
-      <option value="any">Qualquer um (satisfy any)</option>
+      <option value="all">Both (satisfy all)</option>
+      <option value="any">Any (satisfy any)</option>
     </Select>
   </Field>
 );
-
-// ---------------------------------------------------------------------------
-// Cartão de rota
-// ---------------------------------------------------------------------------
 
 const RouteCard: React.FC<{
   route: RouteRule;
@@ -249,14 +241,14 @@ const RouteCard: React.FC<{
       }`}
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-xs font-bold text-brand-400">Rota #{index + 1}</span>
+        <span className="font-mono text-xs font-bold text-brand-400">Route #{index + 1}</span>
         <div className="flex items-center gap-1">
           <button
             type="button"
             disabled={index === 0}
             onClick={() => onMove(-1)}
             className="p-1 rounded text-content-muted hover:text-content-primary disabled:opacity-30 transition"
-            title="Mover para cima"
+            title="Move up"
           >
             <ArrowUp className="w-3.5 h-3.5" />
           </button>
@@ -265,7 +257,7 @@ const RouteCard: React.FC<{
             disabled={index === total - 1}
             onClick={() => onMove(1)}
             className="p-1 rounded text-content-muted hover:text-content-primary disabled:opacity-30 transition"
-            title="Mover para baixo"
+            title="Move down"
           >
             <ArrowDown className="w-3.5 h-3.5" />
           </button>
@@ -274,7 +266,7 @@ const RouteCard: React.FC<{
               type="button"
               onClick={onRemove}
               className="p-1 rounded text-content-muted hover:text-danger-400 transition"
-              title="Remover rota"
+              title="Remove route"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -285,12 +277,12 @@ const RouteCard: React.FC<{
       {shadowed && (
         <div className="flex items-center gap-2 text-[11px] text-warning-400 bg-warning-500/10 border border-warning-500/30 rounded-lg px-2.5 py-1.5">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          Uma rota acima já usa o mesmo padrão — esta nunca será alcançada.
+          A route above uses the same pattern — this route will never be reached.
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Field label="Padrão de caminho">
+        <Field label="Path pattern">
           <Input
             value={route.path_prefix}
             onChange={(e) => onChange({ path_prefix: e.target.value })}
@@ -299,7 +291,7 @@ const RouteCard: React.FC<{
             className="text-xs"
           />
         </Field>
-        <Field label="Tipo de match">
+        <Field label="Match type">
           <Select
             value={route.match_type}
             onChange={(e) => onChange({ match_type: e.target.value as RouteMatchType })}
@@ -311,14 +303,14 @@ const RouteCard: React.FC<{
             ))}
           </Select>
         </Field>
-        <Field label="Destino">
+        <Field label="Target">
           <Select
             value={route.target_type}
             onChange={(e) => onChange({ target_type: e.target.value as RouteRule["target_type"] })}
           >
-            <option value="proxy_upstream">Proxy para upstream</option>
-            <option value="static_files">Arquivos estáticos</option>
-            <option value="redirect">Redirecionamento HTTP</option>
+            <option value="proxy_upstream">Proxy to upstream</option>
+            <option value="static_files">Static files</option>
+            <option value="redirect">HTTP redirect</option>
           </Select>
         </Field>
       </div>
@@ -334,11 +326,11 @@ const RouteCard: React.FC<{
               onChange={(e) => onChange({ upstream_name: e.target.value })}
             >
               <option value="" disabled>
-                Selecione...
+                Select...
               </option>
               {upstreams.map((u) => (
                 <option key={u.name} value={u.name}>
-                  {u.name} ({u.config.targets.length} servidores)
+                  {u.name} ({u.config.targets.length} servers)
                 </option>
               ))}
             </Select>
@@ -360,7 +352,7 @@ const RouteCard: React.FC<{
 
       {route.target_type === "static_files" && (
         <div className="space-y-3">
-          <Field label="Diretório raiz">
+          <Field label="Root directory">
             <Input
               value={route.static_root ?? ""}
               onChange={(e) => onChange({ static_root: e.target.value })}
@@ -369,7 +361,7 @@ const RouteCard: React.FC<{
               className="text-xs"
             />
           </Field>
-          <Field label="try_files" hint="Ex.: $uri $uri/ /index.html — essencial para SPAs">
+          <Field label="try_files" hint="e.g.: $uri $uri/ /index.html — essential for SPAs">
             <Input
               value={route.try_files ?? ""}
               onChange={(e) => onChange({ try_files: e.target.value })}
@@ -382,24 +374,24 @@ const RouteCard: React.FC<{
 
       {route.target_type === "redirect" && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <Field label="URL de destino" className="col-span-2">
+          <Field label="Destination URL" className="col-span-2">
             <Input
               value={route.redirect_url ?? ""}
               onChange={(e) => onChange({ redirect_url: e.target.value })}
-              placeholder="https://exemplo.com"
+              placeholder="https://example.com"
               mono
               className="text-xs"
             />
           </Field>
-          <Field label="Código">
+          <Field label="Status code">
             <Select
               value={String(route.redirect_code ?? 302)}
               onChange={(e) => onChange({ redirect_code: parseInt(e.target.value) })}
             >
-              <option value="301">301 Permanente</option>
-              <option value="302">302 Temporário</option>
-              <option value="307">307 Temporário (preserva método)</option>
-              <option value="308">308 Permanente (preserva método)</option>
+              <option value="301">301 Permanent</option>
+              <option value="302">302 Temporary</option>
+              <option value="307">307 Temporary (preserves method)</option>
+              <option value="308">308 Permanent (preserves method)</option>
             </Select>
           </Field>
         </div>
@@ -408,14 +400,14 @@ const RouteCard: React.FC<{
       {route.target_type === "proxy_upstream" && (
         <div>
           <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-            Cabeçalhos enviados ao backend
+            Headers forwarded to backend
           </span>
           <KeyValueEditor
             value={route.proxy_set_headers}
             onChange={(v) => onChange({ proxy_set_headers: v })}
             keyPlaceholder="X-Real-IP"
             valuePlaceholder="$remote_addr"
-            addLabel="Adicionar cabeçalho"
+            addLabel="Add header"
           />
         </div>
       )}
@@ -426,7 +418,7 @@ const RouteCard: React.FC<{
         className="flex items-center gap-1.5 text-[11px] font-semibold text-content-muted hover:text-content-secondary transition"
       >
         {advancedOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-        Avançado: timeouts, failover, limites, controle de acesso
+        Advanced: timeouts, failover, limits, access control
       </button>
 
       {advancedOpen && (
@@ -434,7 +426,7 @@ const RouteCard: React.FC<{
           {route.target_type === "proxy_upstream" && (
             <>
               <div className="grid grid-cols-3 gap-3">
-                <Field label="Timeout de conexão (ms)" hint="Herda o global se vazio">
+                <Field label="Connect timeout (ms)" hint="Inherits global if empty">
                   <Input
                     type="number"
                     value={route.proxy_connect_timeout_ms ?? ""}
@@ -444,7 +436,7 @@ const RouteCard: React.FC<{
                     mono
                   />
                 </Field>
-                <Field label="Timeout de leitura (ms)">
+                <Field label="Read timeout (ms)">
                   <Input
                     type="number"
                     value={route.proxy_read_timeout_ms ?? ""}
@@ -454,7 +446,7 @@ const RouteCard: React.FC<{
                     mono
                   />
                 </Field>
-                <Field label="Timeout de envio (ms)">
+                <Field label="Send timeout (ms)">
                   <Input
                     type="number"
                     value={route.proxy_send_timeout_ms ?? ""}
@@ -468,7 +460,7 @@ const RouteCard: React.FC<{
 
               <div>
                 <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-                  Tentar o próximo servidor quando (proxy_next_upstream)
+                  Retry next upstream server when (proxy_next_upstream)
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   {NEXT_UPSTREAM_CONDITIONS.map((c) => {
@@ -490,7 +482,7 @@ const RouteCard: React.FC<{
                   })}
                 </div>
                 <p className="text-[11px] text-content-muted mt-1">
-                  Nenhuma condição marcada = failover desligado para esta rota.
+                  No conditions selected = failover disabled for this route.
                 </p>
               </div>
             </>
@@ -498,13 +490,13 @@ const RouteCard: React.FC<{
 
           <div>
             <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-              Limite de taxa desta rota
+              Rate limit for this route
             </span>
             <RateLimitEditor value={route.rate_limit} onChange={(v) => onChange({ rate_limit: v })} />
           </div>
           <div>
             <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-              Limite de conexões desta rota
+              Connection limit for this route
             </span>
             <LimitConnEditor value={route.limit_conn} onChange={(v) => onChange({ limit_conn: v })} />
           </div>
@@ -512,13 +504,13 @@ const RouteCard: React.FC<{
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-                IPs permitidos nesta rota
+                Allowed IPs for this route
               </span>
               <CidrListEditor value={route.allowed_ips} onChange={(v) => onChange({ allowed_ips: v })} />
             </div>
             <div>
               <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-                IPs negados nesta rota
+                Denied IPs for this route
               </span>
               <CidrListEditor value={route.denied_ips} onChange={(v) => onChange({ denied_ips: v })} />
             </div>
@@ -526,7 +518,7 @@ const RouteCard: React.FC<{
 
           <div>
             <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-              Basic Auth desta rota
+              Basic Auth for this route
             </span>
             <BasicAuthEditor value={route.basic_auth} onChange={(v) => onChange({ basic_auth: v })} />
           </div>
@@ -537,7 +529,7 @@ const RouteCard: React.FC<{
 
           <div>
             <span className="block text-[11px] font-medium text-content-secondary mb-1.5">
-              Cabeçalhos adicionados à resposta desta rota
+              Headers added to response for this route
             </span>
             <KeyValueEditor
               value={route.add_headers}
@@ -551,10 +543,6 @@ const RouteCard: React.FC<{
     </div>
   );
 };
-
-// ---------------------------------------------------------------------------
-// Modal principal
-// ---------------------------------------------------------------------------
 
 export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClose, onSave }) => {
   const [formData, setFormData] = useState<VirtualHost>(() => {
@@ -624,41 +612,41 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
       };
       await onSave(updated);
     } catch (err: any) {
-      setSaveError(err.message || "Falha ao salvar o virtual host");
+      setSaveError(err.message || "Failed to save virtual host");
     } finally {
       setSaving(false);
     }
   };
 
   const tabs: TabItem[] = [
-    { id: "general", label: "Geral" },
+    { id: "general", label: "General" },
     {
       id: "routes",
-      label: "Rotas",
+      label: "Routes",
       badge: shadowedFlags.some(Boolean) ? (
         <AlertTriangle className="w-3 h-3 text-warning-400" />
       ) : undefined,
     },
     { id: "headers", label: "Headers" },
-    { id: "security", label: "Segurança" },
-    { id: "limits", label: "Limites" },
+    { id: "security", label: "Security" },
+    { id: "limits", label: "Limits" },
   ];
 
   return (
     <Modal
       open
       onClose={onClose}
-      title={vhost ? "Editar Virtual Host" : "Novo Virtual Host"}
-      description="Domínio, porta de escuta e roteamento de proxy reverso"
+      title={vhost ? "Edit Virtual Host" : "New Virtual Host"}
+      description="Domain, listening port, and reverse proxy routing"
       icon={<Globe className="w-5 h-5" />}
       size="xl"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Cancelar
+            Cancel
           </Button>
           <Button variant="primary" onClick={handleSubmit} loading={saving}>
-            Salvar e recarregar
+            Save and reload
           </Button>
         </>
       }
@@ -675,15 +663,15 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
         {tab === "general" && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <Field label="Nome / descrição" required className="md:col-span-2">
+              <Field label="Name / description" required className="md:col-span-2">
                 <Input
                   required
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Ex.: Aplicação Principal"
+                  placeholder="e.g. Main Application"
                 />
               </Field>
-              <Field label="Porta de escuta" required>
+              <Field label="Listening port" required>
                 <Input
                   type="number"
                   required
@@ -696,15 +684,15 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
               </Field>
             </div>
             <Field
-              label="Server names (domínios, separados por vírgula)"
-              hint="Aceita nome exato, *.dominio.com, dominio.* ou * para qualquer domínio"
+              label="Server names (domains, comma-separated)"
+              hint="Accepts exact name, *.example.com, example.*, or * for any domain"
               required
             >
               <Input
                 required
                 value={serverNamesInput}
                 onChange={(e) => setServerNamesInput(e.target.value)}
-                placeholder="localhost, api.meudominio.com, *"
+                placeholder="localhost, api.mydomain.com, *"
                 mono
               />
             </Field>
@@ -715,10 +703,10 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-xs text-content-muted">
-                A ordem importa: em caso de prefixos empatados, a primeira rota declarada vence.
+                Order matters: in case of equal prefixes, the first declared route takes precedence.
               </p>
               <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={addRoute}>
-                Adicionar rota
+                Add route
               </Button>
             </div>
             <div className="space-y-4">
@@ -742,7 +730,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
         {tab === "headers" && (
           <div>
             <p className="text-xs text-content-muted mb-3">
-              Aplicados a toda resposta servida por este host, antes dos cabeçalhos específicos de cada rota.
+              Applied to all responses served by this host, before route-specific headers.
             </p>
             <KeyValueEditor
               value={formData.headers}
@@ -758,7 +746,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <span className="block text-xs font-medium text-content-secondary mb-1.5">
-                  IPs permitidos
+                  Allowed IPs
                 </span>
                 <CidrListEditor
                   value={formData.allowed_ips}
@@ -767,7 +755,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
               </div>
               <div>
                 <span className="block text-xs font-medium text-content-secondary mb-1.5">
-                  IPs negados
+                  Denied IPs
                 </span>
                 <CidrListEditor
                   value={formData.denied_ips}
@@ -795,7 +783,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
           <div className="space-y-6">
             <div>
               <span className="block text-xs font-medium text-content-secondary mb-1.5">
-                Limite de taxa do host
+                Host rate limit
               </span>
               <RateLimitEditor
                 value={formData.rate_limit}
@@ -804,7 +792,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
             </div>
             <div>
               <span className="block text-xs font-medium text-content-secondary mb-1.5">
-                Limite de conexões do host
+                Host connection limit
               </span>
               <LimitConnEditor
                 value={formData.limit_conn}
@@ -817,3 +805,4 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
     </Modal>
   );
 };
+

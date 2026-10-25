@@ -1,118 +1,119 @@
-# 06. Manual do Painel Web (React Dashboard)
+# 06. Web Dashboard Guide (React UI)
 
-O **Ferrix** vem equipado com uma interface gráfica completa construída em **React 19**, **Vite** e estilizada com **Tailwind CSS** em tema dark profissional.
+**Ferrix** comes equipped with a comprehensive graphical dashboard built with **React 19**, **Vite**, and styled with **Tailwind CSS** in a modern dark theme.
 
-O frontend está totalmente embutido dentro do próprio binário executável em Rust, o que significa que você não precisa instalar o Node.js em servidores de produção para utilizar a interface web.
+The frontend is compiled and directly embedded inside the single Rust binary executable, meaning you do not need Node.js installed in production environments to run the web UI.
 
-Acesse o painel abrindo no seu navegador:
+Access the dashboard by navigating to:
 👉 **[http://localhost:8080](http://localhost:8080)**
 
 ---
 
-## 🧭 Barra de Navegação Superior (Navbar)
+## 🧭 Top Navigation Bar (Navbar)
 
-No topo de qualquer tela, a barra de navegação apresenta:
+At the top of every view, the navigation bar displays:
 
-- **Logo e Versão**: Indicação visual do Ferrix e versão instalada do binário em Rust.
-- **Abas de Navegação**:
-  - `Dashboard`: Visão geral e telemetria.
-  - `Virtual Hosts`: Gestão de sites e regras de roteamento.
-  - `Live Requests`: Inspeção e stream ao vivo de tráfego.
-  - `Upstreams`: Monitoramento e configuração de backends.
-  - `Config Editor`: Editor de JSON com validação e hot-reload manual.
-- **Indicador de Conexão SSE**:
-  - Um ponto pulsante verde indica que a conexão de Server-Sent Events está aberta e recebendo telemetria ao vivo em tempo real.
-- **Uptime e Portas**:
-  - Mostra a porta de tráfego do proxy ativo e o tempo de atividade contínuo do processo.
-
----
-
-## 📈 1. Tela de Dashboard
-
-A tela principal foi projetada para dar visibilidade imediata da saúde da sua infraestrutura:
-
-1. **Cards de KPIs**:
-   - **Total Requests**: Quantidade total de requisições atendidas desde o início do processo e conexões ativas simultâneas.
-   - **Throughput (RPS)**: Taxa atualizada de requisições por segundo.
-   - **Avg Latency**: Latência média de resposta em milissegundos e percentil p95.
-   - **Error Rate**: Porcentagem de erros 4xx/5xx em relação ao tráfego total.
-2. **Gráfico de Área em Tempo Real**:
-   - Desenha a curva contínua de tráfego (RPS em verde) e latência de resposta (em azul) segundo a segundo.
-3. **Distribuição de Status HTTP**:
-   - Gráfico de rosca (_donut chart_) dividindo as respostas em 2xx (Sucesso), 3xx (Redirecionamento), 4xx (Erro do Cliente) e 5xx (Erro do Servidor).
-4. **Feed Recente**:
-   - Tabela compacta com as últimas 6 requisições finalizadas.
+- **Logo and Version**: Visual Ferrix branding and current running binary version.
+- **Navigation Tabs**:
+  - `Dashboard`: High-level operational overview and telemetry graphs.
+  - `Virtual Hosts`: Manage site configs, domains, and route rules.
+  - `Live Requests`: Live streaming and inspection of HTTP/WebSocket traffic.
+  - `Upstreams`: Backend pool health checks and load balancing.
+  - `Config Editor`: JSON configuration editor with validation and instant hot-reload.
+  - `Import Nginx`: Convert Nginx `.conf` files directly into Ferrix configurations.
+- **SSE Connection Status**:
+  - A pulsing green indicator confirms that Server-Sent Events are active and streaming real-time metrics.
+- **Uptime & Ports**:
+  - Displays the active proxy port and process uptime.
 
 ---
 
-## ⚡ 2. Tela de Live Requests (Inspeção ao Vivo)
+## 📈 1. Dashboard View
 
-A tela de Live Requests transforma o Ferrix em uma ferramenta poderosa de depuração de tráfego HTTP e WebSockets:
+The primary dashboard provides immediate operational visibility into proxy infrastructure:
 
-- **Stream Instantâneo**: Cada requisição feita aos seus sites aparece imediatamente na tabela sem necessidade de recarregar a página.
-- **Filtros por Código de Status**:
-  - Botões para filtrar apenas sucessos (`2xx`), redirecionamentos (`3xx`), erros de cliente (`4xx`) ou falhas de servidor (`5xx`).
-- **Filtros por Método HTTP**:
-  - Filtre por `GET`, `POST`, `PUT`, `DELETE` ou conexões `WS` (WebSocket).
-- **Busca Textual em Tempo Real**:
-  - Digite no campo de busca para filtrar por caminho da URL, IP de origem, host ou servidor upstream.
-- **Controles de Reprodução**:
-  - Botão **"Pause Stream"**: Congela a rolagem para analisar uma requisição específica com calma sem que novos eventos empurrem a tabela.
-  - Botão **"Resume Stream"**: Reativa a captura de novos eventos.
-  - Botão **"Clear"**: Limpa o histórico em memória.
-
-### 🔍 Modal de Detalhes da Requisição
-
-Ao clicar em qualquer linha da tabela, um modal é exibido com:
-
-- Código de status e método;
-- Tempo exato de resposta em milissegundos;
-- Volume de dados transferido (bytes);
-- Tipo de protocolo (HTTP/1.1 ou WebSocket);
-- IP do cliente e cabeçalho `Host`;
-- Endereço do backend upstream que atendeu a requisição;
-- Cabeçalho `User-Agent` completo;
-- Detalhes do erro (caso o status seja >= 400).
+1. **KPI Metric Cards**:
+   - **Total Requests**: Cumulative requests served and active concurrent open connections.
+   - **Throughput (RPS)**: Rolling requests per second.
+   - **Avg Latency**: Average response time in milliseconds along with p95 latency.
+   - **Error Rate**: Percentage of 4xx/5xx responses relative to total volume.
+2. **Real-time Area Chart**:
+   - Renders second-by-second throughput curves (RPS in green) and response latencies (in blue).
+3. **HTTP Status Distribution**:
+   - Donut chart categorizing responses into 2xx (Success), 3xx (Redirect), 4xx (Client Error), and 5xx (Server Error).
+4. **Recent Activity Feed**:
+   - Compact table listing the last 6 completed requests.
 
 ---
 
-## 🌐 3. Tela de Virtual Hosts
+## ⚡ 2. Live Requests (Real-Time Inspection)
 
-Gerencie todos os seus domínios e regras de proxy visualmente:
+The Live Requests screen provides deep observability and debugging capabilities for incoming traffic:
 
-- **Listagem de Sites**: Exibe todos os domínios mapeados, porta de escuta e rotas ativas.
-- **Criação / Edição de Virtual Host**:
-  - Defina os nomes de servidor (ex: `app.meudominio.com`, `api.meudominio.com` ou `*`).
-  - Adicione múltiplas rotas com caminhos prefixados (ex: `/`, `/api`, `/assets`).
-  - Escolha o destino de cada rota:
-    - **Proxy Upstream**: Selecione o pool de balanceamento e ative o suporte a WebSockets.
-    - **Static Files**: Aponte para uma pasta local e configure o fallback `try_files` para SPAs.
-    - **Redirect**: Configure redirecionamentos permanentes (301) ou temporários (302).
-  - Ao salvar, a alteração é aplicada imediatamente em memória via **Hot-Reload**.
+- **Instant Event Stream**: Every request handled by Ferrix streams live into the view without reloading.
+- **Status Code Filters**:
+  - Quick filters for `2xx` (Success), `3xx` (Redirects), `4xx` (Client errors), or `5xx` (Server errors).
+- **HTTP Method Filters**:
+  - Filter by `GET`, `POST`, `PUT`, `DELETE`, or `WS` (WebSocket).
+- **Live Search**:
+  - Search by request path, client IP, host, or upstream backend.
+- **Stream Controls**:
+  - **"Pause Stream"**: Freezes scrolling to inspect a specific request without incoming events displacing the table.
+  - **"Resume Stream"**: Resumes real-time streaming.
+  - **"Clear"**: Flushes the local view history.
+
+### 🔍 Request Details Modal
+
+Clicking on any row opens a comprehensive inspection modal displaying:
+
+- HTTP status code and method;
+- Exact response time in milliseconds;
+- Transferred payload size (bytes);
+- Connection type (HTTP/1.1 or WebSocket);
+- Client IP address and `Host` header;
+- Upstream target address that processed the request;
+- Full `User-Agent` string;
+- Detailed error messages (for responses >= 400).
 
 ---
 
-## 🖥️ 4. Tela de Upstreams
+## 🌐 3. Virtual Hosts View
 
-Monitore a saúde e disponibilidade dos seus servidores de backend:
+Manage domains and routing topologies through an intuitive graphical editor:
 
-- **Listagem de Pools**: Visualize os clusters de backend, quantidade de nós saudáveis e algoritmo de balanceamento em uso.
-- **Status em Tempo Real por Servidor**:
-  - Indicador visual verde (**Healthy**) ou vermelho (**Unhealthy**).
-  - Latência medida pelo health check em milissegundos.
-  - Contagem de falhas consecutivas e limite tolerado.
-- **Configuração de Health Checks**:
-  - Defina o caminho de verificação (ex: `/health`), o intervalo em segundos e o status HTTP esperado (ex: `200`).
+- **Site List**: View all configured domains, listen ports, and route definitions.
+- **Create / Edit Virtual Host**:
+  - Configure hostnames (e.g. `app.mydomain.com`, `api.mydomain.com`, or wildcard `*`).
+  - Attach multiple routes with prefix patterns (e.g. `/`, `/api`, `/assets`).
+  - Select route target types:
+    - **Proxy Upstream**: Select load-balanced backend pools and toggle WebSocket tunneling.
+    - **Static Files**: Serve local disk folders and configure `try_files` SPA fallbacks.
+    - **Redirect**: Set up permanent (301) or temporary (302) redirections.
+  - Changes take effect immediately via zero-downtime **Hot-Reload**.
 
 ---
 
-## 📝 5. Tela de Config Editor
+## 🖥️ 4. Upstreams View
 
-Para desenvolvedores e administradores que preferem editar a configuração diretamente em texto:
+Monitor availability and performance across backend server targets:
 
-- **Editor com Destaque Sintático**: Exibe o JSON de configuração completo do Ferrix.
-- **Botão "Validate & Hot-Reload"**: Valida se a sintaxe do JSON é válida e aplica as alterações diretamente no processo em execução.
-- **Exportar e Importar**:
-  - Baixe um backup da configuração em um clique (`Export JSON`).
-  - Carregue um arquivo local salvo anteriormente (`Import JSON`).
-- **Botão "Reset"**: Restaura o editor para o estado atualmente ativo caso você cometa algum engano durante a edição.
+- **Upstream Pools Overview**: Inspect cluster nodes, healthy counts, and active balancing algorithms.
+- **Per-Target Health Monitoring**:
+  - Visual indicators for healthy (**Healthy**) vs failing (**Unhealthy**) nodes.
+  - Response latency measured by background health checks in milliseconds.
+  - Consecutive failure counters and configured error thresholds.
+- **Health Check Configuration**:
+  - Configure probe endpoints (e.g. `/health`), probe intervals, and expected HTTP status codes.
+
+---
+
+## 📝 5. Config Editor View
+
+For engineers who prefer editing configurations in code:
+
+- **Syntax-Highlighted Editor**: Full `ferrix.json` with line numbers and linting.
+- **"Validate & Hot-Reload"**: Validates JSON syntax and atomically updates the running server.
+- **Export & Import**:
+  - Download active configuration backups (`Export JSON`).
+  - Upload previously saved configurations (`Import JSON`).
+- **"Reset"**: Reverts uncommitted changes back to current active memory state.

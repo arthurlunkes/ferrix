@@ -1,12 +1,3 @@
-//! Descoberta do IP real do cliente quando o Ferrix está atrás de outro proxy.
-//!
-//! Antes disto o IP vinha sempre do socket, então atrás de um load balancer o rate limit e
-//! o ACL agiam sobre o endereço do balanceador — o mesmo para todo mundo.
-//!
-//! A regra que sustenta a segurança do módulo: um header de encaminhamento só é levado em
-//! conta se a conexão veio de um proxy declarado como confiável. Sem essa checagem
-//! qualquer cliente mandaria `X-Forwarded-For: 1.2.3.4` e escaparia de qualquer limite.
-
 use axum::http::HeaderMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -31,16 +22,13 @@ impl RealIpResolver {
         }
     }
 
-    /// Decide qual endereço representa o cliente.
-    ///
-    /// Devolve o endereço do socket sempre que não houver base para confiar em outra coisa.
     pub fn resolve(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
         let peer = normalize(peer);
 
         if self.header == RealIpHeader::None {
             return peer;
         }
-        // O peer não é um proxy conhecido: qualquer header que ele mande é palpite dele.
+
         if !self.trusted.matches(peer) {
             return peer;
         }
@@ -59,29 +47,19 @@ impl RealIpResolver {
                     return peer;
                 }
                 if self.recursive {
-                    // Anda da direita para a esquerda até sair da malha de proxies
-                    // confiáveis. O primeiro endereço não-confiável é o cliente.
                     chain
                         .iter()
                         .rev()
                         .find(|ip| !self.trusted.matches(**ip))
                         .copied()
-                        // Cadeia inteira confiável: o cliente é quem a iniciou.
                         .unwrap_or_else(|| chain[0])
                 } else {
-                    // Sem busca recursiva vale o último endereço da cadeia, que é o que o
-                    // proxy imediatamente anterior anexou.
                     chain[chain.len() - 1]
                 }
             }
         }
     }
 
-    /// Monta o valor de `$proxy_add_x_forwarded_for`: a cadeia que chegou, com o endereço
-    /// do cliente anexado ao fim.
-    ///
-    /// O código anterior devolvia apenas o IP do cliente, descartando a cadeia — o que
-    /// apagava a origem real a cada salto.
     pub fn proxy_add_x_forwarded_for(headers: &HeaderMap, client_ip: &str) -> String {
         let existing: Vec<String> = headers
             .get_all("x-forwarded-for")
@@ -101,8 +79,6 @@ impl RealIpResolver {
     }
 }
 
-/// Lê `X-Forwarded-For` como uma cadeia ordenada do cliente original ao proxy mais recente.
-/// Entradas que não são endereços válidos são descartadas.
 fn forwarded_chain(headers: &HeaderMap) -> Vec<IpAddr> {
     headers
         .get_all("x-forwarded-for")
@@ -150,7 +126,6 @@ mod tests {
 
     #[test]
     fn header_from_untrusted_peer_is_ignored() {
-        // O ponto central do módulo: sem isto, qualquer cliente forja o próprio IP.
         let r = resolver(&["10.0.0.0/8"], RealIpHeader::XForwardedFor, false);
         let h = headers(&[("x-forwarded-for", "1.2.3.4")]);
         assert_eq!(r.resolve(ip("203.0.113.9"), &h), ip("203.0.113.9"));
@@ -201,8 +176,6 @@ mod tests {
         assert_eq!(r.resolve(ip("10.0.0.1"), &h), ip("1.2.3.4"));
     }
 
-    /// Um header com bytes fora do ASCII visível é descartado por inteiro, e o endereço do
-    /// socket prevalece. Recusar o header suspeito é o lado seguro.
     #[test]
     fn non_ascii_header_is_dropped_entirely() {
         let r = resolver(&["10.0.0.0/8"], RealIpHeader::XForwardedFor, false);
@@ -240,7 +213,6 @@ mod tests {
 
     #[test]
     fn proxy_add_xff_appends_to_existing_chain() {
-        // O comportamento anterior descartava a cadeia e mandava só o IP do cliente.
         let h = headers(&[("x-forwarded-for", "1.2.3.4, 10.0.0.5")]);
         assert_eq!(
             RealIpResolver::proxy_add_x_forwarded_for(&h, "10.0.0.1"),

@@ -9,8 +9,6 @@ interface EmptyStateProps {
   onAction?: () => void;
 }
 
-/** Estado vazio para listas sem itens ainda — antes uma lista sem vhosts/upstreams
- * simplesmente renderizava nada, o que parece uma tela quebrada, não uma tela nova. */
 export const EmptyState: React.FC<EmptyStateProps> = ({
   icon,
   title,
@@ -33,3 +31,4 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     )}
   </div>
 );
+

@@ -11,14 +11,12 @@ interface KeyValueEditorProps {
   addLabel?: string;
 }
 
-/** Editor de pares chave/valor para `headers`, `add_headers` e `proxy_set_headers` — hoje
- * a única forma de tocar esses campos era editando o JSON cru no Config Editor. */
 export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   value,
   onChange,
-  keyPlaceholder = "Nome do header",
-  valuePlaceholder = "Valor",
-  addLabel = "Adicionar header",
+  keyPlaceholder = "Header name",
+  valuePlaceholder = "Value",
+  addLabel = "Add header",
 }) => {
   const entries = Object.entries(value);
 
@@ -32,8 +30,7 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   };
 
   const addEntry = () => {
-    // Uma chave vazia é permitida temporariamente; duas vazias colapsariam no mesmo
-    // objeto, então cada nova entrada recebe um espaço reservado numerado.
+
     let key = "";
     let n = entries.length;
     while (Object.prototype.hasOwnProperty.call(value, key)) {
@@ -46,7 +43,7 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   return (
     <div className="space-y-2">
       {entries.length === 0 && (
-        <p className="text-[11px] text-content-muted">Nenhum header definido.</p>
+        <p className="text-[11px] text-content-muted">No headers defined.</p>
       )}
       {entries.map(([k, v], i) => (
         <div key={i} className="flex items-center gap-2">
@@ -80,3 +77,4 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
     </div>
   );
 };
+

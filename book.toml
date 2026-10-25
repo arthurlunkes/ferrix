@@ -1,9 +1,9 @@
 [book]
 authors = ["Arthur Lunkes"]
-language = "pt-BR"
+language = "en"
 multilingual = false
 src = "docs"
-title = "Ferrix — Documentação Oficial"
+title = "Ferrix — Official Documentation"
 
 [output.html]
 git-repository-url = "https://github.com/arthurlunkes/ferrix"
@@ -22,4 +22,3 @@ boost-paragraph = 1
 expand = true
 heading-split-level = 3
 copy-js = true
-

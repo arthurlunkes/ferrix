@@ -35,8 +35,6 @@ interface ToggleProps {
   disabled?: boolean;
 }
 
-/** Interruptor sim/não com rótulo opcional. Usado no lugar de `<input type="checkbox">`
- * cru para as flags dos formulários (websocket, strip_prefix, backup, down...). */
 export const Toggle: React.FC<ToggleProps> = ({
   checked,
   onChange,
@@ -70,3 +68,4 @@ export const Toggle: React.FC<ToggleProps> = ({
     )}
   </label>
 );
+

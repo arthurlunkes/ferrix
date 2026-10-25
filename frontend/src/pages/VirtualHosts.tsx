@@ -17,10 +17,10 @@ interface VirtualHostsProps {
 }
 
 const MATCH_TYPE_LABEL: Record<string, string> = {
-  prefix: "prefixo",
-  prefix_literal: "prefixo (literal)",
-  exact: "exato",
-  prefix_priority: "prefixo prioritário",
+  prefix: "prefix",
+  prefix_literal: "prefix (literal)",
+  exact: "exact",
+  prefix_priority: "priority prefix",
   regex: "regex",
   regex_case_insensitive: "regex (i)",
 };
@@ -50,28 +50,28 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
 
   const handleDelete = async (id: string, name: string) => {
     const ok = await confirm({
-      title: "Remover virtual host?",
-      description: `"${name}" e todas as suas rotas deixarão de responder imediatamente após a confirmação.`,
-      confirmLabel: "Remover",
+      title: "Delete virtual host?",
+      description: `"${name}" and all of its routes will immediately stop responding once confirmed.`,
+      confirmLabel: "Delete",
       tone: "danger",
     });
     if (!ok) return;
     try {
       await onDeleteVHost(id);
-      toast.success(`Virtual host "${name}" removido.`);
+      toast.success(`Virtual host "${name}" deleted.`);
     } catch (err: any) {
-      toast.error(err.message || "Falha ao remover o virtual host");
+      toast.error(err.message || "Failed to delete virtual host");
     }
   };
 
   const handleSave = async (vhost: VirtualHost) => {
     try {
       await onSaveVHost(vhost);
-      toast.success(`Virtual host "${vhost.name}" salvo e recarregado a quente.`);
+      toast.success(`Virtual host "${vhost.name}" saved and hot-reloaded.`);
       setIsModalOpen(false);
     } catch (err: any) {
       const report = err.body?.report;
-      throw new Error(report?.summary || err.message || "Falha ao salvar o virtual host");
+      throw new Error(report?.summary || err.message || "Failed to save virtual host");
     }
   };
 
@@ -93,20 +93,20 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
             Virtual Hosts (Sites)
           </h2>
           <p className="text-xs text-content-muted">
-            Gerencie domínios, rotas de proxy e diretórios estáticos
+            Manage domains, proxy routing, and static file directories
           </p>
         </div>
         <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={handleCreate}>
-          Novo Virtual Host
+          New Virtual Host
         </Button>
       </div>
 
       {vhosts.length === 0 ? (
         <EmptyState
           icon={<Globe className="w-6 h-6" />}
-          title="Nenhum virtual host ainda"
-          description="Um virtual host define quais domínios o Ferrix atende numa porta e para onde cada caminho é roteado."
-          actionLabel="Criar o primeiro virtual host"
+          title="No virtual hosts yet"
+          description="A virtual host defines which domains Ferrix serves on a port and where each path is routed."
+          actionLabel="Create first virtual host"
           onAction={handleCreate}
         />
       ) : (
@@ -124,18 +124,18 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-base font-bold text-content-primary">{vhost.name}</h3>
-                      <Badge tone="neutral">Porta {vhost.listen_port}</Badge>
+                      <Badge tone="neutral">Port {vhost.listen_port}</Badge>
                       {vhost.basic_auth && (
                         <Badge tone="warning">
                           <Lock className="w-3 h-3" /> Basic Auth
                         </Badge>
                       )}
                       {(vhost.allowed_ips.length > 0 || vhost.denied_ips.length > 0) && (
-                        <Badge tone="info">ACL de IP</Badge>
+                        <Badge tone="info">IP ACL</Badge>
                       )}
                     </div>
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-xs text-content-muted">Domínios:</span>
+                      <span className="text-xs text-content-muted">Domains:</span>
                       {vhost.server_names.map((name, i) => (
                         <span
                           key={i}
@@ -149,7 +149,7 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => handleEdit(vhost)} title="Editar">
+                  <Button variant="ghost" size="sm" onClick={() => handleEdit(vhost)} title="Edit">
                     <Edit2 className="w-4 h-4" />
                   </Button>
                   {vhosts.length > 1 && (
@@ -157,7 +157,7 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
                       variant="ghost"
                       size="sm"
                       onClick={() => handleDelete(vhost.id, vhost.name)}
-                      title="Remover"
+                      title="Delete"
                       className="hover:!text-danger-400"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -168,12 +168,12 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
 
               <div className="mt-5 space-y-3">
                 <span className="text-xs font-semibold text-content-muted uppercase tracking-wider block">
-                  Rotas ({vhost.routes.length})
+                  Routes ({vhost.routes.length})
                 </span>
 
                 {vhost.routes.length === 0 ? (
                   <p className="text-xs text-content-muted italic">
-                    Sem rotas — este host responde 404 a tudo.
+                    No routes — this host responds with 404 to all requests.
                   </p>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -200,7 +200,7 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
                           )}
                           {route.target_type === "static_files" && (
                             <span className="text-amber-400 truncate">
-                              Raiz: <span className="font-bold">{route.static_root}</span>
+                              Root: <span className="font-bold">{route.static_root}</span>
                             </span>
                           )}
                           {route.target_type === "redirect" && (
@@ -251,3 +251,4 @@ export const VirtualHosts: React.FC<VirtualHostsProps> = ({
     </div>
   );
 };
+

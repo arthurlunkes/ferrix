@@ -1,8 +1,6 @@
 import React, { useState } from "react";
 import { Check, Copy } from "lucide-react";
 
-/** Bloco de código com botão de copiar — usado para mostrar o JSON convertido na tela de
- * importação e no editor de configuração. */
 export const CodeBlock: React.FC<{ code: string; language?: string; maxHeight?: string }> = ({
   code,
   maxHeight = "24rem",
@@ -15,7 +13,7 @@ export const CodeBlock: React.FC<{ code: string; language?: string; maxHeight?: 
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Sem permissão de clipboard no navegador — o texto ainda está selecionável.
+
     }
   };
 
@@ -42,3 +40,4 @@ export const CodeBlock: React.FC<{ code: string; language?: string; maxHeight?: 
     </div>
   );
 };
+

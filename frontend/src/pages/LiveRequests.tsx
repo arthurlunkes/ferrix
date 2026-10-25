@@ -31,7 +31,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
   const [methodFilter, setMethodFilter] = useState<string>("all");
 
   const filteredLogs = logs.filter((log) => {
-    // Search query
+
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       const matches =
@@ -42,13 +42,11 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
       if (!matches) return false;
     }
 
-    // Status filter
     if (statusFilter !== "all") {
       const prefix = parseInt(statusFilter[0]);
       if (Math.floor(log.status / 100) !== prefix) return false;
     }
 
-    // Method filter
     if (methodFilter !== "all") {
       if (methodFilter === "WS") {
         if (!log.is_websocket) return false;
@@ -90,7 +88,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Controls Bar */}
+      {}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-[#111827]/90 border border-gray-800 rounded-2xl p-4 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
@@ -111,7 +109,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
           </div>
         </div>
 
-        {/* Action buttons */}
+        {}
         <div className="flex items-center gap-2">
           <button
             onClick={onTogglePause}
@@ -139,9 +137,9 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
+      {}
       <div className="flex flex-wrap items-center gap-3 bg-[#111827]/90 border border-gray-800 rounded-2xl p-4">
-        {/* Search */}
+        {}
         <div className="flex-1 min-w-[220px] relative">
           <Search className="w-4 h-4 text-gray-500 absolute left-3 top-2.5" />
           <input
@@ -153,7 +151,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
           />
         </div>
 
-        {/* Status code filter */}
+        {}
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-gray-500 font-medium">Status:</span>
           {["all", "2xx", "3xx", "4xx", "5xx"].map((s) => (
@@ -171,7 +169,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
           ))}
         </div>
 
-        {/* Method filter */}
+        {}
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-gray-500 font-medium">Method:</span>
           {["all", "GET", "POST", "PUT", "DELETE", "WS"].map((m) => (
@@ -190,7 +188,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
         </div>
       </div>
 
-      {/* Requests Table */}
+      {}
       <div className="bg-[#111827]/90 border border-gray-800 rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-mono">
@@ -249,8 +247,8 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
                       <Zap className="w-6 h-6 opacity-60" />
                       <span className="text-xs max-w-sm">
                         {searchTerm || statusFilter !== "all" || methodFilter !== "all"
-                          ? "Nenhuma requisição corresponde ao filtro atual."
-                          : "Nenhum tráfego ainda. Envie uma requisição HTTP para o proxy e ela aparece aqui em tempo real."}
+                          ? "No requests match the current filter."
+                          : "No traffic yet. Send an HTTP request through the proxy and it will appear here in real time."}
                       </span>
                     </div>
                   </td>
@@ -268,3 +266,4 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
     </div>
   );
 };
+

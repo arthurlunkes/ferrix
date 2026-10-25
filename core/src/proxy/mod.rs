@@ -37,18 +37,9 @@ use upstream::UpstreamPoolManager;
 use upstream_client::{OutgoingBody, UpstreamClient, UpstreamError};
 use websocket::WebSocketProxy;
 
-/// Chave do cache de clientes HTTP.
-///
-/// `connect_timeout` e `read_timeout` são propriedades do cliente, não da requisição, então
-/// não dá para variá-los por rota com um cliente só. Como as combinações distintas numa
-/// configuração real são poucas, um cliente por combinação sai barato — e cada um mantém
-/// Marcador colocado nas extensões da resposta por uma rota com `access_log: false`.
-/// `route_and_serve` verifica isso antes de gravar — nunca sai no fio, é invisível ao
-/// cliente, só existe dentro do processo.
 #[derive(Debug, Clone, Copy)]
 struct SkipAccessLog;
 
-/// seu próprio pool de conexões reaproveitadas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ClientKey {
     connect_ms: u64,
@@ -56,13 +47,10 @@ struct ClientKey {
     verify_tls: bool,
 }
 
-/// O corpo da requisição, e se ele ainda pode ser reenviado.
 #[derive(Debug)]
 enum RequestBody {
-    /// Cabe no buffer: pode ser reenviado ao próximo upstream em caso de falha.
     Buffered(Bytes),
-    /// Grande demais para guardar. Segue em streaming e **perde o failover**, porque um
-    /// stream já consumido não se reenvia.
+
     Streaming(Body),
 }
 
@@ -79,11 +67,6 @@ pub struct ProxyEngine {
 }
 
 impl ProxyEngine {
-    /// Um `ProxyEngine` só é criado uma vez: várias portas — inclusive HTTPS — podem
-    /// compartilhar a mesma instância, cada listener passando sua própria porta a cada
-    /// `handle_request`. Isso mantém um único pool de upstreams, um único limitador de
-    /// taxa e um único cache de clientes HTTP para todo o processo, em vez de duplicá-los
-    /// por porta.
     pub fn new(
         store: Arc<ConfigStore>,
         metrics: Arc<MetricsCollector>,
@@ -105,10 +88,6 @@ impl ProxyEngine {
         }
     }
 
-    /// Varre periodicamente as estruturas que crescem por chave de cliente.
-    ///
-    /// Sem isto, o mapa de baldes do limitador acumula uma entrada por IP visto — uma
-    /// varredura de endereços bastava para consumir a memória do processo.
     pub fn start_background_sweeper(&self) {
         let rate_limiter = self.rate_limiter.clone();
         let conn_limiter = self.conn_limiter.clone();
@@ -141,10 +120,6 @@ impl ProxyEngine {
         client
     }
 
-    /// `listen_port` é a porta *local* em que este request chegou — não a do cliente.
-    /// Cada listener (um por porta distinta declarada nos vhosts, TLS ou não) passa a sua
-    /// própria porta e se é HTTPS aqui — `find_vhost` usa a porta, e `$scheme`/
-    /// `X-Forwarded-Proto` usam o `is_tls`.
     pub async fn handle_request(
         &self,
         listen_port: u16,
@@ -178,8 +153,6 @@ impl ProxyEngine {
         let uri = req.uri().clone();
         let req_headers = req.headers();
 
-        // O IP real vem antes de tudo: ACL, limite de taxa e log precisam concordar sobre
-        // quem é o cliente.
         let client_ip = compiled.real_ip.resolve(client_addr.ip(), req_headers);
         let client_ip_str = client_ip.to_string();
 
@@ -234,8 +207,7 @@ impl ProxyEngine {
             host,
             status: status_code,
             latency_ms: (elapsed_ms * 100.0).round() / 100.0,
-            // Melhor esforço: só o `Content-Length` é conhecido neste ponto. O total
-            // agregado de bytes é contabilizado chunk a chunk conforme o corpo escoa.
+
             bytes_sent: response
                 .headers()
                 .get(header::CONTENT_LENGTH)
@@ -260,20 +232,11 @@ impl ProxyEngine {
         self.count_response_bytes(response)
     }
 
-    /// Envolve o corpo da resposta num contador de bytes.
-    ///
-    /// Fica num ponto só, depois de a rota já ter decidido o que responder, para que
-    /// proxy, arquivos estáticos, redirecionamentos e páginas de erro sejam todos
-    /// contabilizados pelo mesmo caminho.
     fn count_response_bytes(&self, response: Response) -> Response {
-        // Numa troca de protocolo o corpo não é corpo: mexer nele quebraria o upgrade.
         if response.status() == StatusCode::SWITCHING_PROTOCOLS {
             return response;
         }
 
-        // Corpo de tamanho conhecido (arquivo estático, página de erro, resposta em cache):
-        // conta de uma vez e devolve o corpo intacto. Embrulhá-lo num stream só para
-        // contar custava uma alocação e fazia o hyper perder o tamanho exato do corpo.
         if let Some(len) = axum::body::HttpBody::size_hint(response.body()).exact() {
             self.metrics.add_bytes_sent(len);
             return response;
@@ -303,7 +266,6 @@ impl ProxyEngine {
     ) -> Response {
         let headers = req.headers();
 
-        // Controle de acesso: IP e autenticação combinados segundo `satisfy`.
         let ip_ok = match compiled.vhost_acl(vhost_index) {
             Some((allow, deny)) => AccessControl::is_ip_allowed(client_ip, allow, deny),
             None => true,
@@ -329,7 +291,6 @@ impl ProxyEngine {
             }
         }
 
-        // Limites no nível do host. O guard de conexões vive até o fim da requisição.
         let _vhost_conn_guard = match &vhost.limit_conn {
             Some(cfg) => {
                 let key = format!("vhost:{}:{}", vhost.id, client_ip_str);
@@ -383,20 +344,16 @@ impl ProxyEngine {
         };
         let route = &vhost.routes[matched.route_index];
 
-        // Controle de acesso da rota, equivalente a `allow`/`deny`/`auth_basic` dentro de
-        // um `location`. Vem depois do controle do host e não o substitui.
         if !route.allowed_ips.is_empty()
             || !route.denied_ips.is_empty()
             || route.basic_auth.is_some()
         {
             let route_ip_ok = match compiled.route_acl(vhost_index, matched.route_index) {
-                Some((allow, deny)) => {
-                    match client_ip.parse() {
-                        Ok(ip) => AccessControl::is_ip_allowed(ip, allow, deny),
-                        // Sem endereço utilizável, negar é o lado seguro.
-                        Err(_) => false,
-                    }
-                }
+                Some((allow, deny)) => match client_ip.parse() {
+                    Ok(ip) => AccessControl::is_ip_allowed(ip, allow, deny),
+
+                    Err(_) => false,
+                },
                 None => true,
             };
 
@@ -445,7 +402,6 @@ impl ProxyEngine {
             }
         }
 
-        // Cabeçalhos do host, sobrepostos pelos da rota.
         let mut custom_headers = vhost.headers.clone();
         for (k, v) in &route.add_headers {
             custom_headers.insert(k.clone(), v.clone());
@@ -527,11 +483,6 @@ impl ProxyEngine {
                     }
                 }
 
-                // Cache só entra em jogo em GET/HEAD com `route.cache` configurado e sem
-                // bypass — `route.cache: None` (o padrão) mantém o caminho de hoje
-                // intacto, sem sequer olhar para a tabela. Fica como valor final do
-                // braço do `match` (não um `return`), para passar pelo mesmo pós-
-                // processamento das outras rotas: merge de headers e `access_log`.
                 let cacheable_method = parts.method == Method::GET || parts.method == Method::HEAD;
                 let cache_cfg = route
                     .cache
@@ -589,9 +540,6 @@ impl ProxyEngine {
             }
         }
 
-        // Sinaliza para `route_and_serve` não gravar esta requisição no log — via
-        // extensão da resposta, não um retorno extra, para não encher a assinatura de
-        // toda a cadeia de chamada com mais um parâmetro. Extensões nunca vão para o fio.
         if !route.access_log {
             resp.extensions_mut().insert(SkipAccessLog);
         }
@@ -635,7 +583,6 @@ impl ProxyEngine {
 
         let (parts, body) = req.into_parts();
 
-        // Recusa cedo quando o próprio cliente declara um corpo grande demais.
         if let Some(declared) = parts
             .headers
             .get(header::CONTENT_LENGTH)
@@ -664,7 +611,7 @@ impl ProxyEngine {
         };
 
         let next_upstream = route.next_upstream();
-        // Um corpo em streaming não pode ser reenviado, então o failover fica de fora.
+
         let can_retry = matches!(request_body, RequestBody::Buffered(_))
             && !next_upstream.conditions.is_empty();
 
@@ -693,8 +640,6 @@ impl ProxyEngine {
             .timeout_ms
             .map(|ms| crate::clock::now() + Duration::from_millis(ms));
 
-        // O corpo bufferizado é reenviado a cada tentativa; o em streaming só existe uma
-        // vez e por isso é consumido na primeira.
         let (buffered_body, mut streaming_body) = match request_body {
             RequestBody::Buffered(b) => (Some(b), None),
             RequestBody::Streaming(b) => (None, Some(b)),
@@ -754,7 +699,7 @@ impl ProxyEngine {
                 }
                 Err(err) => {
                     let retryable = should_retry_error(&next_upstream.conditions, &err);
-                    warn!(target = %target.url, error = %err, retryable, "falha ao falar com o upstream");
+                    warn!(target = %target.url, error = %err, retryable, "failed to communicate with upstream");
                     self.health_checker
                         .mark_failure(upstream_name, &target.url, target.max_fails);
                     last_error = Some(err.to_string());
@@ -766,7 +711,7 @@ impl ProxyEngine {
             }
         }
 
-        let err_msg = last_error.unwrap_or_else(|| "todos os upstreams falharam".to_string());
+        let err_msg = last_error.unwrap_or_else(|| "all upstream targets failed".to_string());
         Response::builder()
             .status(StatusCode::BAD_GATEWAY)
             .header(header::CONTENT_TYPE, "text/plain")
@@ -786,13 +731,6 @@ impl ProxyEngine {
         Response::from_parts(parts, body)
     }
 
-    /// Chamada só quando a rota passou pelo cache e não teve HIT — decide se a resposta
-    /// que acabou de vir do upstream vale a pena guardar, e sempre marca `X-Cache-Status`.
-    ///
-    /// Critérios para guardar: só 200, só com `Content-Length` conhecido e dentro do
-    /// teto (um corpo em streaming sem tamanho declarado não é bufferizado só para
-    /// descobrir que era grande demais), e nunca com `Set-Cookie` — o mesmo cuidado do
-    /// nginx para não vazar sessão de um cliente para outro.
     async fn store_if_cacheable(&self, key: String, cfg: &CacheConfig, resp: Response) -> Response {
         let status = resp.status();
         let cacheable = status == StatusCode::OK
@@ -830,24 +768,15 @@ impl ProxyEngine {
                 }
                 r
             }
-            Err(_) => {
-                // O corpo falhou no meio da leitura (conexão caiu etc.) — não há mais
-                // stream para devolver, então o melhor que dá é reportar a falha.
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "502 Bad Gateway - Ferrix Proxy Error: falha ao ler a resposta do upstream",
-                )
-                    .into_response()
-            }
+            Err(_) => (
+                StatusCode::BAD_GATEWAY,
+                "502 Bad Gateway - Ferrix Proxy Error: failed to read response body from upstream",
+            )
+                .into_response(),
         }
     }
 }
 
-/// `true` quando algum header/cookie/parâmetro de bypass configurado chegou não-vazio —
-/// equivalente a `proxy_cache_bypass $http_x $cookie_y $arg_z;` do nginx (cada variável
-/// truthy pula o cache). Bypass aqui pula leitura E gravação: mais simples que reproduzir
-/// a distinção fina do nginx entre `proxy_cache_bypass` (só leitura) e `proxy_no_cache`
-/// (só gravação), e seguro por padrão.
 fn cache_bypass_matches(cfg: &CacheConfig, parts: &axum::http::request::Parts) -> bool {
     for name in &cfg.bypass_headers {
         if let Some(v) = parts.headers.get(name.as_str()) {
@@ -892,9 +821,6 @@ fn cache_bypass_matches(cfg: &CacheConfig, parts: &axum::http::request::Parts) -
     false
 }
 
-/// Chave do cache: método (GET e HEAD não devem colidir), `Host` recebido do cliente, e
-/// caminho+query. Cai no nome do vhost quando não há `Host` — não deveria acontecer com
-/// HTTP/1.1, mas evita um caminho sem chave em vez de um `unwrap`.
 fn cache_key_for(vhost: &VirtualHost, parts: &axum::http::request::Parts) -> String {
     let host = parts
         .headers
@@ -925,7 +851,6 @@ fn build_cached_response(cached: &crate::cache::CachedResponse) -> Response {
         })
 }
 
-/// Monta o caminho enviado ao upstream, aplicando `strip_prefix` e preservando a query.
 fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -> String {
     let base = if route.strip_prefix {
         req_path
@@ -946,7 +871,6 @@ fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -
     }
 }
 
-/// Remove os cabeçalhos hop-by-hop, que valem só para uma conexão e não atravessam proxy.
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in [
         header::CONNECTION,
@@ -963,8 +887,6 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-/// Monta os cabeçalhos enviados ao upstream: os do cliente (menos hop-by-hop e `Host`,
-/// que o cliente HTTP deriva da URL do upstream) mais os `proxy_set_headers` da rota.
 fn forwarded_headers(
     incoming: &HeaderMap,
     route: &RouteRule,
@@ -988,9 +910,7 @@ fn forwarded_headers(
 
     set(&mut headers, "X-Real-IP", client_ip);
     set(&mut headers, "X-Forwarded-For", &xff);
-    // Antes disto era sempre "http" — o backend não tinha como saber que o cliente
-    // originalmente falou HTTPS com o Ferrix, o que quebra links absolutos e redirects
-    // que o backend gera a partir deste header.
+
     set(&mut headers, "X-Forwarded-Proto", scheme);
 
     for (k, v) in &route.proxy_set_headers {
@@ -1000,7 +920,7 @@ fn forwarded_headers(
                 .and_then(|h| h.to_str().ok())
                 .unwrap_or(""),
             "$remote_addr" => client_ip,
-            // Antes devolvia apenas o IP do cliente, apagando a cadeia recebida.
+
             "$proxy_add_x_forwarded_for" => &xff,
             "$scheme" => scheme,
             other => other,
@@ -1019,9 +939,6 @@ fn scheme_str(is_tls: bool) -> &'static str {
     }
 }
 
-/// Substitui as variáveis do nginx que fazem sentido num redirect: `$scheme`, `$host` e
-/// `$request_uri` (caminho com query). É o suficiente para o idioma mais comum de todos —
-/// o redirect HTTP→HTTPS que o Certbot gera — sem crescer para um interpolador genérico.
 fn interpolate_redirect_url(
     template: &str,
     parts: &axum::http::request::Parts,
@@ -1030,10 +947,7 @@ fn interpolate_redirect_url(
     if !template.contains('$') {
         return template.to_string();
     }
-    // `$host` no nginx nunca inclui a porta, mesmo quando o cliente manda `Host:
-    // dominio:8080` — só `$http_host` (que o Ferrix não expõe) preserva isso. Sem tirar a
-    // porta aqui, um redirect para "https://dominio:8080/..." sairia apontando para uma
-    // porta HTTP na frente de "https://", que não fala TLS nenhum.
+
     let host = parts
         .headers
         .get(header::HOST)
@@ -1054,7 +968,6 @@ fn interpolate_redirect_url(
         .replace("$host", host)
 }
 
-/// Lê o corpo até o limite de buffer; acima disso, encaminha em streaming.
 async fn read_request_body(
     body: Body,
     buffer_limit: u64,
@@ -1075,8 +988,6 @@ async fn read_request_body(
         buffered.push(chunk);
 
         if total > buffer_limit {
-            // Passou do que vale a pena guardar: emenda o que já foi lido com o resto e
-            // segue em streaming. A partir daqui a requisição não tem mais failover.
             let prefix =
                 futures_util::stream::iter(buffered.into_iter().map(Ok::<Bytes, std::io::Error>));
             let rest = stream.map(|r| r.map_err(std::io::Error::other));
@@ -1178,7 +1089,6 @@ mod tests {
         );
     }
 
-    /// O idioma clássico do Certbot para redirecionar HTTP para HTTPS.
     #[test]
     fn redirect_interpolates_scheme_host_and_request_uri() {
         let parts = parts_with("exemplo.com", "/caminho?x=1");
@@ -1188,9 +1098,6 @@ mod tests {
         );
     }
 
-    /// `$host` no nginx nunca leva a porta — só `$http_host` levaria. Achado testando o
-    /// redirect HTTP→HTTPS numa porta não-padrão: sem isto, o redirect saía apontando
-    /// para "https://dominio:8080/...", uma porta que não fala TLS nenhum.
     #[test]
     fn redirect_host_variable_strips_the_port() {
         let parts = parts_with("exemplo.com:8080", "/x");
@@ -1314,7 +1221,6 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_body_preserves_every_byte() {
-        // O prefixo já lido precisa ser emendado ao resto sem perder nem duplicar nada.
         let original: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
         let body = Body::from(original.clone());
 
@@ -1328,8 +1234,6 @@ mod tests {
         assert_eq!(collected.len(), original.len());
         assert_eq!(&collected[..], &original[..]);
     }
-
-    // -- cache -----------------------------------------------------------------
 
     fn parts_full(uri: &str, headers: &[(&str, &str)]) -> axum::http::request::Parts {
         let mut builder = Request::builder().uri(uri);

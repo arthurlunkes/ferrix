@@ -5,17 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Tamanho máximo de corpo aceito de um cliente, quando não configurado.
-///
-/// Generoso de propósito: o objetivo aqui é evitar que um upload sem fim derrube o
-/// processo, não impor a política de 1 MB do nginx a quem já roda com o Ferrix sem
-/// limite nenhum. Quem quer o comportamento do nginx configura explicitamente.
 const DEFAULT_CLIENT_MAX_BODY_SIZE: u64 = 1024 * 1024 * 1024;
 
-/// Acima deste tamanho o corpo passa a ser encaminhado em streaming.
-///
-/// A troca é real e está documentada: reenviar um stream já consumido é impossível, então
-/// requisição acima deste limiar perde o failover para o próximo upstream.
 const DEFAULT_PROXY_REQUEST_BUFFER_SIZE: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,28 +23,19 @@ pub struct FerrixConfig {
     pub vhosts: Vec<VirtualHost>,
 }
 
-// ---------------------------------------------------------------------------
-// Administração
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
     #[serde(default = "default_admin_listen")]
     pub listen: String,
-    /// Autenticação da API de administração. Sem isto, quem alcança a porta reescreve a
-    /// configuração inteira — o processo se recusa a subir exposto sem autenticação.
+
     #[serde(default)]
     pub auth: AdminAuthConfig,
-    /// Origens permitidas no CORS. Vazio significa same-origin apenas.
+
     #[serde(default)]
     pub cors_origins: Vec<String>,
 }
 
 fn default_admin_listen() -> String {
-    // O Ferrix roda atrás do gateway Node (backend/), que ocupa a porta pública 8080 e
-    // fala com esta API de administração internamente. 127.0.0.1:8081 é o padrão que não
-    // colide com o gateway e, sendo loopback, também é o que dispensa autenticação
-    // obrigatória numa instalação nova — ver `validate::validate_admin_auth`.
     "127.0.0.1:8081".to_string()
 }
 
@@ -80,7 +62,7 @@ pub enum AdminAuthMode {
 pub struct AdminAuthConfig {
     #[serde(default)]
     pub mode: AdminAuthMode,
-    /// Token de portador, usado quando `mode = token`.
+
     #[serde(default)]
     pub token: Option<String>,
     #[serde(default)]
@@ -95,10 +77,6 @@ impl AdminAuthConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HTTP
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
     #[serde(default = "default_http_listen")]
@@ -106,7 +84,6 @@ pub struct HttpConfig {
     #[serde(default = "default_worker_threads")]
     pub worker_threads: usize,
 
-    // Timeouts do cliente — quanto o Ferrix espera por quem está do lado de fora.
     #[serde(default = "default_client_header_timeout_ms")]
     pub client_header_timeout_ms: u64,
     #[serde(default = "default_client_body_timeout_ms")]
@@ -114,8 +91,6 @@ pub struct HttpConfig {
     #[serde(default = "default_keepalive_timeout_ms")]
     pub keepalive_timeout_ms: u64,
 
-    // Timeouts do upstream — quanto o Ferrix espera pelo backend. Servem de default para
-    // rotas que não definirem os seus.
     #[serde(default = "default_proxy_connect_timeout_ms")]
     pub proxy_connect_timeout_ms: u64,
     #[serde(default = "default_proxy_read_timeout_ms")]
@@ -123,10 +98,9 @@ pub struct HttpConfig {
     #[serde(default = "default_proxy_send_timeout_ms")]
     pub proxy_send_timeout_ms: u64,
 
-    /// Corpo maior que isto recebe `413 Payload Too Large`.
     #[serde(default = "default_client_max_body_size")]
     pub client_max_body_size: u64,
-    /// Acima disto o corpo vai em streaming e a requisição perde o failover.
+
     #[serde(default = "default_proxy_request_buffer_size")]
     pub proxy_request_buffer_size: u64,
 }
@@ -181,21 +155,13 @@ impl Default for HttpConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IP real do cliente
-// ---------------------------------------------------------------------------
-
-/// De onde tirar o IP do cliente quando o Ferrix está atrás de outro proxy.
-///
-/// O header só é considerado se o peer da conexão estiver em `trusted_proxies`. Sem essa
-/// checagem qualquer cliente forjaria o próprio IP e escaparia de rate limit e ACL.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RealIpConfig {
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
     #[serde(default)]
     pub header: RealIpHeader,
-    /// Anda a cadeia da direita para a esquerda descartando proxies confiáveis.
+
     #[serde(default)]
     pub recursive: bool,
 }
@@ -203,16 +169,11 @@ pub struct RealIpConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RealIpHeader {
-    /// Usa sempre o endereço do socket. É o padrão e o comportamento seguro.
     #[default]
     None,
     XForwardedFor,
     XRealIp,
 }
-
-// ---------------------------------------------------------------------------
-// Upstreams
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -234,13 +195,13 @@ pub struct UpstreamTarget {
     pub max_fails: u32,
     #[serde(default = "default_fail_timeout_secs")]
     pub fail_timeout_secs: u64,
-    /// Só recebe tráfego quando todos os não-backup estiverem indisponíveis.
+
     #[serde(default)]
     pub backup: bool,
-    /// Retirado da rotação manualmente.
+
     #[serde(default)]
     pub down: bool,
-    /// Teto de conexões simultâneas para este alvo.
+
     #[serde(default)]
     pub max_conns: Option<u32>,
 }
@@ -288,16 +249,10 @@ pub struct UpstreamConfig {
     pub targets: Vec<UpstreamTarget>,
     #[serde(default)]
     pub health_check: Option<HealthCheckConfig>,
-    /// Verificar o certificado TLS do backend em upstreams `https://`.
-    ///
-    /// Era desligado incondicionalmente no código; agora é opt-out explícito por pool.
+
     #[serde(default = "default_true")]
     pub verify_tls: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Virtual hosts e rotas
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualHost {
@@ -319,11 +274,10 @@ pub struct VirtualHost {
     pub denied_ips: Vec<String>,
     #[serde(default)]
     pub basic_auth: Option<BasicAuthConfig>,
-    /// `All` exige passar no ACL **e** na autenticação; `Any` aceita qualquer um dos dois.
+
     #[serde(default)]
     pub satisfy: Satisfy,
-    /// Certificado para este host. Presente = a porta de `listen_port` termina TLS para
-    /// este host (com SNI, se outros hosts na mesma porta também tiverem `tls`).
+
     #[serde(default)]
     pub tls: Option<TlsConfig>,
     #[serde(default)]
@@ -334,13 +288,10 @@ fn default_vhost_port() -> u16 {
     8000
 }
 
-/// Certificado TLS de um virtual host. A porta correspondente passa a aceitar TLS assim
-/// que qualquer host que a declare tiver isto preenchido.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
-    /// Caminho do certificado (ou da cadeia completa) em PEM.
     pub cert_path: String,
-    /// Caminho da chave privada em PEM.
+
     pub key_path: String,
 }
 
@@ -358,18 +309,14 @@ pub struct BasicAuthConfig {
     pub password: String,
 }
 
-/// Como o excedente de uma rajada é tratado, espelhando `limit_req` do nginx.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitMode {
-    /// Excedente dentro do burst passa na hora. É o comportamento que o Ferrix já tinha,
-    /// por isso continua sendo o padrão — mudá-lo alteraria silenciosamente configurações
-    /// existentes.
     #[default]
     NoDelay,
-    /// Excedente é enfileirado e liberado na taxa configurada (o default do nginx).
+
     Queue,
-    /// As primeiras `delay` requisições do burst passam na hora; o resto é enfileirado.
+
     Delay,
 }
 
@@ -379,12 +326,12 @@ pub struct RateLimitConfig {
     pub burst: u32,
     #[serde(default)]
     pub mode: RateLimitMode,
-    /// Quantas requisições do burst passam sem espera, quando `mode = delay`.
+
     #[serde(default)]
     pub delay: Option<u32>,
     #[serde(default = "default_limit_status")]
     pub status: u16,
-    /// Valor do header `Retry-After`, em segundos, na resposta de recusa.
+
     #[serde(default)]
     pub retry_after: Option<u64>,
 }
@@ -393,7 +340,6 @@ fn default_limit_status() -> u16 {
     429
 }
 
-/// Teto de requisições simultâneas por cliente, espelhando `limit_conn`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LimitConnConfig {
     pub max_connections: u32,
@@ -409,26 +355,20 @@ pub enum RouteTargetType {
     Redirect,
 }
 
-/// Como `path_prefix` é interpretado, espelhando os modificadores de `location`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteMatchType {
-    /// Prefixo com fronteira de segmento: `/api` casa `/api` e `/api/x`, mas **não**
-    /// `/apifoo`. É o padrão para configuração escrita à mão, por evitar o casamento
-    /// acidental que o modo literal permite.
     #[default]
     Prefix,
-    /// `location /caminho` do nginx ao pé da letra: prefixo comparado como texto puro,
-    /// então `/api` casa com `/apifoo`. É o que o importador de nginx.conf emite, para
-    /// que uma configuração migrada se comporte exatamente como se comportava antes.
+
     PrefixLiteral,
-    /// `location = /caminho` — casa o caminho inteiro e nada mais.
+
     Exact,
-    /// `location ^~ /caminho` — prefixo literal que, ao vencer, impede a avaliação de regex.
+
     PrefixPriority,
-    /// `location ~ padrão` — expressão regular sensível a maiúsculas.
+
     Regex,
-    /// `location ~* padrão` — expressão regular insensível a maiúsculas.
+
     RegexCaseInsensitive,
 }
 
@@ -441,13 +381,11 @@ impl RouteMatchType {
     }
 }
 
-/// Em que situações tentar o próximo servidor do pool, espelhando `proxy_next_upstream`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NextUpstreamCondition {
-    /// Falha de conexão ou de transporte.
     Error,
-    /// Timeout ao conectar ou ao ler.
+
     Timeout,
     Http500,
     Http502,
@@ -459,20 +397,17 @@ pub enum NextUpstreamCondition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyNextUpstreamConfig {
-    /// Lista vazia equivale a `proxy_next_upstream off`.
     #[serde(default)]
     pub conditions: Vec<NextUpstreamCondition>,
-    /// Teto de tentativas, incluindo a primeira. `None` significa tentar todos os candidatos.
+
     #[serde(default)]
     pub tries: Option<u32>,
-    /// Teto de tempo gasto no conjunto de tentativas.
+
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
 impl Default for ProxyNextUpstreamConfig {
-    /// Preserva o comportamento que estava embutido no proxy antes de virar configuração:
-    /// repetir em falha de conexão e nos status 502 e 504.
     fn default() -> Self {
         Self {
             conditions: vec![
@@ -486,23 +421,17 @@ impl Default for ProxyNextUpstreamConfig {
     }
 }
 
-/// Cache de resposta por rota, equivalente a `proxy_cache` + `proxy_cache_valid` +
-/// `proxy_cache_bypass`. Só GET/HEAD com status 200 e sem `Set-Cookie` são guardados —
-/// ver `cache::ResponseCache`. Uma tabela em memória compartilhada por todo o processo,
-/// sem zona nem disco: o efeito prático (menos ida ao upstream) é o que importa aqui.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
-    /// Quanto tempo uma resposta guardada continua válida.
     #[serde(default = "default_cache_valid_secs")]
     pub valid_secs: u64,
-    /// Bypassa o cache (nem lê nem grava) quando um destes headers de requisição chega
-    /// não-vazio — equivalente a `proxy_cache_bypass $http_<nome>`.
+
     #[serde(default)]
     pub bypass_headers: Vec<String>,
-    /// Idem, para cookies (`$cookie_<nome>`).
+
     #[serde(default)]
     pub bypass_cookies: Vec<String>,
-    /// Idem, para parâmetros de query (`$arg_<nome>`).
+
     #[serde(default)]
     pub bypass_query_params: Vec<String>,
 }
@@ -525,7 +454,7 @@ impl Default for CacheConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteRule {
     pub id: String,
-    /// O padrão de caminho. Como ele é lido depende de `match_type`.
+
     pub path_prefix: String,
     #[serde(default)]
     pub match_type: RouteMatchType,
@@ -553,9 +482,6 @@ pub struct RouteRule {
     #[serde(default)]
     pub limit_conn: Option<LimitConnConfig>,
 
-    // Controle de acesso por rota, equivalente a `allow`/`deny`/`auth_basic` dentro de um
-    // `location`. Aplicado **depois** do controle do host: passar no do host não dispensa
-    // passar no da rota.
     #[serde(default)]
     pub allowed_ips: Vec<String>,
     #[serde(default)]
@@ -565,7 +491,6 @@ pub struct RouteRule {
     #[serde(default)]
     pub satisfy: Satisfy,
 
-    // Timeouts específicos desta rota; `None` herda o default global de `HttpConfig`.
     #[serde(default)]
     pub proxy_connect_timeout_ms: Option<u64>,
     #[serde(default)]
@@ -576,14 +501,9 @@ pub struct RouteRule {
     #[serde(default)]
     pub proxy_next_upstream: Option<ProxyNextUpstreamConfig>,
 
-    /// `false` tira esta rota do buffer de requisições em memória e do stream ao vivo —
-    /// equivalente a `access_log off`. Útil para health checks e assets que gerariam
-    /// milhares de linhas sem dizer nada de interessante.
     #[serde(default = "default_true")]
     pub access_log: bool,
 
-    /// `None` (o padrão) é exatamente o comportamento de hoje, sem overhead: cada
-    /// requisição vai direto ao upstream. `Some` liga o cache em memória desta rota.
     #[serde(default)]
     pub cache: Option<CacheConfig>,
 }
@@ -603,10 +523,6 @@ impl RouteRule {
 }
 
 impl Default for RouteRule {
-    /// Uma rota vazia para ser preenchida com `..Default::default()`.
-    ///
-    /// `id`, `path_prefix` e `target_type` sempre são definidos por quem constrói; o resto
-    /// tem padrão útil, o que evita repetir uma dúzia de `None` a cada rota criada.
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -637,10 +553,6 @@ impl Default for RouteRule {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Padrão de fábrica, carga e persistência
-// ---------------------------------------------------------------------------
 
 impl Default for FerrixConfig {
     fn default() -> Self {
@@ -742,12 +654,9 @@ impl Default for FerrixConfig {
     }
 }
 
-/// O que aconteceu ao abrir o arquivo de configuração.
 pub enum ConfigLoad {
-    /// Já existia e foi lido.
     Loaded(FerrixConfig),
-    /// Não existia e foi criado com os padrões — incluindo um token de administração
-    /// gerado na hora, que precisa ser mostrado ao usuário uma única vez.
+
     Created {
         config: FerrixConfig,
         admin_token: String,
@@ -775,9 +684,6 @@ impl FerrixConfig {
             return Ok(ConfigLoad::Loaded(cfg));
         }
 
-        // A instalação nasce protegida. Deixar a API de administração aberta por padrão
-        // e só avisar depois seria o mesmo que não protegê-la: a porta 8080 escuta em
-        // 0.0.0.0 e o POST em /api/config reescreve o proxy inteiro.
         let mut default_cfg = Self::default();
         let admin_token = uuid::Uuid::new_v4().simple().to_string();
         default_cfg.admin.auth = AdminAuthConfig {
@@ -818,7 +724,6 @@ impl FerrixConfig {
 mod tests {
     use super::*;
 
-    /// Uma configuração escrita antes destes campos existirem precisa continuar carregando.
     #[test]
     fn legacy_config_still_deserializes() {
         let legacy = r#"{
@@ -852,7 +757,6 @@ mod tests {
         assert_eq!(cfg.http.client_max_body_size, DEFAULT_CLIENT_MAX_BODY_SIZE);
     }
 
-    /// O default de retry precisa reproduzir o que estava embutido no código antes.
     #[test]
     fn next_upstream_default_preserves_previous_behaviour() {
         let d = ProxyNextUpstreamConfig::default();
@@ -877,9 +781,6 @@ mod tests {
         assert_eq!(back.upstreams.len(), cfg.upstreams.len());
     }
 
-    /// Uma instalação nova precisa nascer utilizável sem nenhum ajuste manual: o padrão
-    /// não pode colidir com a porta pública do gateway (8080) nem exigir configurar
-    /// autenticação antes do primeiro `ferrix run` — daí loopback.
     #[test]
     fn default_admin_listen_does_not_collide_with_the_gateway_and_is_loopback() {
         let cfg = FerrixConfig::default();

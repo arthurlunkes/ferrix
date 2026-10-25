@@ -9,8 +9,6 @@ interface FieldProps {
   className?: string;
 }
 
-/** Envolve um input com label, dica e erro — o mesmo bloco de três linhas que cada campo
- * dos formulários antigos repetia com classes de texto ligeiramente diferentes cada vez. */
 export const Field: React.FC<FieldProps> = ({
   label,
   hint,
@@ -32,3 +30,4 @@ export const Field: React.FC<FieldProps> = ({
     ) : null}
   </div>
 );
+

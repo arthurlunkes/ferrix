@@ -12,9 +12,6 @@ interface RouteTesterModalProps {
   onClose: () => void;
 }
 
-/** Responde "qual host e qual rota atenderiam esta requisição, e por quê" — o antídoto
- * para a classe de erro mais cara em nginx: uma regra que nunca é alcançada e só se
- * descobre em produção. Consome `POST /api/route-test`. */
 export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClose }) => {
   const [host, setHost] = useState("localhost");
   const [path, setPath] = useState("/");
@@ -34,7 +31,7 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
       });
       setResult(r);
     } catch (err: any) {
-      setError(err.message || "Falha ao testar a rota");
+      setError(err.message || "Failed to test route");
       setResult(null);
     } finally {
       setLoading(false);
@@ -45,17 +42,17 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
     <Modal
       open={open}
       onClose={onClose}
-      title="Testar Rota"
-      description="Simula qual virtual host e qual rota atenderiam uma requisição, e por qual regra de precedência"
+      title="Route Tester"
+      description="Simulates which virtual host and route would handle a request, and by which precedence rule"
       icon={<Compass className="w-5 h-5" />}
       size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Fechar
+            Close
           </Button>
           <Button variant="primary" onClick={run} loading={loading}>
-            Testar
+            Test
           </Button>
         </>
       }
@@ -65,10 +62,10 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
           <Field label="Host" className="col-span-1">
             <Input value={host} onChange={(e) => setHost(e.target.value)} mono placeholder="localhost" />
           </Field>
-          <Field label="Caminho" className="col-span-1">
+          <Field label="Path" className="col-span-1">
             <Input value={path} onChange={(e) => setPath(e.target.value)} mono placeholder="/api/users" />
           </Field>
-          <Field label="Porta (opcional)" className="col-span-1">
+          <Field label="Port (optional)" className="col-span-1">
             <Input
               value={port}
               onChange={(e) => setPort(e.target.value)}
@@ -94,7 +91,7 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
                 <XCircle className="w-4 h-4 text-danger-400" />
               )}
               <span className="text-sm font-semibold text-content-primary">
-                {result.matched ? "Casou com uma rota" : "Nenhuma rota casou"}
+                {result.matched ? "Matched a route" : "No route matched"}
               </span>
             </div>
 
@@ -112,7 +109,7 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
                   )}
                 </div>
                 <div>
-                  <span className="text-content-muted block mb-1">Rota</span>
+                  <span className="text-content-muted block mb-1">Route</span>
                   <span className="text-content-primary font-mono">{result.route_pattern}</span>
                   {result.route_reason && (
                     <Badge tone="brand" className="mt-1.5">
@@ -122,7 +119,7 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
                 </div>
                 {result.target && (
                   <div className="col-span-2">
-                    <span className="text-content-muted block mb-1">Destino</span>
+                    <span className="text-content-muted block mb-1">Target</span>
                     <span className="text-content-primary font-mono">{result.target}</span>
                   </div>
                 )}
@@ -134,3 +131,4 @@ export const RouteTesterModal: React.FC<RouteTesterModalProps> = ({ open, onClos
     </Modal>
   );
 };
+

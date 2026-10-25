@@ -1,32 +1,17 @@
-//! Cache de resposta HTTP, equivalente a `proxy_cache` do nginx.
-//!
-//! Deliberadamente simples: uma tabela em memória, sem persistência em disco e sem
-//! separação por zona — uma configuração real nginx costuma ter uma zona por site, mas
-//! aqui todo mundo compartilha a mesma tabela, diferenciado pela própria chave (que já
-//! inclui host e caminho). O que importa é o efeito prático que `proxy_cache_bypass`
-//! promete: menos ida ao upstream em rotas de leitura pesada.
-
 use axum::body::Bytes;
 use axum::http::HeaderValue;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-/// Acima disso, uma resposta não é guardada — cache em memória sem limite de corpo
-/// individual derrubaria o processo com um arquivo grande servido por engano via proxy.
 pub const MAX_CACHEABLE_BODY_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Nenhuma configuração define um teto explícito de entradas; sem um, uma rota cacheável
-/// com muita variação de chave (busca com querystring livre, por exemplo) cresceria sem
-/// parar. Quando cheio, a entrada mais antiga por inserção sai — não é LRU de verdade,
-/// mas evita crescimento ilimitado sem precisar de mais uma dependência.
 const MAX_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub struct CachedResponse {
     pub status: u16,
-    /// Só os headers que fazem sentido reproduzir; hop-by-hop já foi filtrado por quem
-    /// constrói a entrada, mas isso é responsabilidade de quem monta o `CachedResponse`.
+
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
     expires_at: Instant,
@@ -50,8 +35,6 @@ impl ResponseCache {
         })
     }
 
-    /// `None` tanto para "nunca guardado" quanto para "guardado, mas venceu" — quem chama
-    /// não precisa diferenciar os dois casos, os dois significam "vá ao upstream".
     pub fn get(&self, key: &str) -> Option<CachedResponse> {
         let now = Instant::now();
         {
@@ -61,7 +44,7 @@ impl ResponseCache {
                 return Some(entry.response.clone());
             }
         }
-        // Venceu — remove daqui em vez de esperar o próximo `put` disputar o slot.
+
         if let Ok(mut entries) = self.entries.write() {
             entries.remove(key);
         }
@@ -111,17 +94,10 @@ impl ResponseCache {
     }
 }
 
-/// A chave inclui método (GET e HEAD não devem colidir), host e caminho+query — o mesmo
-/// que o template padrão do nginx (`$scheme$proxy_host$request_uri`), menos o esquema
-/// porque uma mesma origem servindo HTTP e HTTPS quer a mesma entrada nos dois.
 pub fn cache_key(method: &str, host: &str, path_and_query: &str) -> String {
     format!("{}:{}:{}", method, host, path_and_query)
 }
 
-/// Só cabeçalhos seguros de reproduzir numa resposta futura para outro cliente. Filtra
-/// hop-by-hop (tratados à parte no proxy) e `Set-Cookie` — o padrão do próprio nginx é
-/// não cachear respostas com `Set-Cookie` justamente para não vazar sessão de um cliente
-/// para outro; aqui o corpo ainda é cacheado, mas o cookie de sessão nunca é reproduzido.
 pub fn cacheable_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -150,16 +126,10 @@ pub fn cacheable_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String
         .collect()
 }
 
-/// Nunca guardar uma resposta que trouxe `Set-Cookie` — mesmo critério do nginx.
 pub fn has_set_cookie(headers: &axum::http::HeaderMap) -> bool {
     headers.contains_key(axum::http::header::SET_COOKIE)
 }
 
-/// O nginx respeita por padrão um `Cache-Control: no-store/no-cache/private` que o
-/// backend mandou, a menos que `proxy_ignore_headers` diga o contrário — o Ferrix não
-/// implementa esse override, então respeita sempre. É o backend dizendo "esta resposta
-/// é sensível ou muda por usuário"; ignorar isso é como vaza sessão de um cliente pra
-/// outro em cache compartilhado.
 pub fn upstream_forbids_cache(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::CACHE_CONTROL)

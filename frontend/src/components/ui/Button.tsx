@@ -26,8 +26,6 @@ const SIZE_CLASSES: Record<Size, string> = {
   md: "px-4 py-2 text-sm gap-2",
 };
 
-/** Botão padrão do painel. Substitui os `<button className="...">` repetidos em cada
- * tela — a cor de foco, o disabled e o spinner de loading só existem aqui agora. */
 export const Button: React.FC<ButtonProps> = ({
   variant = "secondary",
   size = "md",
@@ -56,3 +54,4 @@ export const Button: React.FC<ButtonProps> = ({
     </button>
   );
 };
+

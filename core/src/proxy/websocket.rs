@@ -49,7 +49,6 @@ impl WebSocketProxy {
         let (mut client_tx, mut client_rx) = client_ws.split();
         let (mut upstream_tx, mut upstream_rx) = upstream_ws.split();
 
-        // Forward Client -> Upstream
         let client_to_upstream = async {
             while let Some(Ok(msg)) = client_rx.next().await {
                 let tungstenite_msg = match msg {
@@ -75,7 +74,6 @@ impl WebSocketProxy {
             }
         };
 
-        // Forward Upstream -> Client
         let upstream_to_client = async {
             while let Some(Ok(msg)) = upstream_rx.next().await {
                 let axum_msg = match msg {

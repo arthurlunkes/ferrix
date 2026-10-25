@@ -34,7 +34,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
       <div className="bg-[#111827] border border-gray-800 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
-        {/* Header */}
+        {}
         <div className="flex items-center justify-between p-6 border-b border-gray-800">
           <div className="flex items-center gap-3">
             <span
@@ -59,9 +59,9 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           </button>
         </div>
 
-        {/* Content Body */}
+        {}
         <div className="p-6 space-y-6 text-sm">
-          {/* Top KPI row */}
+          {}
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-[#0b0f19] p-3 rounded-xl border border-gray-800/80">
               <span className="text-xs text-gray-500 block mb-1">
@@ -88,7 +88,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
             </div>
           </div>
 
-          {/* Details Table */}
+          {}
           <div className="bg-[#0b0f19] rounded-xl border border-gray-800/80 divide-y divide-gray-800/60 font-mono text-xs">
             <div className="p-3 flex justify-between">
               <span className="text-gray-400">Request ID:</span>
@@ -133,7 +133,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           </div>
         </div>
 
-        {/* Footer */}
+        {}
         <div className="p-4 border-t border-gray-800 flex justify-end bg-gray-900/40">
           <button
             onClick={onClose}
@@ -146,3 +146,4 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
     </div>
   );
 };
+

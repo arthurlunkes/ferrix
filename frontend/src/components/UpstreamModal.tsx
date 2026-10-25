@@ -39,14 +39,14 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
     e.preventDefault();
     setError(null);
     if (formData.targets.length === 0) {
-      setError("Configure ao menos um servidor de backend.");
+      setError("Configure at least one backend server.");
       return;
     }
     setSaving(true);
     try {
       await onSave(formData);
     } catch (err: any) {
-      setError(err.message || "Falha ao salvar o upstream");
+      setError(err.message || "Failed to save upstream");
     } finally {
       setSaving(false);
     }
@@ -56,18 +56,18 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
     <Modal
       open
       onClose={onClose}
-      title={upstream ? "Editar Pool de Upstream" : "Novo Pool de Upstream"}
-      description="Algoritmo de balanceamento, servidores de backend e health check"
+      title={upstream ? "Edit Upstream Pool" : "New Upstream Pool"}
+      description="Load balancing algorithm, backend servers, and health checks"
       icon={<Server className="w-5 h-5" />}
       iconTone="teal"
       size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Cancelar
+            Cancel
           </Button>
           <Button variant="primary" onClick={handleSubmit} loading={saving}>
-            Salvar e aplicar
+            Save and apply
           </Button>
         </>
       }
@@ -80,7 +80,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Nome do pool" required>
+          <Field label="Pool name" required>
             <Input
               required
               disabled={!!upstream}
@@ -90,7 +90,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
               mono
             />
           </Field>
-          <Field label="Algoritmo de balanceamento">
+          <Field label="Load balancing algorithm">
             <Select
               value={formData.algorithm}
               onChange={(e) => setFormData({ ...formData, algorithm: e.target.value as UpstreamConfig["algorithm"] })}
@@ -98,8 +98,8 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
               <option value="round_robin">Round-Robin</option>
               <option value="weighted_round_robin">Weighted Round-Robin</option>
               <option value="least_conn">Least Connections</option>
-              <option value="ip_hash">IP Hash (sessão fixa)</option>
-              <option value="random">Aleatório</option>
+              <option value="ip_hash">IP Hash (sticky session)</option>
+              <option value="random">Random</option>
             </Select>
           </Field>
         </div>
@@ -107,18 +107,18 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
         <Toggle
           checked={formData.verify_tls}
           onChange={(v) => setFormData({ ...formData, verify_tls: v })}
-          label="Verificar certificado TLS do backend"
-          description="Desligue apenas para backends com certificado autoassinado em rede confiável"
+          label="Verify backend TLS certificate"
+          description="Disable only for backends with self-signed certificates on trusted networks"
         />
 
         <div className="border-t border-border-subtle pt-5">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-sm font-bold text-content-primary">Servidores de backend</h3>
-              <p className="text-xs text-content-muted">Peso, tolerância a falhas e papel no pool</p>
+              <h3 className="text-sm font-bold text-content-primary">Backend servers</h3>
+              <p className="text-xs text-content-muted">Weight, fault tolerance, and pool role</p>
             </div>
             <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={addTarget}>
-              Adicionar servidor
+              Add server
             </Button>
           </div>
 
@@ -126,7 +126,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
             {formData.targets.map((target, idx) => (
               <div key={idx} className="bg-surface-0 border border-border-subtle rounded-xl p-3.5 space-y-3">
                 <div className="flex flex-wrap items-end gap-3">
-                  <Field label="URL do servidor" required className="flex-1 min-w-[200px]">
+                  <Field label="Server URL" required className="flex-1 min-w-[200px]">
                     <Input
                       required
                       value={target.url}
@@ -136,7 +136,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                       className="text-xs"
                     />
                   </Field>
-                  <Field label="Peso" className="w-20">
+                  <Field label="Weight" className="w-20">
                     <Input
                       type="number"
                       min={1}
@@ -146,7 +146,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                       className="text-xs"
                     />
                   </Field>
-                  <Field label="Máx. falhas" className="w-24">
+                  <Field label="Max fails" className="w-24">
                     <Input
                       type="number"
                       min={1}
@@ -156,7 +156,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                       className="text-xs"
                     />
                   </Field>
-                  <Field label="Máx. conexões" hint="Vazio = sem teto" className="w-28">
+                  <Field label="Max connections" hint="Empty = unlimited" className="w-28">
                     <Input
                       type="number"
                       min={0}
@@ -173,7 +173,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                       type="button"
                       onClick={() => removeTarget(idx)}
                       className="p-2 text-content-muted hover:text-danger-400 rounded-lg transition"
-                      title="Remover servidor"
+                      title="Remove server"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -184,13 +184,13 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                     checked={target.backup}
                     onChange={(v) => patchTarget(idx, { backup: v })}
                     label="Backup"
-                    description="só recebe tráfego se os demais falharem"
+                    description="only receives traffic if all others fail"
                   />
                   <Toggle
                     checked={target.down}
                     onChange={(v) => patchTarget(idx, { down: v })}
                     label="Down"
-                    description="retirado da rotação manualmente"
+                    description="manually removed from rotation"
                   />
                 </div>
               </div>
@@ -201,7 +201,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
         <div className="border-t border-border-subtle pt-5">
           <div className="flex items-center gap-2 mb-3">
             <HeartPulse className="w-4 h-4 text-brand-400" />
-            <h3 className="text-sm font-bold text-content-primary">Health check ativo</h3>
+            <h3 className="text-sm font-bold text-content-primary">Active health check</h3>
           </div>
 
           <Toggle
@@ -214,12 +214,12 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                   : null,
               })
             }
-            label="Verificar a saúde dos servidores periodicamente"
+            label="Periodically check backend health"
           />
 
           {formData.health_check && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-surface-0 border border-border-subtle rounded-xl p-4 mt-3">
-              <Field label="Caminho">
+              <Field label="Path">
                 <Input
                   value={formData.health_check.path}
                   onChange={(e) =>
@@ -229,7 +229,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                   className="text-xs"
                 />
               </Field>
-              <Field label="Intervalo (s)">
+              <Field label="Interval (s)">
                 <Input
                   type="number"
                   min={1}
@@ -259,7 +259,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
                   className="text-xs"
                 />
               </Field>
-              <Field label="Status esperado">
+              <Field label="Expected status">
                 <Input
                   type="number"
                   value={formData.health_check.expected_status}
@@ -283,3 +283,4 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
     </Modal>
   );
 };
+

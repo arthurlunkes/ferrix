@@ -25,7 +25,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     e.preventDefault();
     const trimmed = tokenInput.trim();
     if (!trimmed) {
-      setError("Por favor, insira o token de administração.");
+      setError("Please enter the admin token.");
       return;
     }
 
@@ -40,7 +40,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onSuccess();
     } else {
       setError(
-        "Token inválido ou rejeitado pelo Ferrix. Verifique o arquivo ferrix.json.",
+        "Invalid or rejected token. Check your ferrix.json file.",
       );
     }
   };
@@ -63,17 +63,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
           <div>
             <h2 className="text-lg font-bold text-white tracking-tight">
-              Autenticação do Ferrix
+              Ferrix Authentication
             </h2>
             <p className="text-xs text-gray-400">
-              API Administrativa Protegida
+              Protected Admin API
             </p>
           </div>
         </div>
 
         <p className="text-sm text-gray-300 mb-4 leading-relaxed">
-          O backend do Ferrix exige um token para exibir telemetria, rotas e
-          logs ao vivo. Insira o token configurado no seu{" "}
+          Ferrix requires a token to access telemetry, routes, and live logs.
+          Enter the token configured in your{" "}
           <code className="px-1.5 py-0.5 rounded bg-gray-800 text-emerald-400 font-mono text-xs">
             ferrix.json
           </code>
@@ -92,7 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setTokenInput(e.target.value);
                 setError(null);
               }}
-              placeholder="token do campo token no ferrix.json"
+              placeholder="token from ferrix.json"
               className="w-full px-3.5 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               autoFocus
             />
@@ -112,7 +112,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 onClick={onClose}
                 className="px-4 py-2 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               >
-                Cancelar
+                Cancel
               </button>
             )}
             <button
@@ -123,12 +123,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {loading ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Validando...
+                  Validating...
                 </>
               ) : (
                 <>
                   <ShieldCheck className="w-3.5 h-3.5" />
-                  Salvar e Conectar
+                  Save & Connect
                 </>
               )}
             </button>
@@ -138,3 +138,4 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     </div>
   );
 };
+

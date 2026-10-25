@@ -7,26 +7,21 @@ use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, SystemTime};
 use tracing::warn;
 
-/// Arquivos até este tamanho ficam inteiros em memória. Acima disso, o arquivo é lido do
-/// disco a cada requisição, como antes.
 const MAX_CACHED_FILE_BYTES: u64 = 1024 * 1024;
-/// Teto total do cache, para um diretório cheio de arquivos não esgotar a memória.
+
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-/// Por quanto tempo uma entrada é servida sem reconsultar o disco — o mesmo papel do
-/// `open_file_cache_valid` do nginx. Um arquivo editado aparece em no máximo 1 segundo.
+
 const REVALIDATE_AFTER: Duration = Duration::from_secs(1);
 
-/// Resolução de uma requisição já pronta para virar resposta: o arquivo escolhido (depois
-/// de `try_files`), seu conteúdo e os cabeçalhos pré-montados.
 struct CachedFile {
     body: Bytes,
     content_type: HeaderValue,
     content_length: HeaderValue,
-    /// `mtime` e tamanho do arquivo quando foi lido; mudou qualquer um, relê.
+
     modified: Option<SystemTime>,
     len: u64,
     file_path: PathBuf,
-    /// Milissegundos desde `EPOCH` da última vez que o disco foi consultado.
+
     checked_at: AtomicU64,
 }
 
@@ -36,8 +31,6 @@ struct FileCache {
     total_bytes: u64,
 }
 
-/// Chave: raiz + caminho pedido + `try_files`. A mesma URL pode cair em arquivos diferentes
-/// em rotas diferentes, então a raiz e o `try_files` entram na chave.
 static CACHE: LazyLock<RwLock<FileCache>> = LazyLock::new(|| RwLock::new(FileCache::default()));
 
 pub struct StaticFileServer;
@@ -68,8 +61,7 @@ impl StaticFileServer {
         let root = root_dir.to_string();
         let req_path = path.to_string();
         let tf = try_files.map(|s| s.to_string());
-        // Toda a resolução usa chamadas de sistema bloqueantes (stat, canonicalize, read);
-        // fora do runtime, para não travar as outras conexões da mesma thread.
+
         let loaded =
             tokio::task::spawn_blocking(move || load_file(&root, &req_path, tf.as_deref()))
                 .await
@@ -110,8 +102,6 @@ fn build_response(entry: &CachedFile) -> Response<Body> {
     resp
 }
 
-/// Reconsulta o disco depois de `REVALIDATE_AFTER`. Requisições simultâneas na virada
-/// podem fazer o `stat` em paralelo; é raro e barato, então não vale um lock.
 async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
     let meta = tokio::fs::metadata(&entry.file_path).await;
     let same = match meta {
@@ -127,7 +117,6 @@ async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
 }
 
 fn resolve_path(base_root: &Path, clean_path: &str, try_files: Option<&str>) -> Option<PathBuf> {
-    // Try direct file first
     let candidate = base_root.join(clean_path);
     if candidate.is_file() {
         return Some(candidate);
@@ -138,12 +127,11 @@ fn resolve_path(base_root: &Path, clean_path: &str, try_files: Option<&str>) -> 
         }
     }
 
-    // Try_files fallback handling (e.g. "$uri $uri/ /index.html")
     for token in try_files?.split_whitespace() {
         let p = match token {
             "$uri" => base_root.join(clean_path),
             "$uri/" => base_root.join(clean_path).join("index.html"),
-            // Explicit fallback path like /index.html
+
             other => base_root.join(other.trim_start_matches('/')),
         };
         if p.is_file() {
@@ -159,7 +147,6 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
 
     let file_path = resolve_path(&base_root, clean_path, try_files).ok_or(StatusCode::NOT_FOUND)?;
 
-    // Double check canonical path stays within root
     if let (Ok(canon_file), Ok(canon_root)) = (file_path.canonicalize(), base_root.canonicalize()) {
         if !canon_file.starts_with(&canon_root) {
             warn!(file = %file_path.display(), root = %base_root.display(), "Directory traversal attempt blocked");
@@ -174,7 +161,6 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
         .unwrap_or(HeaderValue::from_static("application/octet-stream"));
 
     if len > MAX_CACHED_FILE_BYTES {
-        // Grande demais para a memória: segue em streaming direto do disco.
         let file =
             std::fs::File::open(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));

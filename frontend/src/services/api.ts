@@ -272,8 +272,6 @@ export interface RouteTestResult {
   explanation: string;
 }
 
-/** Erro de API com o corpo de resposta já decodificado, para a UI mostrar detalhes reais
- * (lista de validação, por exemplo) em vez de só "Failed to fetch". */
 export class ApiError extends Error {
   status: number;
   body: any;
@@ -318,7 +316,6 @@ async function authFetch(
   return res;
 }
 
-/** Extrai a mensagem de erro do corpo da resposta, tentando JSON antes de cair para texto. */
 async function throwApiError(res: Response, fallback: string): Promise<never> {
   let body: any = null;
   const text = await res.text();
@@ -386,12 +383,9 @@ export const api = {
 
   getConfig: () => getJson<FerrixConfig>("/config"),
 
-  /** Aplica a configuração inteira, com hot-reload. Lança `ApiError` com o relatório de
-   * validação no corpo quando o servidor recusa (ver `err.body.report`). */
   updateConfig: (config: FerrixConfig) =>
     postJson<{ status: string; report: ValidationReport }>("/config", config),
 
-  /** Só valida — não persiste nem aplica nada. */
   validateConfig: (config: FerrixConfig) =>
     postJson<ValidationReport>("/config/validate", config),
 
@@ -403,8 +397,6 @@ export const api = {
 
   getVHosts: () => getJson<VirtualHost[]>("/vhosts"),
 
-  /** Lança `ApiError`; em caso de rejeição por validação, `err.body.report` traz os
-   * problemas apontados pelo servidor. */
   saveVHost: (vhost: VirtualHost) =>
     postJson<{ status: string; report: ValidationReport }>("/vhosts", vhost),
 
@@ -447,8 +439,6 @@ export const api = {
   },
 };
 
-/** Um `RouteRule` novo, pronto para edição, com os defaults do backend replicados aqui —
- * a mesma escolha de `RouteRule::default()` em `core/src/config/mod.rs`. */
 export function newRoute(overrides: Partial<RouteRule> = {}): RouteRule {
   return {
     id: `route-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -519,3 +509,4 @@ export function newUpstream(overrides: Partial<UpstreamConfig> = {}): UpstreamCo
     ...overrides,
   };
 }
+
