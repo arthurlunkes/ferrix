@@ -150,7 +150,11 @@ jobs:
           [ -f ferrix.json ] && cp ferrix.json "${DIR_NAME}/" || true
           cp -r frontend/dist/* "${DIR_NAME}/ui/"
           tar -czvf "${ARCHIVE_NAME}.tar.gz" -C /tmp "${ARCHIVE_NAME}"
-          sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          else
+            shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          fi
 
       - name: Package Archive (Windows)
         if: runner.os == 'Windows'
