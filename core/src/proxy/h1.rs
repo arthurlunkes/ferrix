@@ -360,7 +360,7 @@ pub async fn exchange(
             }
         }
         RequestBody::Stream(body, len) => {
-            write_streaming(&mut conn.stream, body, len.is_none()).await?
+            Box::pin(write_streaming(&mut conn.stream, body, len.is_none())).await?
         }
     }
     conn.stream.flush().await.map_err(H1Error::Io)?;

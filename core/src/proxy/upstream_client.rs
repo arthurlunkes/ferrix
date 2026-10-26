@@ -112,7 +112,10 @@ impl UpstreamClient {
                     Some(c) => c,
                     None => {
                         let tls = target.tls.then_some((self.tls(), insecure));
-                        h1::connect(&target, base, self.connect_timeout, tls).await?
+                        // Boxed: opening a connection (with a possible TLS handshake,
+                        // whose state is several KB) is rare once the pool is warm, so
+                        // it shouldn't size every request's state machine.
+                        Box::pin(h1::connect(&target, base, self.connect_timeout, tls)).await?
                     }
                 };
                 let req_body = match (&full, streaming.take()) {

@@ -130,6 +130,11 @@ impl ProxyEngine {
         if metrics_on {
             self.metrics.dec_active_connections();
         }
+        // Like nginx, Ferrix answers with its own Server header (replacing an upstream's).
+        let mut response = response;
+        response
+            .headers_mut()
+            .insert(header::SERVER, compiled.server_header.clone());
         response
     }
 
@@ -187,7 +192,10 @@ impl ProxyEngine {
                         is_ws,
                     )
                     .await;
-                apply_error_page(vhost, resp).await
+                Box::pin(apply_error_page(vhost, resp)).await
+            }
+            None if compiled.config.http.default_page => {
+                default_page(compiled.config.http.server_tokens)
             }
             None => (
                 StatusCode::NOT_FOUND,
@@ -328,6 +336,10 @@ impl ProxyEngine {
         let req_path = req.uri().path().to_string();
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
+            // A host with no routes at all is a fresh setup: greet like nginx's default site.
+            if vhost.routes.is_empty() && compiled.config.http.default_page {
+                return default_page(compiled.config.http.server_tokens);
+            }
             return (StatusCode::NOT_FOUND, "404 Not Found - No route matched").into_response();
         };
         let route = &vhost.routes[matched.route_index];
@@ -446,12 +458,14 @@ impl ProxyEngine {
                     headers: &parts.headers,
                     encoding: encoding.map(|a| (a, compression)),
                 };
-                match StaticFileServer::serve_file(
+                // Boxed (like the cache and error-page paths) so a proxied request's
+                // state machine doesn't carry the size of the paths it doesn't take.
+                match Box::pin(StaticFileServer::serve_file(
                     root_dir,
                     file_path,
                     route.try_files.as_deref(),
                     &static_req,
-                )
+                ))
                 .await
                 {
                     Ok(r) => r,
@@ -499,7 +513,7 @@ impl ProxyEngine {
                     let target_url = target.url.clone();
 
                     if let Ok(ws_upgrade) =
-                        WebSocketUpgrade::from_request_parts(&mut parts, &()).await
+                        Box::pin(WebSocketUpgrade::from_request_parts(&mut parts, &())).await
                     {
                         return ws_upgrade
                             .on_upgrade(move |socket| async move {
@@ -538,7 +552,7 @@ impl ProxyEngine {
                                 restored_req,
                             )
                             .await;
-                        self.store_if_cacheable(key, cfg, inner).await
+                        Box::pin(self.store_if_cacheable(key, cfg, inner)).await
                     }
                 } else {
                     let restored_req = Request::from_parts(parts, body);
@@ -911,6 +925,30 @@ fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -
         Some(q) => format!("{}?{}", base, q),
         None => base,
     }
+}
+
+/// nginx-style welcome page for requests that match no virtual host, so a fresh install
+/// shows that the server is up. Disable with `http.default_page: false`.
+fn default_page(show_version: bool) -> Response {
+    let version = if show_version {
+        concat!(" ", env!("CARGO_PKG_VERSION"))
+    } else {
+        ""
+    };
+    let html = format!(
+        "<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to Ferrix!</title>\n<style>\n\
+         html {{ color-scheme: light dark; }}\n\
+         body {{ width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }}\n\
+         </style>\n</head>\n<body>\n<h1>Welcome to Ferrix{version}!</h1>\n\
+         <p>If you see this page, the Ferrix web server is successfully installed and working. \
+         No virtual host matched this request yet.</p>\n\
+         <p>Add a virtual host in <code>ferrix.json</code> or the dashboard, and see the \
+         documentation at <a href=\"https://arthurlunkes.github.io/ferrix\">arthurlunkes.github.io/ferrix</a>.</p>\n\
+         <p>To hide this page set <code>\"default_page\": false</code> in the <code>http</code> \
+         section; <code>\"server_tokens\": false</code> hides the version.</p>\n\
+         <p><em>Thank you for using Ferrix.</em></p>\n</body>\n</html>\n"
+    );
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
 /// Swaps the body of an error response for the vhost's custom page (`error_pages`),

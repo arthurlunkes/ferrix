@@ -80,6 +80,7 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     validate_listeners(cfg, &mut report);
+    validate_workers(cfg, &mut report);
     validate_admin_auth(cfg, &mut report);
     validate_real_ip(cfg, &mut report);
     validate_upstreams(cfg, &mut report);
@@ -187,6 +188,43 @@ fn validate_acme(cfg: &FerrixConfig, report: &mut ValidationReport) {
              (desafio HTTP-01) pela porta 80"
                 .to_string(),
         );
+    }
+}
+
+fn validate_workers(cfg: &FerrixConfig, report: &mut ValidationReport) {
+    let http = &cfg.http;
+    if http.worker_connections == 0 {
+        report.error(
+            "http.worker_connections",
+            "precisa ser maior que zero, senão nenhum worker aceita conexões".to_string(),
+        );
+    }
+    if let Some(n) = http.worker_rlimit_nofile {
+        let needed = http.worker_threads as u64 * http.worker_connections as u64;
+        if n < needed {
+            report.warn(
+                "http.worker_rlimit_nofile",
+                format!(
+                    "{} descritores não cobrem worker_threads × worker_connections ({}); \
+                     conexões podem falhar com 'too many open files'",
+                    n, needed
+                ),
+            );
+        }
+    }
+    if let crate::config::CpuAffinity::Cores(cores) = &http.worker_cpu_affinity {
+        let available = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        if let Some(bad) = cores.iter().find(|&&c| c >= available) {
+            report.warn(
+                "http.worker_cpu_affinity",
+                format!(
+                    "o núcleo {} pode não existir nesta máquina ({} disponíveis)",
+                    bad, available
+                ),
+            );
+        }
     }
 }
 

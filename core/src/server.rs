@@ -14,6 +14,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -23,6 +24,15 @@ use tracing::{debug, error, warn};
 use crate::config::store::ConfigStore;
 use crate::config::FerrixConfig;
 use crate::proxy::ProxyEngine;
+
+/// Counts a worker's open client connection until it's dropped.
+struct OpenConn(Arc<AtomicUsize>);
+
+impl Drop for OpenConn {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 enum Conn {
     Plain(tokio::net::TcpStream, axum::body::Bytes),
@@ -57,7 +67,26 @@ pub async fn serve(
         keepalive_timeout: Duration::from_millis(http.keepalive_timeout_ms.max(1)),
     });
 
+    // nginx's `worker_connections`: a worker at its limit stops accepting (the kernel
+    // keeps new connections in the listen backlog, or hands them to another worker)
+    // until one of its connections closes.
+    let max_conns = http.worker_connections.max(1) as usize;
+    let open = Arc::new(AtomicUsize::new(0));
+    let mut warned = false;
+
     loop {
+        if open.load(Ordering::Relaxed) >= max_conns {
+            if !warned {
+                warn!(
+                    port,
+                    max_conns, "worker_connections reached; pausing accept"
+                );
+                warned = true;
+            }
+            crate::clock::CoarseSleep::after(Duration::from_millis(5)).await;
+            continue;
+        }
+        warned = false;
         let (tcp, addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
@@ -68,12 +97,15 @@ pub async fn serve(
             }
         };
         let _ = tcp.set_nodelay(true);
+        open.fetch_add(1, Ordering::Relaxed);
+        let slot = OpenConn(open.clone());
 
         let engine = engine.clone();
         let builder = builder.clone();
         let tls = tls.clone();
         let fast = fast.clone();
         tokio::spawn(async move {
+            let _slot = slot;
             // Plain HTTP/1.1 goes through Ferrix's own fast path first; it hands the
             // connection to hyper for anything it doesn't handle itself.
             let conn = match tls {

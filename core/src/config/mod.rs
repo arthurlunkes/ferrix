@@ -178,8 +178,36 @@ impl AdminAuthConfig {
 pub struct HttpConfig {
     #[serde(default = "default_http_listen")]
     pub listen: String,
+    /// Worker threads serving the proxy ports (nginx `worker_processes`). Defaults to
+    /// the number of CPU cores available to the process.
     #[serde(default = "default_worker_threads")]
     pub worker_threads: usize,
+
+    /// Pin worker threads to CPU cores (nginx `worker_cpu_affinity`): `"off"` (default),
+    /// `"auto"` (worker N on the N-th core the process may use) or an explicit list of
+    /// core ids, one per worker, e.g. `[0, 2, 4, 6]`.
+    #[serde(default)]
+    pub worker_cpu_affinity: CpuAffinity,
+
+    /// Maximum simultaneous client connections per worker (nginx `worker_connections`).
+    /// A worker at the limit stops accepting until a connection closes.
+    #[serde(default = "default_worker_connections")]
+    pub worker_connections: u32,
+
+    /// Raise the process's open-file limit (`RLIMIT_NOFILE`) at startup, like nginx's
+    /// `worker_rlimit_nofile`. Every connection and served file uses a descriptor.
+    #[serde(default)]
+    pub worker_rlimit_nofile: Option<u64>,
+
+    /// Send `Server: ferrix/<version>` (true, default) or just `Server: ferrix`, and show
+    /// the version on the default page (nginx `server_tokens`).
+    #[serde(default = "default_true")]
+    pub server_tokens: bool,
+
+    /// Answer requests that match no virtual host with a "Welcome to Ferrix" page (true,
+    /// default), like nginx's default site; false answers a plain 404 instead.
+    #[serde(default = "default_true")]
+    pub default_page: bool,
 
     #[serde(default = "default_client_header_timeout_ms")]
     pub client_header_timeout_ms: u64,
@@ -286,6 +314,48 @@ impl Default for CompressionConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CpuAffinity {
+    #[default]
+    Off,
+    Auto,
+    Cores(Vec<usize>),
+}
+
+impl Serialize for CpuAffinity {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            CpuAffinity::Off => s.serialize_str("off"),
+            CpuAffinity::Auto => s.serialize_str("auto"),
+            CpuAffinity::Cores(c) => c.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CpuAffinity {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Word(String),
+            Cores(Vec<usize>),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Word(w) if w.eq_ignore_ascii_case("off") => Ok(CpuAffinity::Off),
+            Raw::Word(w) if w.eq_ignore_ascii_case("auto") => Ok(CpuAffinity::Auto),
+            Raw::Word(w) => Err(serde::de::Error::custom(format!(
+                "worker_cpu_affinity must be \"off\", \"auto\" or a list of cores, not \"{}\"",
+                w
+            ))),
+            Raw::Cores(c) => Ok(CpuAffinity::Cores(c)),
+        }
+    }
+}
+
+fn default_worker_connections() -> u32 {
+    4096
+}
+
 fn default_http_listen() -> String {
     "0.0.0.0:8000".to_string()
 }
@@ -324,6 +394,11 @@ impl Default for HttpConfig {
         Self {
             listen: default_http_listen(),
             worker_threads: default_worker_threads(),
+            worker_cpu_affinity: CpuAffinity::Off,
+            worker_connections: default_worker_connections(),
+            worker_rlimit_nofile: None,
+            server_tokens: true,
+            default_page: true,
             client_header_timeout_ms: default_client_header_timeout_ms(),
             client_body_timeout_ms: default_client_body_timeout_ms(),
             keepalive_timeout_ms: default_keepalive_timeout_ms(),

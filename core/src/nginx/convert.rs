@@ -253,17 +253,40 @@ impl Converter {
                     }
                 }
                 "events" => {
-                    self.report.note(
-                        NoteLevel::Converted,
-                        &self.file,
-                        d.line,
-                        "events",
-                        "events { ... }",
-                        "o runtime assíncrono do Ferrix dimensiona as conexões sozinho",
+                    for item in d.block.iter().flatten() {
+                        match item.name.as_str() {
+                            "worker_connections" => {
+                                if let Some(n) = item.arg(0).and_then(|v| v.parse().ok()) {
+                                    self.config.http.worker_connections = n;
+                                }
+                                self.converted(item, "virou http.worker_connections");
+                            }
+                            _ => self.converted(
+                                item,
+                                "o runtime assíncrono do Ferrix escolhe o mecanismo de eventos sozinho",
+                            ),
+                        }
+                    }
+                }
+                "worker_processes" => {
+                    if let Some(n) = d.arg(0).and_then(|v| v.parse::<usize>().ok()) {
+                        self.config.http.worker_threads = n.max(1);
+                    }
+                    self.converted(
+                        d,
+                        "virou http.worker_threads (\"auto\" = número de núcleos)",
                     );
                 }
+                "worker_rlimit_nofile" => {
+                    self.config.http.worker_rlimit_nofile = d.arg(0).and_then(|v| v.parse().ok());
+                    self.converted(d, "virou http.worker_rlimit_nofile");
+                }
+                "worker_cpu_affinity" => {
+                    self.config.http.worker_cpu_affinity = parse_cpu_affinity(&d.args);
+                    self.converted(d, "virou http.worker_cpu_affinity");
+                }
                 "stream" => self.convert_stream(d),
-                "load_module" | "worker_processes" | "pid" | "user" | "daemon" => {
+                "load_module" | "pid" | "user" | "daemon" => {
                     self.report.note(
                         NoteLevel::Converted,
                         &self.file,
@@ -448,6 +471,10 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            "server_tokens" => {
+                self.config.http.server_tokens = d.arg(0) != Some("off");
+                self.converted(d, "virou http.server_tokens");
+            }
             "gzip" | "brotli" | "zstd" => {
                 self.config.http.compression.enabled = d.arg(0) == Some("on");
                 self.converted(
@@ -1869,6 +1896,26 @@ impl Converter {
     }
 }
 
+/// nginx `worker_cpu_affinity`: `auto` (optionally with a mask) or one bitmask per
+/// worker, rightmost bit = CPU 0 (e.g. `0001 0010 0100 1000`).
+fn parse_cpu_affinity(args: &[String]) -> crate::config::CpuAffinity {
+    use crate::config::CpuAffinity;
+    match args.first().map(String::as_str) {
+        Some("auto") | None => CpuAffinity::Auto,
+        Some(_) => {
+            let cores: Vec<usize> = args
+                .iter()
+                .filter_map(|mask| mask.bytes().rev().position(|b| b == b'1'))
+                .collect();
+            if cores.is_empty() {
+                CpuAffinity::Auto
+            } else {
+                CpuAffinity::Cores(cores)
+            }
+        }
+    }
+}
+
 fn safe_include_note(pattern: &str) -> Option<&'static str> {
     if pattern.ends_with("mime.types") {
         Some("tipos MIME são detectados automaticamente pelo Ferrix")
@@ -2710,6 +2757,26 @@ mod tests {
         let udp = &r.config.streams[1];
         assert_eq!(udp.protocol, StreamProtocol::Udp);
         assert_eq!(udp.upstream, "dns");
+    }
+
+    #[test]
+    fn worker_directives_are_migrated() {
+        let r = convert(
+            r#"worker_processes 2;
+            worker_rlimit_nofile 65535;
+            worker_cpu_affinity 0001 0100;
+            events { worker_connections 2048; }
+            http { server_tokens off; server { listen 80; root /www; } }"#,
+        );
+        let h = &r.config.http;
+        assert_eq!(h.worker_threads, 2);
+        assert_eq!(h.worker_rlimit_nofile, Some(65535));
+        assert_eq!(h.worker_connections, 2048);
+        assert_eq!(
+            h.worker_cpu_affinity,
+            crate::config::CpuAffinity::Cores(vec![0, 2])
+        );
+        assert!(!h.server_tokens);
     }
 
     #[test]

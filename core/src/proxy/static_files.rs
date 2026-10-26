@@ -127,14 +127,11 @@ impl StaticFileServer {
             }
         }
 
-        let root = root_dir.to_string();
-        let req_path = path.to_string();
-        let tf = try_files.map(|s| s.to_string());
-
-        let loaded =
-            tokio::task::spawn_blocking(move || load_file(&root, &req_path, tf.as_deref()))
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+        // Read inline, like nginx: cacheable files are at most 1 MB and usually already
+        // in the kernel's page cache, so this takes microseconds. Going through the
+        // blocking pool instead spawned extra threads on a cold start (every connection
+        // missing the cache at once), each keeping its own allocator heap alive.
+        let loaded = load_file(root_dir, path, try_files)?;
 
         match loaded {
             Loaded::Cacheable(entry) => {

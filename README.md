@@ -222,8 +222,8 @@ For meaningful numbers, close other heavy programs (browsers, IDEs, other contai
 
 | Server | 1.4 KB file req/s | p99 | 133 KB file req/s | p99 | Proxy req/s | p99 | Memory (PSS) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Ferrix** | **173.6k** | **2.1 ms** | 48.4k | 6.1 ms | 79.7k | 4.2 ms | 19.6 MB |
-| nginx 1.27 | 105.5k | 2.8 ms | 48.3k | 9.0 ms | **84.2k** | **3.8 ms** | **10.9 MB** |
+| **Ferrix** | **180.1k** | **2.0 ms** | **49.8k** | 6.5 ms | **85.1k** | **4.1 ms** | 20.5 MB |
+| nginx 1.27 | 108.3k | 3.1 ms | 49.1k | **6.2 ms** | 78.3k | 5.5 ms | **10.9 MB** |
 | Pingora 0.9 | – | – | – | – | 43.7k | 10.6 ms | 32.6 MB |
 | Pingap 0.16.1 | 21.5k | 16.8 ms | 2.5k | 122 ms | 31.6k | 14.4 ms | 67.1 MB |
 | Ferron 2.8.1 | 38.6k | 18.2 ms | 17.2k | 26.2 ms | 31.4k | 14.4 ms | 65.3 MB |
@@ -235,7 +235,7 @@ For meaningful numbers, close other heavy programs (browsers, IDEs, other contai
 
 | Server | Idle | After 1.4 KB file load | After 133 KB file load | After proxy load |
 | --- | --- | --- | --- | --- |
-| **Ferrix** | 9.1 MB | 13.3 MB | 20.2 MB | **14.9 MB** |
+| **Ferrix** | 9.2 MB | 11.9 MB | 13.3 MB | **14.5 MB** |
 | nginx 1.27 | 10.5 MB | **10.7 MB** | **10.6 MB** | 10.8 MB |
 | Pingora 0.9 | **5.2 MB** | – | – | 18.8 MB |
 | Pingap 0.16.1 | 22.5 MB | 40.8 MB | 46.0 MB | 39.6 MB |
@@ -246,7 +246,7 @@ Before the memory work, Ferrix's RSS was 25 MB idle and 56–68 MB under these l
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.6× faster than nginx, is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and within ~5% on proxying. Among the Rust and Go alternatives, it is ~1.8× Pingora's proxy throughput and well ahead of Pingap, Ferron and Traefik in every scenario, while using less memory than all of them under load (Pingora's minimal proxy is lighter only when idle); only nginx stays lower under load. Idle, Ferrix uses less memory than nginx (9.1 vs. 10.5 MB PSS); under load it uses 1.2–1.9× nginx's ~11 MB, with the 133 KB file case the highest. The remaining gap is mostly the Tokio runtime, the allocator and per-connection state, which is the next focus.
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx, is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and slightly ahead on proxying (the proxy numbers of the two move a few percent between runs). Among the Rust and Go alternatives, it is ~1.8× Pingora's proxy throughput and well ahead of Pingap, Ferron and Traefik in every scenario, while using less memory than all of them under load (Pingora's minimal proxy is lighter only when idle); only nginx stays lower under load. Idle, Ferrix uses less memory than nginx (9.2 vs. 10.5 MB PSS); under a single load it uses 1.1–1.4× nginx's ~11 MB, and ~19–20 MB after all three loads back to back, because the allocator keeps some pages from each phase. The remaining gap is mostly the Tokio runtime, the allocator and per-connection state, which is the next focus.
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
@@ -256,6 +256,7 @@ With `metrics.enabled` the cost is about 4–9%.
 - **Built-in HTTP/1.1 upstream client with a per-thread connection pool** (like Pingora): no channels or extra tasks per request, no locks, and response headers parsed without copying values.
 - **No shared hot spots:** metrics counters, rate-limit buckets and request IDs are sharded per thread, and per-route headers are compiled when the config loads.
 - **LTO + mimalloc** release builds, with mimalloc committing memory on demand instead of up front.
+- **No helper threads on the request path:** static files are read and checked inline like nginx does (they're small and in the page cache), so a cold start doesn't spawn blocking threads that each keep an allocator heap; rare, large request paths (TLS handshakes, static files, cache fills, WebSocket upgrades) are boxed so an in-flight proxied request holds ~5 KB instead of ~12 KB.
 - **Small idle footprint:** an idle keep-alive connection holds ~2 KB (request state is boxed only while a request runs), read buffers start at 2 KB and are released when a connection goes idle (like nginx's keep-alive handling), metrics storage is only allocated when metrics are on, and file checks are plain `stat` calls instead of a growing blocking-thread pool.
 - **In-memory static file cache** (files up to 1 MB, revalidated against the disk every second) and a **cached clock** updated every millisecond, like nginx's `ngx_time_update`.
 

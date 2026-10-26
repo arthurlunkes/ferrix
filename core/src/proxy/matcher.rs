@@ -187,6 +187,8 @@ pub struct CompiledConfig {
     rings: HashMap<String, HashRing>,
     // `X-Ferrix-Upstream` value for each target, by upstream name and target index.
     target_headers: HashMap<String, Vec<Option<HeaderValue>>>,
+    /// `Server` response header, per `http.server_tokens`.
+    pub server_header: HeaderValue,
 }
 
 impl CompiledConfig {
@@ -230,12 +232,18 @@ impl CompiledConfig {
                 (name.clone(), values)
             })
             .collect();
+        let server_header = if config.http.server_tokens {
+            HeaderValue::from_static(concat!("ferrix/", env!("CARGO_PKG_VERSION")))
+        } else {
+            HeaderValue::from_static("ferrix")
+        };
         Self {
             config,
             real_ip,
             vhosts,
             rings,
             target_headers,
+            server_header,
         }
     }
 

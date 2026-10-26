@@ -82,7 +82,12 @@ fn spawn_workers(
     engine: Arc<ProxyEngine>,
     tls: Option<tokio_rustls::TlsAcceptor>,
 ) {
+    let cores = ferrix::system::worker_cores(
+        &engine.store.config().http.worker_cpu_affinity,
+        workers.max(1),
+    );
     for worker in 0..workers.max(1) {
+        let core = cores.as_ref().map(|c| c[worker]);
         // Each worker gets its own handle so per-request Arc clones touch a counter
         // owned by that thread instead of one shared by every core.
         let engine = Arc::new((*engine).clone());
@@ -90,6 +95,14 @@ fn spawn_workers(
         let spawned = std::thread::Builder::new()
             .name(format!("ferrix-worker-{}", worker))
             .spawn(move || {
+                if let Some(core) = core {
+                    if let Err(e) = ferrix::system::pin_current_thread(core) {
+                        warn!(
+                            "Worker {} could not be pinned to CPU {}: {}",
+                            worker, core, e
+                        );
+                    }
+                }
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     // File reads that can't use sendfile are rare; don't let bursts
@@ -740,6 +753,17 @@ async fn run_server(args: Args) -> Result<(), String> {
         .map(|(host, _)| host.to_string())
         .unwrap_or_else(|| "0.0.0.0".to_string());
     let port_plan = tls_plan::plan_ports(&config);
+
+    if let Some(n) = config.http.worker_rlimit_nofile {
+        match ferrix::system::set_nofile_limit(n) {
+            Ok(got) if got < n => warn!(
+                "worker_rlimit_nofile: wanted {}, the hard limit allows {} (raise it as root or with ulimit)",
+                n, got
+            ),
+            Ok(got) => info!("Open-file limit set to {}", got),
+            Err(e) => warn!("worker_rlimit_nofile: {}", e),
+        }
+    }
 
     let store = Arc::new(ConfigStore::new(config, config_path.clone()));
     let metrics = MetricsCollector::new(1000);

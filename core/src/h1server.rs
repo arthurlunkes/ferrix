@@ -666,16 +666,22 @@ mod footprint {
             keepalive_timeout: std::time::Duration::ZERO,
         };
         let addr = "127.0.0.1:1".parse().unwrap();
+        // Every open keep-alive connection holds this future; request handling is boxed
+        // separately so it doesn't inflate it (it used to be ~12 KB).
         let fut = super::serve(tcp, addr, &engine, 1, &settings);
-        eprintln!(
-            "h1server::serve future = {} bytes",
-            std::mem::size_of_val(&fut)
-        );
+        let conn = std::mem::size_of_val(&fut);
+        assert!(conn < 4096, "connection future grew to {} bytes", conn);
+
+        // Allocated once per in-flight request. Rare, large paths (TLS handshakes,
+        // static files, cache fills, WebSocket upgrades) are boxed so they don't set
+        // the size of every proxied request; it was ~12 KB before that.
         let req = axum::http::Request::new(axum::body::Body::empty());
         let hr = engine.handle_request(1, false, addr, req);
-        eprintln!(
-            "handle_request future = {} bytes",
-            std::mem::size_of_val(&hr)
+        let per_request = std::mem::size_of_val(&hr);
+        assert!(
+            per_request < 8192,
+            "request future grew to {} bytes",
+            per_request
         );
     }
 }

@@ -284,3 +284,29 @@ Layer-4 proxying, like nginx's `stream {}` block. It works for databases, Redis,
 ```
 
 Streams use the pool's balancing algorithm and passive health marking. `ferrix import` converts nginx `stream {}` blocks automatically. Streams start with the process; adding a new one needs a restart.
+
+## ⚙️ Workers, CPU, open files and the default page (nginx-style settings)
+
+These live in the `http` section and mirror nginx's main-context directives:
+
+```json
+"http": {
+  "worker_threads": 4,
+  "worker_cpu_affinity": "auto",
+  "worker_connections": 4096,
+  "worker_rlimit_nofile": 65535,
+  "server_tokens": true,
+  "default_page": true
+}
+```
+
+| Ferrix (`http.*`) | nginx | What it does |
+| --- | --- | --- |
+| `worker_threads` | `worker_processes` | Worker threads serving the proxy ports. Default: one per CPU core available to the process. |
+| `worker_cpu_affinity` | `worker_cpu_affinity` | `"off"` (default), `"auto"` (worker N on the N-th allowed core) or a list of core ids such as `[0, 2, 4, 6]`. Linux only. |
+| `worker_connections` | `worker_connections` | Maximum simultaneous client connections per worker (default 4096). A worker at the limit stops accepting until a connection closes; new connections wait in the kernel's listen queue. |
+| `worker_rlimit_nofile` | `worker_rlimit_nofile` | Raises the open-file limit (`RLIMIT_NOFILE`) at startup. Every connection and served file uses one descriptor, so set it above `worker_threads × worker_connections`. Going above the system's hard limit needs root. |
+| `server_tokens` | `server_tokens` | `true` (default) sends `Server: ferrix/<version>` and shows the version on the default page; `false` sends just `Server: ferrix`. |
+| `default_page` | the default site | `true` (default) answers requests that match no virtual host (or a host with no routes yet) with a "Welcome to Ferrix" page; `false` answers a plain `404`. |
+
+`ferrix import` converts the matching nginx directives (`worker_processes`, `worker_cpu_affinity`, `events { worker_connections }`, `worker_rlimit_nofile`, `server_tokens`) automatically.

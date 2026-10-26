@@ -29,6 +29,9 @@ the rest of this documentation.
 | --- | --- |
 | **Worker** | A thread (Ferrix) or process (nginx) that accepts and serves connections. Both use one per CPU core in the benchmark. |
 | **Thread-per-core** | Each worker thread has its own event loop and its own listening socket, so a request never moves between threads. |
+| **CPU affinity** | Pinning a thread to specific CPU cores so the scheduler doesn't move it around (`worker_cpu_affinity`). |
+| **File descriptor / RLIMIT_NOFILE** | Every open socket or file is a numbered descriptor; `RLIMIT_NOFILE` is the per-process cap on how many can be open (`worker_rlimit_nofile`, `ulimit -n`). |
+| **Listen backlog** | Kernel queue of connections that finished the TCP handshake but weren't accepted by the server yet. |
 | **SO_REUSEPORT** | Socket option that lets each worker bind its own socket to the same port; the kernel spreads new connections across them. |
 | **sendfile / zero-copy** | Linux syscall that sends a file to a socket directly from the kernel's page cache, without copying it through the program's memory. |
 | **TCP_CORK / `tcp_nopush`** | Socket option that holds back partially filled packets, so a response header and the start of a file go out together in full packets. |
