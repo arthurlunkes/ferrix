@@ -1,7 +1,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use ferrix::{admin, config, health, metrics, proxy, tls as tls_plan};
+use ferrix::{admin, config, health, http as proxy, metrics, tls as tls_plan};
 
 use clap::Parser;
 use std::net::SocketAddr;
@@ -82,7 +82,7 @@ fn spawn_workers(
     engine: Arc<ProxyEngine>,
     tls: Option<tokio_rustls::TlsAcceptor>,
 ) {
-    let cores = ferrix::system::worker_cores(
+    let cores = ferrix::os::worker_cores(
         &engine.store.config().http.worker_cpu_affinity,
         workers.max(1),
     );
@@ -96,7 +96,7 @@ fn spawn_workers(
             .name(format!("ferrix-worker-{}", worker))
             .spawn(move || {
                 if let Some(core) = core {
-                    if let Err(e) = ferrix::system::pin_current_thread(core) {
+                    if let Err(e) = ferrix::os::pin_current_thread(core) {
                         warn!(
                             "Worker {} could not be pinned to CPU {}: {}",
                             worker, core, e
@@ -121,9 +121,9 @@ fn spawn_workers(
                     Err(e) => return error!("Failed to bind Proxy listener to {}: {}", addr, e),
                 };
                 runtime.block_on(async move {
-                    ferrix::clock::enable_local_timers();
+                    ferrix::event::clock::enable_local_timers();
                     match tokio::net::TcpListener::from_std(listener) {
-                        Ok(l) => ferrix::server::serve(l, engine, addr.port(), tls).await,
+                        Ok(l) => ferrix::event::accept::serve(l, engine, addr.port(), tls).await,
                         Err(e) => error!("Proxy listener on {}: {}", addr, e),
                     }
                 });
@@ -155,7 +155,7 @@ fn spawn_workers(
 ) {
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {
-            Ok(l) => ferrix::server::serve(l, engine, addr.port(), tls).await,
+            Ok(l) => ferrix::event::accept::serve(l, engine, addr.port(), tls).await,
             Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
         }
     });
@@ -175,8 +175,8 @@ fn spawn_tls_listener(
     source: tls_plan::TlsSource,
     workers: usize,
 ) -> Result<(), String> {
-    let resolver = ferrix::server::SniResolver::new(engine.store.clone(), addr.port())
-        .and_then(ferrix::server::tls_acceptor)
+    let resolver = ferrix::tls::sni::SniResolver::new(engine.store.clone(), addr.port())
+        .and_then(ferrix::tls::sni::tls_acceptor)
         .map_err(|e| {
             format!(
                 "Failed to load TLS certificates for port {} (first: '{}', cert: {}): {}. \
@@ -755,7 +755,7 @@ async fn run_server(args: Args) -> Result<(), String> {
     let port_plan = tls_plan::plan_ports(&config);
 
     if let Some(n) = config.http.worker_rlimit_nofile {
-        match ferrix::system::set_nofile_limit(n) {
+        match ferrix::os::set_nofile_limit(n) {
             Ok(got) if got < n => warn!(
                 "worker_rlimit_nofile: wanted {}, the hard limit allows {} (raise it as root or with ulimit)",
                 n, got
@@ -780,7 +780,8 @@ async fn run_server(args: Args) -> Result<(), String> {
         health_checker.clone(),
     ));
     proxy_engine.start_background_sweeper();
-    ferrix::acme::AcmeManager::new(store.clone(), proxy_engine.acme_challenges.clone()).start();
+    ferrix::tls::acme::AcmeManager::new(store.clone(), proxy_engine.acme_challenges.clone())
+        .start();
 
     let admin_router = create_admin_router(AdminState {
         store: store.clone(),

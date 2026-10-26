@@ -7,9 +7,9 @@ use crate::config::{
     validate::compile_route_regex, FerrixConfig, LoadBalanceAlgorithm, RouteMatchType, RouteRule,
     VirtualHost,
 };
+use crate::http::realip::RealIpResolver;
+use crate::http::upstream::hash::HashRing;
 use crate::net::cidr::IpMatcher;
-use crate::proxy::hashring::HashRing;
-use crate::proxy::realip::RealIpResolver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteMatchReason {

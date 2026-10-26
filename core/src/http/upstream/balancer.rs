@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::config::{LoadBalanceAlgorithm, UpstreamConfig, UpstreamTarget};
 use crate::health::HealthChecker;
-use crate::proxy::hashring::HashRing;
+use crate::http::upstream::hash::HashRing;
 
 pub struct UpstreamPoolManager {
     rr_indices: RwLock<HashMap<String, AtomicUsize>>,

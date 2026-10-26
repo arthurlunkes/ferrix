@@ -189,7 +189,7 @@ impl AcmeManager {
         // Credentials are bound to a directory, so keep one file per CA URL.
         let file = Path::new(&cfg.storage_dir).join(format!(
             "account-{:016x}.json",
-            crate::proxy::hashring::fnv1a(cfg.directory_url.as_bytes())
+            crate::http::upstream::hash::fnv1a(cfg.directory_url.as_bytes())
         ));
         if let Ok(data) = std::fs::read(&file) {
             match serde_json::from_slice::<AccountCredentials>(&data) {

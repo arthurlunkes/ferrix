@@ -1,3 +1,6 @@
+pub mod acme;
+pub mod sni;
+
 use std::collections::BTreeMap;
 
 use crate::config::FerrixConfig;

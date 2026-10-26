@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 
-use crate::proxy::ProxyEngine;
+use crate::http::ProxyEngine;
 
 const MAX_HEAD: usize = 64 * 1024;
 const MAX_HEADERS: usize = 100;
@@ -147,7 +147,7 @@ async fn read_head(
     buf: &mut BytesMut,
     wait: Duration,
 ) -> Result<Option<Head>, HeadError> {
-    let deadline = crate::clock::mono_ms() + wait.as_millis() as u64;
+    let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
     loop {
         if !buf.is_empty() {
             // HTTP/2 with prior knowledge: let hyper speak it.
@@ -165,7 +165,7 @@ async fn read_head(
             return Err(HeadError::Bad(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE));
         }
         buf.reserve(2 * 1024);
-        let read = crate::clock::timeout_at_ms(deadline, tcp.read_buf(buf)).await;
+        let read = crate::event::clock::timeout_at_ms(deadline, tcp.read_buf(buf)).await;
         match read {
             Ok(Ok(0)) | Ok(Err(_)) => return Ok(None),
             Ok(Ok(_)) => {}
@@ -309,7 +309,7 @@ fn encode_head(
     }
     if !headers.contains_key(header::DATE) {
         out.extend_from_slice(b"date: ");
-        out.extend_from_slice(crate::clock::http_date().as_bytes());
+        out.extend_from_slice(crate::event::clock::http_date().as_bytes());
         out.extend_from_slice(b"\r\n");
     }
     match framing {
@@ -652,7 +652,7 @@ mod footprint {
             Default::default(),
             "x",
         ));
-        let engine = crate::proxy::ProxyEngine::new(
+        let engine = crate::http::ProxyEngine::new(
             store,
             crate::metrics::MetricsCollector::new(0),
             Arc::new(crate::health::HealthChecker::new()),

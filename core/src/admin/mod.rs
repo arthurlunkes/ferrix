@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::AdminAuthMode;
-use crate::proxy::middleware::AccessControl;
+use crate::http::access::AccessControl;
 use handlers::AdminState;
 
 pub fn create_admin_router(state: AdminState) -> Router {

@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use std::sync::Arc;
 
 use super::FerrixConfig;
-use crate::proxy::matcher::CompiledConfig;
+use crate::http::matcher::CompiledConfig;
 
 pub struct ConfigStore {
     compiled: ArcSwap<CompiledConfig>,

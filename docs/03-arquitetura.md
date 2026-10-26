@@ -82,17 +82,51 @@ The telemetry subsystem is designed to introduce zero overhead to the critical r
 
 ## 📁 Source Code Organization
 
-| Module / Path               | Responsibility                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------ |
-| `core/src/main.rs`          | Tokio runtime bootstrapping, CLI parsing, signal handling, and listener spawning.          |
-| `core/src/config/`          | Configuration models (`VirtualHost`, `RouteRule`, `UpstreamConfig`) and JSON store.        |
-| `core/src/proxy/mod.rs`     | Main routing engine, domain matching, failover logic, and reverse proxy handler.          |
-| `core/src/proxy/upstream.rs`| Upstream pool management and implementation of all 5 load balancing algorithms.            |
-| `core/src/proxy/websocket.rs`| Full-duplex bidirectional WebSocket tunneling.                                            |
-| `core/src/proxy/static_files.rs`| Static file serving with MIME detection and `try_files` SPA routing.                   |
-| `core/src/proxy/middleware.rs`| Rate limiting (Token Bucket), IP CIDR access control lists, and HTTP Basic Auth.         |
-| `core/src/admin/mod.rs`     | Control plane HTTP router, CORS configuration, and embedded static asset delivery.         |
-| `core/src/admin/handlers.rs`| REST API handlers (`/status`, `/metrics`, `/config`, etc.).                                |
-| `core/src/admin/sse.rs`     | Broadcast channel adapter for Server-Sent Events (SSE).                                    |
-| `core/src/metrics/mod.rs`   | Statistical metrics collection and latency percentile calculations.                        |
-| `core/src/health/checker.rs`| Background health checker pinging upstream backends periodically.                          |
+The core follows the same layering as nginx's `src/` directory: a base layer with no
+HTTP in it, the event loop, the HTTP server split into small modules (one per nginx
+module it mirrors), and the OS-specific bits apart.
+
+```
+core/src/
+├── main.rs              process bootstrap, CLI, signals, worker threads  (nginx.c, os/unix/ngx_process*)
+├── config/              JSON config model, validation, hot-reload store   (ngx_conf_file + each module's directives)
+├── event/
+│   ├── accept.rs        accept loop, worker_connections, hyper handoff    (event/ngx_event_accept.c)
+│   └── clock.rs         cached time + per-worker coarse timers           (core/ngx_times.c, event/ngx_event_timer.c)
+├── os/                  RLIMIT_NOFILE, CPU affinity                       (os/unix)
+├── tls/
+│   ├── mod.rs           which ports speak TLS
+│   ├── sni.rs           certificate per SNI name, rustls acceptor         (event/ngx_event_openssl.c, ngx_http_ssl_module)
+│   └── acme.rs          Let's Encrypt certificates
+├── http/
+│   ├── mod.rs           request lifecycle: vhost → route → handler → filters   (ngx_http_core_module)
+│   ├── server.rs        Ferrix's own HTTP/1.1 parser/writer, sendfile         (ngx_http_request.c, ngx_http_parse.c)
+│   ├── matcher.rs       server_name and location matching                     (ngx_http_core_module locations)
+│   ├── proxy.rs         reverse proxy handler, failover                       (ngx_http_proxy_module)
+│   ├── static_files.rs  static files, ETag/304, ranges, precompressed copies  (static, not_modified, range, gzip_static)
+│   ├── cache.rs         response cache                                        (proxy_cache)
+│   ├── access.rs        allow/deny + basic auth                               (access, auth_basic)
+│   ├── limit_req.rs     rate limiting                                         (limit_req)
+│   ├── limit_conn.rs    connection limiting                                   (limit_conn)
+│   ├── realip.rs        client IP from trusted proxies                        (realip)
+│   ├── websocket.rs     WebSocket tunnel                                      (proxy upgrade)
+│   ├── default_page.rs  "Welcome to Ferrix" page                              (default site)
+│   ├── filters/         response filter chain, run in order:                  (header/body filters)
+│   │                    compress → headers → cors → request_id, plus error_page
+│   └── upstream/
+│       ├── mod.rs       client to upstreams (timeouts, retries on stale conns) (ngx_http_upstream.c)
+│       ├── h1.rs        HTTP/1.1 client with a per-thread connection pool      (upstream_keepalive)
+│       ├── balancer.rs  round robin, weighted, least_conn, ip_hash, random     (upstream_*_module)
+│       └── hash.rs      consistent hashing (ketama)                            (upstream_hash)
+├── stream.rs            TCP/UDP proxy                                         (src/stream/)
+├── health/              active health checks
+├── metrics/             counters, latency histogram, request log, Prometheus  (stub_status, much extended)
+├── admin/               control-plane REST API and SSE
+├── net/                 CIDR matching
+└── nginx/               nginx.conf importer (lexer, parser, converter, report)
+```
+
+**Adding an HTTP feature:** a new response filter goes in `http/filters/` and is called
+from `filters::run` in the right order; a new content handler gets its own file under
+`http/` and a `RouteTargetType`; a new balancing algorithm goes in
+`http/upstream/balancer.rs`.

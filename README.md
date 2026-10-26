@@ -76,7 +76,7 @@ Ferrix is split into 3 independent, decoupled layers:
 ferrix/
 ├── core/                  # 🦀 Rust core (Nginx-style proxy engine, standalone and lightweight)
 │   ├── Cargo.toml         # Rust package, no dependency on web assets
-│   ├── src/               # Proxy engine, load balancing, WebSockets, cache, CLI
+│   ├── src/               # Laid out like nginx's src/: event/, http/ (+ filters/, upstream/), tls/, os/...
 │   ├── tests/             # Unit and integration tests
 │   └── scripts/           # Install scripts: install.sh (Linux/systemd), install.ps1 (Windows)
 │

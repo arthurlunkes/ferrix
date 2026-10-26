@@ -11,7 +11,7 @@ use tokio::sync::OnceCell;
 use tracing::warn;
 
 use crate::config::{CompressionAlgorithm, CompressionConfig};
-use crate::proxy::compress;
+use crate::http::filters::compress;
 
 const MAX_CACHED_FILE_BYTES: u64 = 1024 * 1024;
 
@@ -114,8 +114,8 @@ impl StaticFileServer {
 
         let hit = CACHE.read().ok().and_then(|c| c.entries.get(&key).cloned());
         if let Some(entry) = hit {
-            let age =
-                crate::clock::mono_ms().saturating_sub(entry.checked_at.load(Ordering::Relaxed));
+            let age = crate::event::clock::mono_ms()
+                .saturating_sub(entry.checked_at.load(Ordering::Relaxed));
             let fresh = age < REVALIDATE_AFTER.as_millis() as u64;
             if fresh || still_same_file(&entry).await {
                 return Ok(respond_cached(&entry, req).await);
@@ -353,8 +353,8 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
 /// Lets the plain-HTTP server send large bodies straight from the page cache with
 /// `sendfile(2)`; other connections ignore the hint and use the body.
 fn mark_sendfile(resp: &mut Response<Body>, path: &Path, offset: u64, len: u64) {
-    if len >= crate::h1server::SENDFILE_MIN {
-        resp.extensions_mut().insert(crate::h1server::SendFile {
+    if len >= crate::http::server::SENDFILE_MIN {
+        resp.extensions_mut().insert(crate::http::server::SendFile {
             path: path.to_path_buf(),
             offset,
             len,
@@ -411,7 +411,7 @@ async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
     if same {
         entry
             .checked_at
-            .store(crate::clock::mono_ms(), Ordering::Relaxed);
+            .store(crate::event::clock::mono_ms(), Ordering::Relaxed);
     }
     same
 }
@@ -468,7 +468,7 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
         body: Bytes::from(contents),
         meta,
         file_path,
-        checked_at: AtomicU64::new(crate::clock::mono_ms()),
+        checked_at: AtomicU64::new(crate::event::clock::mono_ms()),
         variants: Default::default(),
     })))
 }

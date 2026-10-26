@@ -136,7 +136,7 @@ pub fn compress(
 ) -> Response<Body> {
     let (mut parts, body) = resp.into_parts();
     // The body is being replaced, so a zero-copy hint for the raw file no longer applies.
-    parts.extensions.remove::<crate::h1server::SendFile>();
+    parts.extensions.remove::<crate::http::server::SendFile>();
     parts.headers.remove(header::CONTENT_LENGTH);
     mark_encoded(&mut parts.headers, algo);
 

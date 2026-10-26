@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::config::{StreamConfig, StreamProtocol, UpstreamTarget};
-use crate::proxy::ProxyEngine;
+use crate::http::ProxyEngine;
 
 /// `host:port` out of a target URL, ignoring any scheme and path.
 pub fn target_addr(url: &str) -> &str {
@@ -114,13 +114,15 @@ async fn handle_tcp(
 async fn pipe(client: TcpStream, upstream: TcpStream, idle: Duration) -> std::io::Result<()> {
     let (cr, cw) = client.into_split();
     let (ur, uw) = upstream.into_split();
-    let activity = Arc::new(std::sync::atomic::AtomicU64::new(crate::clock::mono_ms()));
+    let activity = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::event::clock::mono_ms(),
+    ));
     let up = copy_half(cr, uw, activity.clone());
     let down = copy_half(ur, cw, activity.clone());
     let watchdog = async {
         loop {
             tokio::time::sleep(idle / 4 + Duration::from_millis(1)).await;
-            let quiet = crate::clock::mono_ms()
+            let quiet = crate::event::clock::mono_ms()
                 .saturating_sub(activity.load(std::sync::atomic::Ordering::Relaxed));
             if quiet >= idle.as_millis() as u64 {
                 return;
@@ -147,7 +149,7 @@ async fn copy_half(
         }
         to.write_all(&buf[..n]).await?;
         activity.store(
-            crate::clock::mono_ms(),
+            crate::event::clock::mono_ms(),
             std::sync::atomic::Ordering::Relaxed,
         );
     }
@@ -172,7 +174,7 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(idle / 2).await;
-                let now = crate::clock::mono_ms();
+                let now = crate::event::clock::mono_ms();
                 sessions.lock().await.retain(|_, s| {
                     now.saturating_sub(s.last_seen.load(std::sync::atomic::Ordering::Relaxed))
                         < idle.as_millis() as u64
@@ -200,7 +202,9 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
                 continue;
             }
             let upstream = Arc::new(upstream);
-            let last_seen = Arc::new(std::sync::atomic::AtomicU64::new(crate::clock::mono_ms()));
+            let last_seen = Arc::new(std::sync::atomic::AtomicU64::new(
+                crate::event::clock::mono_ms(),
+            ));
             let (reply_up, reply_sock, reply_seen) =
                 (upstream.clone(), socket.clone(), last_seen.clone());
             tokio::spawn(async move {
@@ -209,7 +213,7 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
                     match tokio::time::timeout(idle, reply_up.recv(&mut rbuf)).await {
                         Ok(Ok(m)) => {
                             reply_seen.store(
-                                crate::clock::mono_ms(),
+                                crate::event::clock::mono_ms(),
                                 std::sync::atomic::Ordering::Relaxed,
                             );
                             let _ = reply_sock.send_to(&rbuf[..m], client).await;
@@ -225,7 +229,7 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
         }
         if let Some(s) = map.get(&client) {
             s.last_seen.store(
-                crate::clock::mono_ms(),
+                crate::event::clock::mono_ms(),
                 std::sync::atomic::Ordering::Relaxed,
             );
             let _ = s.upstream.send(&buf[..n]).await;

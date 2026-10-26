@@ -120,7 +120,7 @@ fn take_idle(key: &str, insecure: bool) -> Option<Conn> {
         let mut pools = p.borrow_mut();
         let list = pools[insecure as usize].get_mut(key)?;
         while let Some(idle) = list.pop() {
-            let idle_for = crate::clock::mono_ms().saturating_sub(idle.since_ms);
+            let idle_for = crate::event::clock::mono_ms().saturating_sub(idle.since_ms);
             if idle_for < IDLE_TIMEOUT.as_millis() as u64 && idle.conn.stream.looks_alive() {
                 return Some(idle.conn);
             }
@@ -140,7 +140,7 @@ fn release(conn: Conn) {
         if list.len() < MAX_IDLE_PER_HOST {
             list.push(Idle {
                 conn,
-                since_ms: crate::clock::mono_ms(),
+                since_ms: crate::event::clock::mono_ms(),
             });
         }
     });
@@ -220,7 +220,7 @@ pub async fn connect(
     connect_timeout: Duration,
     tls: Option<(&TlsConnector, bool)>,
 ) -> Result<Conn, H1Error> {
-    let tcp = crate::clock::timeout(
+    let tcp = crate::event::clock::timeout(
         connect_timeout,
         TcpStream::connect((target.host, target.port)),
     )
@@ -234,7 +234,7 @@ pub async fn connect(
         (true, Some((connector, insecure))) => {
             let name = rustls::pki_types::ServerName::try_from(target.host.to_owned())
                 .map_err(|_| H1Error::Protocol("invalid TLS server name"))?;
-            let tls = crate::clock::timeout(connect_timeout, connector.connect(name, tcp))
+            let tls = crate::event::clock::timeout(connect_timeout, connector.connect(name, tcp))
                 .await
                 .map_err(|_| H1Error::ConnectTimeout)?
                 .map_err(H1Error::Connect)?;

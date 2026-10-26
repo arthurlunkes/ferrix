@@ -1,4 +1,12 @@
-use crate::clock::CoarseSleep;
+//! Talking to upstream servers, like nginx's `ngx_http_upstream`: the HTTP/1.1 client
+//! with its per-thread connection pool (`h1`), server selection (`balancer`) and
+//! consistent hashing (`hash`).
+
+pub mod balancer;
+pub mod h1;
+pub mod hash;
+
+use crate::event::clock::CoarseSleep;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, Response};
 use http_body::{Body as HttpBody, Frame, SizeHint};
@@ -9,7 +17,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_rustls::TlsConnector;
 
-use super::h1::{self, H1Error, RequestBody, Target};
+use h1::{H1Error, RequestBody, Target};
 
 #[derive(Debug)]
 pub enum UpstreamError {
@@ -83,7 +91,7 @@ impl UpstreamClient {
         let target = Target::parse(base)
             .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
         let insecure = target.tls && !self.verify_tls;
-        let deadline_ms = crate::clock::mono_ms() + self.read_timeout.as_millis() as u64;
+        let deadline_ms = crate::event::clock::mono_ms() + self.read_timeout.as_millis() as u64;
 
         let attempt = async {
             let (full, mut streaming) = match body {
@@ -133,7 +141,7 @@ impl UpstreamClient {
             }
         };
 
-        let resp = match crate::clock::timeout_at_ms(deadline_ms, attempt).await {
+        let resp = match crate::event::clock::timeout_at_ms(deadline_ms, attempt).await {
             Ok(Ok(r)) => r,
             Ok(Err(H1Error::ConnectTimeout)) => {
                 return Err(UpstreamError::Timeout(
@@ -174,7 +182,7 @@ impl<B> ReadTimeoutBody<B> {
             inner,
             sleep: None,
             dur,
-            last_activity_ms: crate::clock::mono_ms(),
+            last_activity_ms: crate::event::clock::mono_ms(),
         }
     }
 }
@@ -195,7 +203,7 @@ where
         loop {
             match Pin::new(&mut this.inner).poll_frame(cx) {
                 Poll::Ready(frame) => {
-                    this.last_activity_ms = crate::clock::mono_ms();
+                    this.last_activity_ms = crate::event::clock::mono_ms();
                     return Poll::Ready(frame.map(|r| r.map_err(Into::into)));
                 }
                 Poll::Pending => {
@@ -207,7 +215,7 @@ where
                     match Pin::new(sleep).poll(cx) {
                         Poll::Pending => return Poll::Pending,
                         Poll::Ready(()) => {
-                            if crate::clock::mono_ms().saturating_sub(this.last_activity_ms)
+                            if crate::event::clock::mono_ms().saturating_sub(this.last_activity_ms)
                                 >= this.dur.as_millis() as u64
                             {
                                 return Poll::Ready(Some(Err(

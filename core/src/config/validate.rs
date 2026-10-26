@@ -126,7 +126,7 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
 
         if let Some(tls) = &vhost.tls {
             if tls.acme {
-                if crate::acme::domains_for(vhost).is_empty() {
+                if crate::tls::acme::domains_for(vhost).is_empty() {
                     report.error(
                         format!("{}.tls.acme", base),
                         "ACME precisa de pelo menos um server_name com domínio exato \

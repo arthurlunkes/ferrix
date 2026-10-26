@@ -15,7 +15,7 @@ cargo build --workspace                       # Rust core
 node test_backends.js                         # optional mock upstreams
 ```
 
-Where things live: `core/` (Rust proxy engine), `backend/` (Node.js API + dashboard server), `frontend/` (React UI), `docs/` (mdBook docs), `benchmarks/` (nginx comparison).
+Where things live: `core/` (Rust proxy engine; its `src/` mirrors nginx's layout, see [the architecture doc](docs/03-arquitetura.md#-source-code-organization)), `backend/` (Node.js API + dashboard server), `frontend/` (React UI), `docs/` (mdBook docs), `benchmarks/` (nginx comparison).
 
 ## Reporting issues
 
