@@ -215,13 +215,23 @@ METRICS=1 benchmarks/run.sh    # Ferrix with metrics enabled
 
 | Scenario                | Ferrix req/s | nginx req/s | Ferrix p99 | nginx p99 |
 | ----------------------- | ------------ | ----------- | ---------- | --------- |
-| Static file, 1.4 KB     | **176.4k**   | 103.0k      | **2.3 ms** | 2.9 ms    |
-| Static file, 133 KB     | 48.9k        | 48.8k       | 7.4 ms     | 7.1 ms    |
-| Reverse proxy           | 79.9k        | 80.1k       | 4.5 ms     | 4.2 ms    |
+| Static file, 1.4 KB     | **173.4k**   | 104.0k      | **2.4 ms** | 3.2 ms    |
+| Static file, 133 KB     | 48.6k        | 49.1k       | 6.1 ms     | 6.2 ms    |
+| Reverse proxy           | 77.2k        | 80.3k       | 4.6 ms     | 4.4 ms    |
+| **Memory** (after the run, `docker stats`) | 14.9 MiB | **10.5 MiB** | | |
+
+**Memory (RSS) of the Ferrix process**, measured with the same load (`wrk`, 256 connections), each scenario in a fresh process:
+
+| Situation                          | Before the memory work | Now      |
+| ---------------------------------- | ---------------------- | -------- |
+| Idle, right after start            | 25 MB                  | **12 MB** |
+| After the 1.4 KB static file load  | 61 MB                  | **16 MB** |
+| After the proxy load               | 56 MB                  | **20 MB** |
+| After the 133 KB static file load  | 68 MB                  | 24–33 MB |
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. Memory under the same load is ~15–19 MB for Ferrix vs. ~10 MB for nginx (it was ~55 MB before the memory work below).
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. Memory under the same load is ~15–19 MB for Ferrix vs. ~10 MB for nginx (it was ~55 MB before the memory work below); the remaining gap is mostly the Tokio runtime, the allocator and the TLS/admin code being resident.
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
