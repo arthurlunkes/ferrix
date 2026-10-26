@@ -24,3 +24,4 @@ echo "   Proxy Traffic: http://0.0.0.0:8000"
 echo "   Core Admin:    http://127.0.0.1:8081"
 echo "================================================================"
 cd /app/backend && exec node dist/server.js
+

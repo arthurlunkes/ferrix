@@ -27,3 +27,4 @@ services:
       - "8080:8080"   # React Web Dashboard & Gateway
     volumes:
       - ./ferrix.json:/etc/ferrix/ferrix.json
+

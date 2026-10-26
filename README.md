@@ -6,7 +6,7 @@
   <a href="https://github.com/arthurlunkes/ferrix/actions/workflows/ci.yml"><img src="https://github.com/arthurlunkes/ferrix/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://arthurlunkes.github.io/ferrix"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation"></a>
   <a href="https://semver.org"><img src="https://img.shields.io/badge/semver-2.0.0-orange.svg" alt="SemVer"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
 </p>
 
 # Ferrix — A high-performance web server and reverse proxy in Rust, inspired by Nginx
@@ -229,4 +229,4 @@ Contributions are very welcome! Open an _issue_ to report bugs or suggest ideas,
 
 ## 📄 License
 
-Distributed under the MIT License. See [LICENSE](LICENSE).
+Distributed under the Apache-2.0 License. See [LICENSE](LICENSE).
