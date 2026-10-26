@@ -215,19 +215,20 @@ METRICS=1 benchmarks/run.sh    # Ferrix with metrics enabled
 
 | Scenario                | Ferrix req/s | nginx req/s | Ferrix p99 | nginx p99 |
 | ----------------------- | ------------ | ----------- | ---------- | --------- |
-| Static file, 1.4 KB     | **145.3k**   | 108.5k      | **2.3 ms** | 2.6 ms    |
-| Static file, 133 KB     | 36.6k        | **49.6k**   | 9.7 ms     | **6.7 ms**|
-| Reverse proxy           | 63.7k        | **81.9k**   | 4.6 ms     | **3.7 ms**|
+| Static file, 1.4 KB     | **176.4k**   | 103.0k      | **2.3 ms** | 2.9 ms    |
+| Static file, 133 KB     | 48.9k        | 48.8k       | 7.4 ms     | 7.1 ms    |
+| Reverse proxy           | 79.9k        | 80.1k       | 4.5 ms     | 4.2 ms    |
 
-With `metrics.enabled` the cost is about 9% on small files and 4% on the proxy.
+With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix beats nginx on small static files (+34% throughput, lower tail latency). nginx still leads on proxy throughput (~1.3×, down from ~1.7×) and on large files, where its zero-copy `sendfile` wins. Those are the current optimization focus, along with memory: Ferrix uses noticeably more RAM than nginx's ~10 MB.
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. nginx still uses far less memory (~10 MB vs. ~55 MB), which is the next focus.
 
-**What made it faster** (proxy went from 18.8k to 63.7k req/s, small files from 14.7k to 145k):
+**What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
 - **Thread-per-core workers:** each worker thread runs its own single-threaded runtime and its own `SO_REUSEPORT` socket, like nginx workers, so a request never hops between threads.
+- **Own HTTP/1.1 server for plain connections:** bodiless requests are parsed and answered directly, large static files go out with `sendfile(2)` under `TCP_CORK`, and anything unusual (request bodies, upgrades, HTTP/2) is handed to hyper with the bytes already read.
+- **Coarse per-worker timers and a cached clock**, like nginx's timer tree and `ngx_time_update`: no clock syscalls per request, which matters on hosts without a TSC.
 - **Built-in HTTP/1.1 upstream client with a per-thread connection pool** (like Pingora): no channels or extra tasks per request, no locks, and response headers parsed without copying values.
-- **Own accept loop on hyper** with `TCP_NODELAY`, instead of going through the axum router.
 - **No shared hot spots:** metrics counters, rate-limit buckets and request IDs are sharded per thread, and per-route headers are compiled when the config loads.
 - **LTO + mimalloc** release builds.
 - **In-memory static file cache** (files up to 1 MB, revalidated against the disk every second) and a **cached clock** updated every millisecond, like nginx's `ngx_time_update`.

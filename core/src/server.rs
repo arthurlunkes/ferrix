@@ -1,8 +1,8 @@
 //! Accept loop for the proxy ports.
 //!
-//! Connections are served straight through hyper's connection builder instead of
-//! `axum::serve`, which lets Ferrix set `TCP_NODELAY`, apply `client_header_timeout`
-//! and `keepalive_timeout`, and terminate TLS with its own SNI certificate resolver.
+//! Plain-HTTP connections start on Ferrix's own HTTP/1.1 fast path (see `h1server`),
+//! which hands anything unusual to hyper. TLS connections go to hyper directly, using
+//! Ferrix's SNI certificate resolver.
 
 use arc_swap::ArcSwap;
 use axum::body::Body;
@@ -23,6 +23,11 @@ use tracing::{debug, error, warn};
 use crate::config::store::ConfigStore;
 use crate::config::FerrixConfig;
 use crate::proxy::ProxyEngine;
+
+enum Conn {
+    Plain(tokio::net::TcpStream, axum::body::Bytes),
+    Tls(TlsAcceptor, tokio::net::TcpStream),
+}
 
 pub async fn serve(
     listener: TcpListener,
@@ -47,6 +52,10 @@ pub async fn serve(
         .keep_alive_interval(None);
     let builder = Arc::new(builder);
     let is_tls = tls.is_some();
+    let fast = Arc::new(crate::h1server::Settings {
+        header_timeout: Duration::from_millis(http.client_header_timeout_ms.max(1)),
+        keepalive_timeout: Duration::from_millis(http.keepalive_timeout_ms.max(1)),
+    });
 
     loop {
         let (tcp, addr) = match listener.accept().await {
@@ -63,7 +72,17 @@ pub async fn serve(
         let engine = engine.clone();
         let builder = builder.clone();
         let tls = tls.clone();
+        let fast = fast.clone();
         tokio::spawn(async move {
+            // Plain HTTP/1.1 goes through Ferrix's own fast path first; it hands the
+            // connection to hyper for anything it doesn't handle itself.
+            let conn = match tls {
+                None => match crate::h1server::serve(tcp, addr, &engine, port, &fast).await {
+                    crate::h1server::Outcome::Done => return,
+                    crate::h1server::Outcome::Handoff(tcp, prefix) => Conn::Plain(tcp, prefix),
+                },
+                Some(acceptor) => Conn::Tls(acceptor, tcp),
+            };
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let engine = engine.clone();
                 async move {
@@ -77,13 +96,14 @@ pub async fn serve(
                 }
             });
 
-            let result = match tls {
-                None => {
+            let result = match conn {
+                Conn::Plain(tcp, prefix) => {
+                    let io = crate::h1server::Rewind::new(tcp, prefix);
                     builder
-                        .serve_connection_with_upgrades(TokioIo::new(tcp), service)
+                        .serve_connection_with_upgrades(TokioIo::new(io), service)
                         .await
                 }
-                Some(acceptor) => match acceptor.accept(tcp).await {
+                Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
                     Ok(stream) => {
                         builder
                             .serve_connection_with_upgrades(TokioIo::new(stream), service)

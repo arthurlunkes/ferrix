@@ -313,7 +313,9 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
     match parse_range(req.headers, meta) {
         RangeReq::Satisfiable(s, e) => {
             let body = Body::from(entry.body.slice(s as usize..=e as usize));
-            return partial(meta, s, e, body);
+            let mut resp = partial(meta, s, e, body);
+            mark_sendfile(&mut resp, &entry.file_path, s, e - s + 1);
+            return resp;
         }
         RangeReq::Unsatisfiable => return unsatisfiable(meta),
         RangeReq::None => {}
@@ -347,7 +349,20 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
     meta.apply(h);
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len));
     h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    mark_sendfile(&mut resp, &entry.file_path, 0, meta.len);
     resp
+}
+
+/// Lets the plain-HTTP server send large bodies straight from the page cache with
+/// `sendfile(2)`; other connections ignore the hint and use the body.
+fn mark_sendfile(resp: &mut Response<Body>, path: &Path, offset: u64, len: u64) {
+    if len >= crate::h1server::SENDFILE_MIN {
+        resp.extensions_mut().insert(crate::h1server::SendFile {
+            path: path.to_path_buf(),
+            offset,
+            len,
+        });
+    }
 }
 
 async fn respond_large(
@@ -378,6 +393,7 @@ async fn respond_large(
             meta.apply(h);
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len));
             h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            mark_sendfile(&mut resp, &path, 0, meta.len);
             Ok(resp)
         }
     }

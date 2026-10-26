@@ -941,6 +941,7 @@ async fn apply_error_page(vhost: &VirtualHost, resp: Response) -> Response {
         }
     };
     let (mut parts, _) = resp.into_parts();
+    parts.extensions.remove::<crate::h1server::SendFile>();
     parts.headers.remove(header::CONTENT_ENCODING);
     parts.headers.insert(
         header::CONTENT_TYPE,

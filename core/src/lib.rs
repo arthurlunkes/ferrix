@@ -3,6 +3,7 @@ pub mod admin;
 pub mod cache;
 pub mod clock;
 pub mod config;
+pub mod h1server;
 pub mod health;
 pub mod metrics;
 pub mod net;

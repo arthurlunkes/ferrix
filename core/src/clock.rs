@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::LazyLock;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,19 +22,12 @@ static CLOCK: LazyLock<Clock> = LazyLock::new(|| {
     };
     std::thread::Builder::new()
         .name("ferrix-clock".into())
-        .spawn(|| {
-            let mut ticks: u32 = 0;
-            loop {
-                std::thread::sleep(Duration::from_millis(1));
-                let c = &*CLOCK;
-                let now = c.base.elapsed().as_millis() as u64;
-                c.mono_ms.store(now, Ordering::Relaxed);
-                c.unix_ms.store(read_unix_ms(), Ordering::Relaxed);
-                ticks = ticks.wrapping_add(1);
-                if ticks.is_multiple_of(TIMER_SCAN_EVERY_MS) {
-                    fire_expired(now);
-                }
-            }
+        .spawn(|| loop {
+            std::thread::sleep(Duration::from_millis(1));
+            let c = &*CLOCK;
+            c.mono_ms
+                .store(c.base.elapsed().as_millis() as u64, Ordering::Relaxed);
+            c.unix_ms.store(read_unix_ms(), Ordering::Relaxed);
         })
         .expect("failed to start clock thread");
     clock
@@ -75,64 +69,85 @@ pub fn instant_ms(at: Instant) -> u64 {
 // Like nginx's timers (and Cloudflare's pingora-timeout), deadlines are checked against
 // the cached clock instead of reading the system clock: creating, polling or dropping a
 // timer never makes a syscall. That matters on hosts without a usable TSC (HPET clock
-// source), where every clock read is a slow syscall. The clock thread wakes expired
-// timers every few milliseconds, which is plenty for network timeouts.
+// source), where every clock read is a slow syscall.
+//
+// Each proxy worker thread owns its timers outright (no locks, nothing shared with other
+// threads) and a small task on its runtime fires the expired ones every few
+// milliseconds. Threads that never called `enable_local_timers` (the shared runtime that
+// runs the admin API and health checks) fall back to ordinary tokio timers.
 // ---------------------------------------------------------------------------
 
-const TIMER_SCAN_EVERY_MS: u32 = 5;
-const TIMER_SHARDS: usize = 16;
+const TIMER_TICK: Duration = Duration::from_millis(5);
 
 #[derive(Default)]
-struct TimerShard {
+struct LocalWheel {
     next_id: u64,
-    entries: HashMap<u64, (u64, Waker)>,
+    entries: BTreeMap<(u64, u64), Waker>,
 }
 
-static TIMERS: LazyLock<Box<[Mutex<TimerShard>]>> =
-    LazyLock::new(|| (0..TIMER_SHARDS).map(|_| Mutex::default()).collect());
-
-fn timer_shard() -> usize {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    thread_local! {
-        static SHARD: usize = NEXT.fetch_add(1, Ordering::Relaxed) % TIMER_SHARDS;
-    }
-    SHARD.with(|s| *s)
+thread_local! {
+    static WHEEL: RefCell<Option<LocalWheel>> = const { RefCell::new(None) };
 }
 
-fn fire_expired(now_ms: u64) {
-    let mut due: Vec<Waker> = Vec::new();
-    for shard in TIMERS.iter() {
-        let Ok(mut s) = shard.lock() else { continue };
-        if s.entries.is_empty() {
-            continue;
+/// Turns on per-thread coarse timers for the current (single-threaded) runtime. Must be
+/// called from inside that runtime.
+pub fn enable_local_timers() {
+    let fresh = WHEEL.with(|w| {
+        let mut w = w.borrow_mut();
+        if w.is_some() {
+            return false;
         }
-        s.entries.retain(|_, (deadline, waker)| {
-            if *deadline <= now_ms {
-                due.push(waker.clone());
-                false
-            } else {
-                true
+        *w = Some(LocalWheel::default());
+        true
+    });
+    if !fresh {
+        return;
+    }
+    tokio::spawn(async {
+        let mut ticker = tokio::time::interval(TIMER_TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let now = mono_ms();
+            let due: Vec<Waker> = WHEEL.with(|w| {
+                let mut w = w.borrow_mut();
+                let Some(wheel) = w.as_mut() else {
+                    return Vec::new();
+                };
+                let mut due = Vec::new();
+                while let Some(entry) = wheel.entries.first_entry() {
+                    if entry.key().0 > now {
+                        break;
+                    }
+                    due.push(entry.remove());
+                }
+                due
+            });
+            for w in due {
+                w.wake();
             }
-        });
-    }
-    for w in due {
-        w.wake();
-    }
+        }
+    });
+}
+
+enum Registration {
+    None,
+    Local(std::thread::ThreadId, (u64, u64)),
+    Tokio(Pin<Box<tokio::time::Sleep>>),
 }
 
 /// A sleep that resolves once the cached clock reaches `deadline_ms` (see
-/// [`mono_ms`]). It only registers with the clock thread if it is actually polled
-/// while still pending.
+/// [`mono_ms`]). It only registers a timer if it is actually polled while pending.
 pub struct CoarseSleep {
     deadline_ms: u64,
-    registered: Option<(usize, u64)>,
+    reg: Registration,
 }
 
 impl CoarseSleep {
     pub fn until_ms(deadline_ms: u64) -> Self {
         Self {
             deadline_ms,
-            registered: None,
+            reg: Registration::None,
         }
     }
 
@@ -149,9 +164,15 @@ impl CoarseSleep {
     }
 
     fn deregister(&mut self) {
-        if let Some((shard, id)) = self.registered.take() {
-            if let Ok(mut s) = TIMERS[shard].lock() {
-                s.entries.remove(&id);
+        if let Registration::Local(owner, key) =
+            std::mem::replace(&mut self.reg, Registration::None)
+        {
+            if owner == std::thread::current().id() {
+                WHEEL.with(|w| {
+                    if let Some(wheel) = w.borrow_mut().as_mut() {
+                        wheel.entries.remove(&key);
+                    }
+                });
             }
         }
     }
@@ -166,27 +187,41 @@ impl Future for CoarseSleep {
             return Poll::Ready(());
         }
         let deadline = self.deadline_ms;
-        match self.registered {
-            Some((shard, id)) => {
-                if let Ok(mut s) = TIMERS[shard].lock() {
-                    match s.entries.get_mut(&id) {
-                        Some(entry) if entry.1.will_wake(cx.waker()) => {}
-                        Some(entry) => entry.1 = cx.waker().clone(),
-                        // Fired between our clock check and now: poll again shortly.
-                        None => {
-                            s.entries.insert(id, (deadline, cx.waker().clone()));
+        let this = &mut *self;
+        if let Registration::Tokio(sleep) = &mut this.reg {
+            return sleep.as_mut().poll(cx);
+        }
+        let registered = WHEEL.with(|w| {
+            let mut w = w.borrow_mut();
+            let wheel = w.as_mut()?;
+            match &this.reg {
+                Registration::Local(_, key) => match wheel.entries.get_mut(key) {
+                    Some(waker) => {
+                        if !waker.will_wake(cx.waker()) {
+                            *waker = cx.waker().clone();
                         }
                     }
+                    // Already fired between our clock check and now; re-arm.
+                    None => {
+                        wheel.entries.insert(*key, cx.waker().clone());
+                    }
+                },
+                _ => {
+                    wheel.next_id += 1;
+                    let key = (deadline, wheel.next_id);
+                    wheel.entries.insert(key, cx.waker().clone());
+                    this.reg = Registration::Local(std::thread::current().id(), key);
                 }
             }
-            None => {
-                let shard = timer_shard();
-                if let Ok(mut s) = TIMERS[shard].lock() {
-                    s.next_id += 1;
-                    let id = s.next_id;
-                    s.entries.insert(id, (deadline, cx.waker().clone()));
-                    self.registered = Some((shard, id));
-                }
+            Some(())
+        });
+        if registered.is_none() {
+            let at = tokio::time::Instant::from_std(CLOCK.base + Duration::from_millis(deadline));
+            let mut sleep = Box::pin(tokio::time::sleep_until(at));
+            let ready = sleep.as_mut().poll(cx).is_ready();
+            this.reg = Registration::Tokio(sleep);
+            if ready {
+                return Poll::Ready(());
             }
         }
         Poll::Pending
@@ -284,15 +319,22 @@ mod tests {
         assert_eq!(r, Ok(7));
     }
 
-    #[test]
-    fn dropped_timers_are_deregistered() {
-        let mut sleep = CoarseSleep::after(Duration::from_secs(60));
+    #[tokio::test]
+    async fn local_wheel_fires_and_deregisters() {
+        enable_local_timers();
+        let r = timeout(Duration::from_millis(20), std::future::pending::<()>()).await;
+        assert_eq!(r, Err(Elapsed));
+
         let waker = futures_util::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
+        let mut sleep = CoarseSleep::after(Duration::from_secs(60));
         assert!(Pin::new(&mut sleep).poll(&mut cx).is_pending());
-        let (shard, id) = sleep.registered.expect("should be registered");
+        let Registration::Local(_, key) = sleep.reg else {
+            panic!("should use the local wheel");
+        };
         drop(sleep);
-        assert!(!TIMERS[shard].lock().unwrap().entries.contains_key(&id));
+        let still_there = WHEEL.with(|w| w.borrow().as_ref().unwrap().entries.contains_key(&key));
+        assert!(!still_there);
     }
 
     #[test]

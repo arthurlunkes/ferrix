@@ -105,6 +105,7 @@ fn spawn_workers(
                     Err(e) => return error!("Failed to bind Proxy listener to {}: {}", addr, e),
                 };
                 runtime.block_on(async move {
+                    ferrix::clock::enable_local_timers();
                     match tokio::net::TcpListener::from_std(listener) {
                         Ok(l) => ferrix::server::serve(l, engine, addr.port(), tls).await,
                         Err(e) => error!("Proxy listener on {}: {}", addr, e),
