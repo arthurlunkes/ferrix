@@ -1,4 +1,3 @@
-// Simple multi-backend mock for Ferrix verification
 const http = require("http");
 
 function createBackend(name, port) {

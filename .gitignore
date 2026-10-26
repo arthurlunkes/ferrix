@@ -1,23 +1,47 @@
 # Rust
 /target/
 /core/target/
+**/*.rs.bk
+*.pdb
 
-# Node — frontend e backend
+# Node — frontend and backend
 node_modules/
 dist/
+.npm
+.eslintcache
 
 # mdBook
 /book/
 
-# Config e runtime — gerados/local, nunca versionados: ferrix.json carrega o token de
-# administração e os domínios reais de quem está rodando. Um ferrix.json novo é criado
-# sozinho (com um token novo) na primeira execução — ver core/src/config/mod.rs.
+# Runtime, logs and configuration generated locally (never committed)
+# ferrix.json contains private admin tokens and local machine bindings.
+# A default configuration is automatically generated on first run.
 ferrix.json
 ferrix.log
 .ferrix.pid
-
 *.log
-.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Configuração do benchmark: versionada de propósito, não tem segredo nenhum.
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+
+# Operating System & IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.tmp
+
+# Benchmarks config is versioned intentionally
 !benchmarks/conf/ferrix.json
