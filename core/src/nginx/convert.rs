@@ -6,8 +6,8 @@ use super::report::{MigrationReport, NoteLevel};
 use crate::config::{
     BasicAuthConfig, CacheConfig, FerrixConfig, LimitConnConfig, LoadBalanceAlgorithm,
     NextUpstreamCondition, ProxyNextUpstreamConfig, RateLimitConfig, RateLimitMode, RealIpHeader,
-    RouteMatchType, RouteRule, RouteTargetType, Satisfy, TlsConfig, UpstreamConfig, UpstreamTarget,
-    VirtualHost,
+    RouteMatchType, RouteRule, RouteTargetType, Satisfy, StreamConfig, StreamProtocol, TlsConfig,
+    UpstreamConfig, UpstreamTarget, VirtualHost,
 };
 
 pub struct ImportResult {
@@ -79,6 +79,9 @@ impl Converter {
             real_ip: Default::default(),
             upstreams: HashMap::new(),
             vhosts: Vec::new(),
+            acme: Default::default(),
+            metrics: Default::default(),
+            streams: Vec::new(),
         };
         Self {
             config,
@@ -259,13 +262,7 @@ impl Converter {
                         "o runtime assíncrono do Ferrix dimensiona as conexões sozinho",
                     );
                 }
-                "stream" => self.report.unsupported(
-                    &self.file,
-                    d.line,
-                    "stream",
-                    "stream { ... }",
-                    "proxy TCP/UDP não existe no Ferrix; o bloco inteiro ficou de fora",
-                ),
+                "stream" => self.convert_stream(d),
                 "load_module" | "worker_processes" | "pid" | "user" | "daemon" => {
                     self.report.note(
                         NoteLevel::Converted,
@@ -295,6 +292,7 @@ impl Converter {
                 satisfy: Satisfy::All,
                 tls: None,
                 routes: Vec::new(),
+                error_pages: Default::default(),
             });
         }
 
@@ -332,11 +330,164 @@ impl Converter {
         self.finalize_cache_scope(zone, &valid, &bypass);
     }
 
+    fn convert_stream(&mut self, d: &Directive) {
+        let Some(block) = &d.block else { return };
+        for item in block.iter().filter(|i| i.name == "upstream") {
+            self.convert_upstream(item);
+        }
+        for item in block {
+            match item.name.as_str() {
+                "upstream" => {}
+                "server" => self.convert_stream_server(item),
+                "log_format" | "access_log" | "error_log" => self.converted(
+                    item,
+                    "o Ferrix não grava log por sessão TCP/UDP; o tráfego segue normalmente",
+                ),
+                _ => self.note_unsupported(item),
+            }
+        }
+    }
+
+    fn convert_stream_server(&mut self, d: &Directive) {
+        let Some(block) = &d.block else { return };
+        let mut listen: Option<(String, StreamProtocol)> = None;
+        let mut pass: Option<String> = None;
+        let mut connect_timeout_ms = 5_000;
+        let mut idle_timeout_ms = 600_000;
+        for item in block {
+            match item.name.as_str() {
+                "listen" => {
+                    if let Some(addr) = item.arg(0) {
+                        let addr = if addr.contains(':') {
+                            addr.to_string()
+                        } else {
+                            format!("0.0.0.0:{}", addr)
+                        };
+                        let proto = if item.args.iter().any(|a| a == "udp") {
+                            StreamProtocol::Udp
+                        } else {
+                            StreamProtocol::Tcp
+                        };
+                        listen = Some((addr, proto));
+                    }
+                }
+                "proxy_pass" => pass = item.arg(0).map(|s| s.to_string()),
+                "proxy_connect_timeout" => {
+                    if let Some(v) = item.arg(0).and_then(parse_time_ms) {
+                        connect_timeout_ms = v;
+                    }
+                }
+                "proxy_timeout" => {
+                    if let Some(v) = item.arg(0).and_then(parse_time_ms) {
+                        idle_timeout_ms = v;
+                    }
+                }
+                _ => self.note_unsupported(item),
+            }
+        }
+        let (Some((listen, protocol)), Some(pass)) = (listen, pass) else {
+            self.report.unsupported(
+                &self.file,
+                d.line,
+                "stream server",
+                &d.source(),
+                "precisa de 'listen' e 'proxy_pass' para virar um stream",
+            );
+            return;
+        };
+        let port = listen.rsplit(':').next().unwrap_or("0").to_string();
+        let upstream = if self.config.upstreams.contains_key(&pass) {
+            pass
+        } else {
+            let name = format!("stream-{}", port);
+            self.config.upstreams.insert(
+                name.clone(),
+                UpstreamConfig {
+                    name: name.clone(),
+                    algorithm: LoadBalanceAlgorithm::RoundRobin,
+                    targets: vec![UpstreamTarget {
+                        url: format!("tcp://{}", pass),
+                        weight: 1,
+                        max_fails: 3,
+                        fail_timeout_secs: 10,
+                        backup: false,
+                        down: false,
+                        max_conns: None,
+                    }],
+                    health_check: None,
+                    verify_tls: true,
+                    hash_key: None,
+                },
+            );
+            name
+        };
+        self.config.streams.push(StreamConfig {
+            id: format!("stream-{}", port),
+            listen,
+            protocol,
+            upstream,
+            connect_timeout_ms,
+            idle_timeout_ms,
+        });
+        self.converted(d, "virou um proxy TCP/UDP em streams");
+    }
+
+    fn converted(&mut self, d: &Directive, msg: &str) {
+        self.report.note(
+            NoteLevel::Converted,
+            &self.file,
+            d.line,
+            &d.name,
+            &d.source(),
+            msg,
+        );
+    }
+
     fn dispatch_top_level(&mut self, d: &Directive) {
         match d.name.as_str() {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            "gzip" | "brotli" | "zstd" => {
+                self.config.http.compression.enabled = d.arg(0) == Some("on");
+                self.converted(
+                    d,
+                    "compressão gzip/brotli/zstd do Ferrix, negociada por Accept-Encoding",
+                );
+            }
+            "gzip_min_length" => {
+                if let Some(v) = d.arg(0).and_then(parse_size) {
+                    self.config.http.compression.min_length = v;
+                }
+                self.converted(d, "virou http.compression.min_length");
+            }
+            "gzip_comp_level" | "brotli_comp_level" => {
+                let level = d.arg(0).and_then(|v| v.parse::<u32>().ok()).unwrap_or(5);
+                self.config.http.compression.level = match level {
+                    0..=3 => crate::config::CompressionLevel::Fastest,
+                    4..=6 => crate::config::CompressionLevel::Default,
+                    _ => crate::config::CompressionLevel::Best,
+                };
+                self.converted(d, "virou http.compression.level");
+            }
+            "gzip_types" | "brotli_types" => {
+                let types = &mut self.config.http.compression.types;
+                for t in &d.args {
+                    let t = if t == "*" {
+                        "*/*".to_string()
+                    } else {
+                        t.clone()
+                    };
+                    if !types.contains(&t) {
+                        types.push(t);
+                    }
+                }
+                self.converted(d, "tipos adicionados a http.compression.types");
+            }
+            "gzip_vary" | "gzip_proxied" | "gzip_static" | "gzip_disable" | "gzip_http_version"
+            | "gzip_buffers" | "brotli_static" => {
+                self.converted(d, "o Ferrix já trata isso automaticamente ao comprimir");
+            }
 
             "client_max_body_size" => {
                 if let Some(v) = d.arg(0).and_then(parse_size) {
@@ -487,6 +638,7 @@ impl Converter {
 
         let mut targets = Vec::new();
         let mut algorithm = None;
+        let mut hash_key: Option<String> = None;
         let mut has_weights = false;
 
         for item in block {
@@ -503,16 +655,15 @@ impl Converter {
                 "ip_hash" => algorithm = Some(LoadBalanceAlgorithm::IpHash),
                 "random" => algorithm = Some(LoadBalanceAlgorithm::Random),
                 "hash" => {
-                    algorithm = Some(LoadBalanceAlgorithm::IpHash);
-                    self.report.partial(
+                    algorithm = Some(LoadBalanceAlgorithm::ConsistentHash);
+                    hash_key = item.arg(0).map(|s| s.to_string());
+                    self.report.note(
+                        NoteLevel::Converted,
                         &self.file,
                         item.line,
                         "hash",
                         &item.source(),
-                        format!(
-                            "trocado por ip_hash; o Ferrix não distribui por '{}'",
-                            item.arg(0).unwrap_or("variável")
-                        ),
+                        "virou consistent_hash (anel ketama) sobre a mesma chave",
                     );
                 }
                 "keepalive" => self.report.note(
@@ -552,6 +703,7 @@ impl Converter {
                 targets,
                 health_check: None,
                 verify_tls: true,
+                hash_key,
             },
         );
     }
@@ -634,6 +786,7 @@ impl Converter {
             satisfy: Satisfy::All,
             tls: None,
             routes: Vec::new(),
+            error_pages: Default::default(),
         };
 
         let mut server_root: Option<String> = None;
@@ -643,6 +796,8 @@ impl Converter {
         let mut ssl_cert: Option<String> = None;
         let mut ssl_key: Option<String> = None;
 
+        let mut server_gzip: Option<bool> = None;
+        let mut error_pages: Vec<&Directive> = Vec::new();
         let mut certbot_redirect: Option<RouteRule> = None;
         let mut cache_zone: Option<&Directive> = None;
         let mut cache_valid: Vec<&Directive> = Vec::new();
@@ -722,8 +877,41 @@ impl Converter {
                 "proxy_cache" => cache_zone = Some(item),
                 "proxy_cache_valid" => cache_valid.push(item),
                 "proxy_cache_bypass" => cache_bypass.push(item),
+                "gzip" | "brotli" => {
+                    server_gzip = Some(item.arg(0) == Some("on"));
+                    self.converted(item, "compressão ligada nas rotas deste host");
+                }
+                "error_page" => error_pages.push(item),
                 _ => self.note_unsupported(item),
             }
+        }
+
+        for item in error_pages {
+            let Some(uri) = item.args.last().filter(|u| u.starts_with('/')) else {
+                self.note_unsupported(item);
+                continue;
+            };
+            let Some(root) = &server_root else {
+                self.report.partial(
+                    &self.file,
+                    item.line,
+                    "error_page",
+                    &item.source(),
+                    "sem 'root' no server não dá para achar o arquivo; configure error_pages à mão",
+                );
+                continue;
+            };
+            let path = format!(
+                "{}/{}",
+                root.trim_end_matches('/'),
+                uri.trim_start_matches('/')
+            );
+            for code in &item.args[..item.args.len() - 1] {
+                if code.parse::<u16>().is_ok() {
+                    vhost.error_pages.insert(code.clone(), path.clone());
+                }
+            }
+            self.converted(item, "virou error_pages do host");
         }
 
         self.finalize_cache_scope(cache_zone, &cache_valid, &cache_bypass);
@@ -749,6 +937,7 @@ impl Converter {
                 vhost.tls = Some(TlsConfig {
                     cert_path,
                     key_path,
+                    acme: false,
                 });
                 if saw_ssl_listen {
                     self.report.note(
@@ -818,6 +1007,12 @@ impl Converter {
                     websocket_enabled: false,
                     ..Default::default()
                 });
+            }
+        }
+
+        if let Some(on) = server_gzip {
+            for r in &mut vhost.routes {
+                r.compression.get_or_insert(on);
             }
         }
 
@@ -1430,6 +1625,7 @@ impl Converter {
                 }],
                 health_check: None,
                 verify_tls: true,
+                hash_key: None,
             },
         );
         name
@@ -1688,8 +1884,8 @@ fn safe_include_note(pattern: &str) -> Option<&'static str> {
 
 fn reason_for(name: &str) -> String {
     let reason = match name {
-        n if n.starts_with("gzip") || n == "brotli" => {
-            "compressão está planejada para a próxima fase do Ferrix"
+        n if n.starts_with("gzip") || n.starts_with("brotli") => {
+            "esta variação de compressão não tem equivalente; use http.compression"
         }
         "ssl_protocols"
         | "ssl_ciphers"
@@ -1739,7 +1935,7 @@ fn reason_for(name: &str) -> String {
         "if" => "blocos condicionais não existem no Ferrix",
         "set" => "variáveis definidas na configuração não existem no Ferrix",
         "auth_request" => "autenticação delegada a um subrequest não existe no Ferrix",
-        "error_page" => "páginas de erro customizadas ainda não existem",
+        "error_page" => "só páginas em arquivo (error_page 404 /404.html) são convertidas",
         "stub_status" => "use /api/metrics e o painel do Ferrix",
         "access_log" | "error_log" | "log_format" => {
             "o Ferrix registra as requisições em memória; veja /api/logs e a tela Live Requests"
@@ -2062,7 +2258,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_by_variable_degrades_to_ip_hash_with_a_note() {
+    fn hash_by_variable_becomes_consistent_hash() {
         let r = convert(
             r#"http {
                 upstream p { hash $request_uri consistent; server a:3000; }
@@ -2071,9 +2267,12 @@ mod tests {
         );
         assert_eq!(
             r.config.upstreams["p"].algorithm,
-            LoadBalanceAlgorithm::IpHash
+            LoadBalanceAlgorithm::ConsistentHash
         );
-        assert!(r.report.notes.iter().any(|n| n.directive == "hash"));
+        assert_eq!(
+            r.config.upstreams["p"].hash_key.as_deref(),
+            Some("$request_uri")
+        );
     }
 
     #[test]
@@ -2460,17 +2659,9 @@ mod tests {
             }"#,
         );
         let names = r.report.unsupported_directives();
-        assert!(names.contains(&"gzip".to_string()));
+        assert!(!names.contains(&"gzip".to_string()));
+        assert!(r.config.http.compression.enabled);
         assert!(names.contains(&"proxy_no_cache".to_string()));
-
-        let gzip = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "gzip")
-            .unwrap();
-        assert_eq!(gzip.line, 2);
-        assert!(gzip.reason.contains("compressão"));
     }
 
     #[test]
@@ -2499,9 +2690,26 @@ mod tests {
     }
 
     #[test]
-    fn stream_block_is_reported_as_a_whole() {
-        let r = convert(r#"stream { server { listen 5432; proxy_pass db:5432; } }"#);
-        assert!(r.report.notes.iter().any(|n| n.directive == "stream"));
+    fn stream_block_becomes_tcp_and_udp_streams() {
+        let r = convert(
+            r#"stream {
+                upstream dns { server 10.0.0.1:53; }
+                server { listen 5432; proxy_pass db:5432; proxy_timeout 30s; }
+                server { listen 53 udp; proxy_pass dns; }
+            }"#,
+        );
+        assert_eq!(r.config.streams.len(), 2);
+        let tcp = &r.config.streams[0];
+        assert_eq!(tcp.listen, "0.0.0.0:5432");
+        assert_eq!(tcp.protocol, StreamProtocol::Tcp);
+        assert_eq!(tcp.idle_timeout_ms, 30_000);
+        assert_eq!(
+            r.config.upstreams[&tcp.upstream].targets[0].url,
+            "tcp://db:5432"
+        );
+        let udp = &r.config.streams[1];
+        assert_eq!(udp.protocol, StreamProtocol::Udp);
+        assert_eq!(udp.upstream, "dns");
     }
 
     #[test]

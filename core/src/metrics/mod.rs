@@ -3,17 +3,29 @@ pub mod logger;
 use chrono::{DateTime, Utc};
 use logger::RequestLog;
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 const LATENCY_WINDOW: usize = 1024;
 
 const LOG_CAPACITY: usize = 500;
 
+// Counters are split into stripes, one per worker thread in practice, so the hot path
+// never bounces a shared cache line between cores; readers add the stripes up.
+const STRIPES: usize = 16;
+
+/// Upper bounds (seconds) of the Prometheus latency histogram buckets.
+const BUCKETS: [f64; 11] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsSnapshot {
+    /// `metrics.enabled` from the config; when false every counter stays at zero.
+    pub enabled: bool,
     pub uptime_seconds: u64,
     pub total_requests: u64,
     pub active_connections: i64,
@@ -28,26 +40,54 @@ pub struct MetricsSnapshot {
     pub p99_latency_ms: f64,
 }
 
-pub struct MetricsCollector {
-    start_time: Instant,
-    start_utc: DateTime<Utc>,
-    total_requests: AtomicU64,
-    active_connections: AtomicI64,
-    status_2xx: AtomicU64,
-    status_3xx: AtomicU64,
-    status_4xx: AtomicU64,
-    status_5xx: AtomicU64,
-    total_bytes_sent: AtomicU64,
-
-    rps_sec: AtomicU64,
-    rps_count: AtomicU64,
-    rps_last: AtomicU64,
+#[repr(align(128))]
+struct Stripe {
+    requests: AtomicU64,
+    status: [AtomicU64; 4],
+    bytes: AtomicU64,
+    active: AtomicI64,
+    buckets: [AtomicU64; BUCKETS.len() + 1],
+    latency_sum_us: AtomicU64,
 
     latencies: Box<[AtomicU64]>,
     latency_head: AtomicUsize,
 
     log_slots: Box<[Mutex<Option<RequestLog>>]>,
     log_head: AtomicUsize,
+}
+
+impl Stripe {
+    fn new() -> Self {
+        Self {
+            requests: AtomicU64::new(0),
+            status: Default::default(),
+            bytes: AtomicU64::new(0),
+            active: AtomicI64::new(0),
+            buckets: Default::default(),
+            latency_sum_us: AtomicU64::new(0),
+            latencies: (0..LATENCY_WINDOW).map(|_| AtomicU64::new(0)).collect(),
+            latency_head: AtomicUsize::new(0),
+            log_slots: (0..LOG_CAPACITY).map(|_| Mutex::new(None)).collect(),
+            log_head: AtomicUsize::new(0),
+        }
+    }
+}
+
+fn stripe_index() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static INDEX: usize = NEXT.fetch_add(1, Ordering::Relaxed) % STRIPES;
+    }
+    INDEX.with(|i| *i)
+}
+
+pub struct MetricsCollector {
+    start_time: Instant,
+    start_utc: DateTime<Utc>,
+
+    stripes: Box<[Stripe]>,
+
+    rps_last: AtomicU64,
 
     log_sender: broadcast::Sender<RequestLog>,
 }
@@ -58,54 +98,78 @@ impl MetricsCollector {
         Arc::new(Self {
             start_time: Instant::now(),
             start_utc: Utc::now(),
-            total_requests: AtomicU64::new(0),
-            active_connections: AtomicI64::new(0),
-            status_2xx: AtomicU64::new(0),
-            status_3xx: AtomicU64::new(0),
-            status_4xx: AtomicU64::new(0),
-            status_5xx: AtomicU64::new(0),
-            total_bytes_sent: AtomicU64::new(0),
-            rps_sec: AtomicU64::new(0),
-            rps_count: AtomicU64::new(0),
+            stripes: (0..STRIPES).map(|_| Stripe::new()).collect(),
             rps_last: AtomicU64::new(0f64.to_bits()),
-            latencies: (0..LATENCY_WINDOW).map(|_| AtomicU64::new(0)).collect(),
-            latency_head: AtomicUsize::new(0),
-            log_slots: (0..LOG_CAPACITY).map(|_| Mutex::new(None)).collect(),
-            log_head: AtomicUsize::new(0),
             log_sender,
         })
     }
 
+    fn stripe(&self) -> &Stripe {
+        &self.stripes[stripe_index()]
+    }
+
+    fn sum(&self, f: impl Fn(&Stripe) -> u64) -> u64 {
+        self.stripes.iter().map(f).sum()
+    }
+
+    /// Samples the request counter once a second to publish requests/second, instead of
+    /// doing that bookkeeping on every request.
+    pub fn start_rps_ticker(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut last: Option<(u64, Instant)> = None;
+            loop {
+                ticker.tick().await;
+                let Some(m) = me.upgrade() else { return };
+                let total = m.total_requests();
+                let now = Instant::now();
+                if let Some((prev, at)) = last {
+                    let secs = now.duration_since(at).as_secs_f64().max(0.001);
+                    let rps = (total.saturating_sub(prev)) as f64 / secs;
+                    m.rps_last.store(rps.to_bits(), Ordering::Relaxed);
+                }
+                last = Some((total, now));
+            }
+        });
+    }
+
+    fn total_requests(&self) -> u64 {
+        self.sum(|s| s.requests.load(Ordering::Relaxed))
+    }
+
     pub fn inc_active_connections(&self) {
-        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.stripe().active.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn dec_active_connections(&self) {
-        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.stripe().active.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn add_bytes_sent(&self, bytes: u64) {
-        self.total_bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+        self.stripe().bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn record_request(&self, log: RequestLog, log_line: bool) {
-        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        let s = self.stripe();
+        s.requests.fetch_add(1, Ordering::Relaxed);
 
-        let counter = match log.status {
-            200..=299 => Some(&self.status_2xx),
-            300..=399 => Some(&self.status_3xx),
-            400..=499 => Some(&self.status_4xx),
-            500..=599 => Some(&self.status_5xx),
-            _ => None,
-        };
-        if let Some(c) = counter {
-            c.fetch_add(1, Ordering::Relaxed);
+        if let 200..=599 = log.status {
+            s.status[(log.status / 100 - 2) as usize].fetch_add(1, Ordering::Relaxed);
         }
 
-        self.tick_rps();
+        let secs = log.latency_ms / 1000.0;
+        let bucket = BUCKETS
+            .iter()
+            .position(|b| secs <= *b)
+            .unwrap_or(BUCKETS.len());
+        s.buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        s.latency_sum_us
+            .fetch_add((log.latency_ms * 1000.0) as u64, Ordering::Relaxed);
 
-        let i = self.latency_head.fetch_add(1, Ordering::Relaxed) % LATENCY_WINDOW;
-        self.latencies[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
+        let i = s.latency_head.fetch_add(1, Ordering::Relaxed) % LATENCY_WINDOW;
+        s.latencies[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
 
         if !log_line {
             return;
@@ -115,33 +179,9 @@ impl MetricsCollector {
             let _ = self.log_sender.send(log.clone());
         }
 
-        let slot = self.log_head.fetch_add(1, Ordering::AcqRel) % LOG_CAPACITY;
-        if let Ok(mut s) = self.log_slots[slot].lock() {
-            *s = Some(log);
-        }
-    }
-
-    fn tick_rps(&self) {
-        let now = crate::clock::unix_secs();
-        let cur = self.rps_sec.load(Ordering::Relaxed);
-        if cur == now {
-            self.rps_count.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        if self
-            .rps_sec
-            .compare_exchange(cur, now, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            let prev_count = self.rps_count.swap(1, Ordering::AcqRel);
-            let prev_rps = if now == cur + 1 {
-                prev_count as f64
-            } else {
-                0.0
-            };
-            self.rps_last.store(prev_rps.to_bits(), Ordering::Relaxed);
-        } else {
-            self.rps_count.fetch_add(1, Ordering::Relaxed);
+        let slot = s.log_head.fetch_add(1, Ordering::AcqRel) % LOG_CAPACITY;
+        if let Ok(mut l) = s.log_slots[slot].lock() {
+            *l = Some(log);
         }
     }
 
@@ -151,39 +191,40 @@ impl MetricsCollector {
         filter_status: Option<u16>,
         query: Option<&str>,
     ) -> Vec<RequestLog> {
-        let head = self.log_head.load(Ordering::Acquire);
-        let filled = head.min(LOG_CAPACITY);
         let q_lower = query.filter(|q| !q.is_empty()).map(|q| q.to_lowercase());
 
-        let mut out = Vec::with_capacity(limit.min(filled));
-
-        for k in 1..=filled {
-            if out.len() >= limit {
-                break;
-            }
-            let idx = (head - k) % LOG_CAPACITY;
-            let Ok(slot) = self.log_slots[idx].lock() else {
-                continue;
-            };
-            let Some(log) = slot.as_ref() else { continue };
-
-            if let Some(st) = filter_status {
-                if log.status / 100 != st / 100 && log.status != st {
+        let mut all: Vec<RequestLog> = Vec::new();
+        for s in self.stripes.iter() {
+            let head = s.log_head.load(Ordering::Acquire);
+            let filled = head.min(LOG_CAPACITY);
+            for k in 1..=filled {
+                let idx = (head - k) % LOG_CAPACITY;
+                let Ok(slot) = s.log_slots[idx].lock() else {
                     continue;
+                };
+                let Some(log) = slot.as_ref() else { continue };
+
+                if let Some(st) = filter_status {
+                    if log.status / 100 != st / 100 && log.status != st {
+                        continue;
+                    }
                 }
-            }
-            if let Some(q) = &q_lower {
-                let hit = log.uri.to_lowercase().contains(q)
-                    || log.method.to_lowercase().contains(q)
-                    || log.client_ip.contains(q.as_str())
-                    || log.host.to_lowercase().contains(q);
-                if !hit {
-                    continue;
+                if let Some(q) = &q_lower {
+                    let hit = log.uri.to_string().to_lowercase().contains(q)
+                        || log.method.as_str().to_lowercase().contains(q)
+                        || log.client_ip.to_string().contains(q.as_str())
+                        || log.host_str().to_lowercase().contains(q);
+                    if !hit {
+                        continue;
+                    }
                 }
+                all.push(log.clone());
             }
-            out.push(log.clone());
         }
-        out
+        // Newest first across stripes; ids break ties within the same clock tick.
+        all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.id.cmp(&a.id)));
+        all.truncate(limit.min(LOG_CAPACITY));
+        all
     }
 
     pub fn subscribe_logs(&self) -> broadcast::Receiver<RequestLog> {
@@ -194,14 +235,15 @@ impl MetricsCollector {
         let uptime = self.start_time.elapsed().as_secs();
         let rps = f64::from_bits(self.rps_last.load(Ordering::Relaxed));
 
-        let filled = self
-            .latency_head
-            .load(Ordering::Relaxed)
-            .min(LATENCY_WINDOW);
-        let mut sorted: Vec<f64> = self.latencies[..filled]
-            .iter()
-            .map(|a| f64::from_bits(a.load(Ordering::Relaxed)))
-            .collect();
+        let mut sorted: Vec<f64> = Vec::new();
+        for s in self.stripes.iter() {
+            let filled = s.latency_head.load(Ordering::Relaxed).min(LATENCY_WINDOW);
+            sorted.extend(
+                s.latencies[..filled]
+                    .iter()
+                    .map(|a| f64::from_bits(a.load(Ordering::Relaxed))),
+            );
+        }
 
         let (avg_lat, p95_lat, p99_lat) = if sorted.is_empty() {
             (0.0, 0.0, 0.0)
@@ -213,16 +255,23 @@ impl MetricsCollector {
             (avg, pick(0.95), pick(0.99))
         };
 
+        let status = |i: usize| self.sum(|s| s.status[i].load(Ordering::Relaxed));
         MetricsSnapshot {
+            enabled: true,
             uptime_seconds: uptime,
-            total_requests: self.total_requests.load(Ordering::Relaxed),
-            active_connections: self.active_connections.load(Ordering::Relaxed).max(0),
+            total_requests: self.total_requests(),
+            active_connections: self
+                .stripes
+                .iter()
+                .map(|s| s.active.load(Ordering::Relaxed))
+                .sum::<i64>()
+                .max(0),
             requests_per_second: rps,
-            status_2xx: self.status_2xx.load(Ordering::Relaxed),
-            status_3xx: self.status_3xx.load(Ordering::Relaxed),
-            status_4xx: self.status_4xx.load(Ordering::Relaxed),
-            status_5xx: self.status_5xx.load(Ordering::Relaxed),
-            total_bytes_sent: self.total_bytes_sent.load(Ordering::Relaxed),
+            status_2xx: status(0),
+            status_3xx: status(1),
+            status_4xx: status(2),
+            status_5xx: status(3),
+            total_bytes_sent: self.sum(|s| s.bytes.load(Ordering::Relaxed)),
             avg_latency_ms: (avg_lat * 100.0).round() / 100.0,
             p95_latency_ms: (p95_lat * 100.0).round() / 100.0,
             p99_latency_ms: (p99_lat * 100.0).round() / 100.0,
@@ -232,6 +281,101 @@ impl MetricsCollector {
     pub fn start_time_utc(&self) -> DateTime<Utc> {
         self.start_utc
     }
+
+    /// Prometheus text exposition format (version 0.0.4).
+    pub fn prometheus(&self, upstreams: &[(String, String, bool)]) -> String {
+        let mut out = String::with_capacity(2048);
+        let snap = self.get_metrics_snapshot();
+
+        let _ = writeln!(
+            out,
+            "# HELP ferrix_requests_total Requests handled by the proxy."
+        );
+        let _ = writeln!(out, "# TYPE ferrix_requests_total counter");
+        for (i, class) in ["2xx", "3xx", "4xx", "5xx"].iter().enumerate() {
+            let v = self.sum(|s| s.status[i].load(Ordering::Relaxed));
+            let _ = writeln!(out, "ferrix_requests_total{{code=\"{}\"}} {}", class, v);
+        }
+        let classified: u64 = snap.status_2xx + snap.status_3xx + snap.status_4xx + snap.status_5xx;
+        let _ = writeln!(
+            out,
+            "ferrix_requests_total{{code=\"other\"}} {}",
+            snap.total_requests.saturating_sub(classified)
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP ferrix_request_duration_seconds Time to produce the response head."
+        );
+        let _ = writeln!(out, "# TYPE ferrix_request_duration_seconds histogram");
+        let mut cumulative = 0u64;
+        for (i, le) in BUCKETS.iter().enumerate() {
+            cumulative += self.sum(|s| s.buckets[i].load(Ordering::Relaxed));
+            let _ = writeln!(
+                out,
+                "ferrix_request_duration_seconds_bucket{{le=\"{}\"}} {}",
+                le, cumulative
+            );
+        }
+        cumulative += self.sum(|s| s.buckets[BUCKETS.len()].load(Ordering::Relaxed));
+        let _ = writeln!(
+            out,
+            "ferrix_request_duration_seconds_bucket{{le=\"+Inf\"}} {}",
+            cumulative
+        );
+        let sum_us = self.sum(|s| s.latency_sum_us.load(Ordering::Relaxed));
+        let _ = writeln!(
+            out,
+            "ferrix_request_duration_seconds_sum {}",
+            sum_us as f64 / 1e6
+        );
+        let _ = writeln!(out, "ferrix_request_duration_seconds_count {}", cumulative);
+
+        let _ = writeln!(
+            out,
+            "# HELP ferrix_response_bytes_total Response body bytes sent."
+        );
+        let _ = writeln!(out, "# TYPE ferrix_response_bytes_total counter");
+        let _ = writeln!(out, "ferrix_response_bytes_total {}", snap.total_bytes_sent);
+
+        let _ = writeln!(
+            out,
+            "# HELP ferrix_active_requests Requests currently in flight."
+        );
+        let _ = writeln!(out, "# TYPE ferrix_active_requests gauge");
+        let _ = writeln!(out, "ferrix_active_requests {}", snap.active_connections);
+
+        let _ = writeln!(
+            out,
+            "# HELP ferrix_uptime_seconds Seconds since Ferrix started."
+        );
+        let _ = writeln!(out, "# TYPE ferrix_uptime_seconds gauge");
+        let _ = writeln!(out, "ferrix_uptime_seconds {}", snap.uptime_seconds);
+
+        if !upstreams.is_empty() {
+            let _ = writeln!(
+                out,
+                "# HELP ferrix_upstream_up Whether an upstream target is considered healthy."
+            );
+            let _ = writeln!(out, "# TYPE ferrix_upstream_up gauge");
+            for (pool, target, healthy) in upstreams {
+                let _ = writeln!(
+                    out,
+                    "ferrix_upstream_up{{upstream=\"{}\",target=\"{}\"}} {}",
+                    escape_label(pool),
+                    escape_label(target),
+                    *healthy as u8
+                );
+            }
+        }
+        out
+    }
+}
+
+fn escape_label(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 #[cfg(test)]
@@ -240,19 +384,18 @@ mod tests {
 
     fn sample_log(status: u16) -> RequestLog {
         RequestLog {
-            id: "id".to_string(),
+            id: 1,
             timestamp: Utc::now(),
-            client_ip: "127.0.0.1".to_string(),
-            method: "GET".to_string(),
-            uri: "/x".to_string(),
-            host: "exemplo.com".to_string(),
+            client_ip: "127.0.0.1".parse().unwrap(),
+            method: axum::http::Method::GET,
+            uri: axum::http::Uri::from_static("/x"),
+            host: axum::http::HeaderValue::from_static("exemplo.com"),
             status,
             latency_ms: 1.0,
             bytes_sent: 10,
             upstream: None,
             user_agent: None,
             is_websocket: false,
-            error: None,
         }
     }
 
@@ -292,13 +435,13 @@ mod tests {
         let m = MetricsCollector::new(0);
         for i in 0..(LOG_CAPACITY + 10) {
             let mut l = sample_log(200);
-            l.uri = format!("/{i}");
+            l.uri = format!("/{i}").parse().unwrap();
             m.record_request(l, true);
         }
         let logs = m.get_recent_logs(usize::MAX, None, None);
         assert_eq!(logs.len(), LOG_CAPACITY);
-        assert_eq!(logs[0].uri, format!("/{}", LOG_CAPACITY + 9));
-        assert_eq!(logs.last().unwrap().uri, "/10");
+        assert_eq!(logs[0].uri.to_string(), format!("/{}", LOG_CAPACITY + 9));
+        assert_eq!(logs.last().unwrap().uri.to_string(), "/10");
     }
 
     #[test]
@@ -313,6 +456,21 @@ mod tests {
         assert_eq!(s.p99_latency_ms, 100.0);
         assert_eq!(s.p95_latency_ms, 96.0);
         assert_eq!(s.avg_latency_ms, 50.5);
+    }
+
+    #[test]
+    fn prometheus_exposition_has_counters_and_histogram() {
+        let m = MetricsCollector::new(0);
+        let mut l = sample_log(200);
+        l.latency_ms = 7.0;
+        m.record_request(l, false);
+        m.record_request(sample_log(503), false);
+        let text = m.prometheus(&[("api".into(), "http://a:1".into(), true)]);
+        assert!(text.contains("ferrix_requests_total{code=\"2xx\"} 1"));
+        assert!(text.contains("ferrix_requests_total{code=\"5xx\"} 1"));
+        assert!(text.contains("ferrix_request_duration_seconds_bucket{le=\"0.01\"} 2"));
+        assert!(text.contains("ferrix_request_duration_seconds_count 2"));
+        assert!(text.contains("ferrix_upstream_up{upstream=\"api\",target=\"http://a:1\"} 1"));
     }
 
     #[test]

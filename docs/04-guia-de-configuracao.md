@@ -175,6 +175,11 @@ Upstreams define pools of backend servers that share incoming workload.
 3. **`least_conn`**: Routes to the target with the fewest active concurrent connections at request time.
 4. **`ip_hash`**: Hashes client IP to ensure continuous affinity with the same backend (sticky session).
 5. **`random`**: Uniform random distribution among healthy nodes.
+6. **`consistent_hash`**: Ketama-style consistent hashing on `hash_key` (nginx `hash ... consistent`). Adding or removing a server only remaps the keys that belonged to it. `hash_key` accepts `$remote_addr` (default), `$request_uri`, `$uri`, `$host`, `$http_<header>`, `$cookie_<name>` and `$arg_<name>`.
+
+```json
+"api": { "name": "api", "algorithm": "consistent_hash", "hash_key": "$request_uri", "targets": [ ... ] }
+```
 
 ### Automatic Failover (_proxy_next_upstream_):
 
@@ -183,3 +188,99 @@ If a pool node fails (connection error, timeout, or HTTP 502/504 status code):
 1. Ferrix increments the node's consecutive failure counter.
 2. Immediately tries the next available target in the pool without dropping the client request.
 3. Once consecutive failures reach `max_fails`, the node is temporarily marked **UNHEALTHY** until active background health checks confirm recovery.
+
+
+---
+
+## 📊 Metrics (opt-in)
+
+Metrics are **off by default**, like nginx's `stub_status`. While disabled, the proxy does no per-request bookkeeping at all: no counters, no in-memory request log, no byte counting. Turn them on when you want the dashboard charts, Live Requests or Prometheus:
+
+```json
+"metrics": { "enabled": true }
+```
+
+When enabled:
+
+- `GET /metrics` on the admin port serves Prometheus text format (`ferrix_requests_total`, `ferrix_request_duration_seconds` histogram, `ferrix_response_bytes_total`, `ferrix_active_requests`, `ferrix_upstream_up`). It uses the admin authentication unless `admin.metrics_public` is `true`.
+- `/api/metrics`, `/api/logs` and `/api/logs/stream` feed the dashboard.
+
+Turning metrics on costs roughly 4–9% of throughput in the benchmarks. The control plane itself can be switched off with `"admin": { "enabled": false }`; Ferrix is then configured only through `ferrix.json` and `ferrix reload`. The Node.js backend and the React dashboard are separate processes; the core never needs them.
+
+## 🗜️ Compression
+
+```json
+"http": {
+  "compression": {
+    "enabled": true,
+    "level": "default",
+    "min_length": 1024,
+    "algorithms": ["zstd", "br", "gzip"],
+    "types": ["text/*", "application/json", "application/javascript", "image/svg+xml"]
+  }
+}
+```
+
+The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`. A route can override the global switch with `"compression": true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
+
+## 📁 Static files: caching and ranges
+
+Static responses carry `ETag` and `Last-Modified`. `If-None-Match` and `If-Modified-Since` are answered with `304 Not Modified`, and single `Range` requests are answered with `206 Partial Content` (or `416`).
+
+## 🌍 CORS
+
+```json
+"cors": {
+  "allow_origins": ["https://app.example.com"],
+  "allow_methods": ["GET", "POST"],
+  "allow_headers": ["Authorization", "Content-Type"],
+  "expose_headers": ["X-Request-Id"],
+  "allow_credentials": true,
+  "max_age_secs": 600
+}
+```
+
+Set this on a route. Preflight requests (`OPTIONS` with `Access-Control-Request-Method`) are answered by Ferrix without reaching the upstream. `"*"` in `allow_origins` allows any origin. With credentials enabled, the origin is echoed back instead of `*`.
+
+## 🧾 Custom error pages and request IDs
+
+```json
+"error_pages": { "404": "/var/www/errors/404.html", "5xx": "/var/www/errors/50x.html" }
+```
+
+`error_pages` belongs to a virtual host and replaces the body of the errors Ferrix generates itself, while keeping the status code. Error responses that come from an upstream pass through untouched, like nginx without `proxy_intercept_errors`.
+
+`"http": { "request_id": true }` adds an `X-Request-Id` to the upstream request and to the response. An ID already sent by the client is kept.
+
+## 🔐 HTTPS: several certificates per port (SNI) and Let's Encrypt
+
+Any number of virtual hosts can share a TLS port. The certificate is chosen per connection from the SNI name: exact `server_names` first, then wildcards (`*.example.com`), then the first TLS host on the port. Certificates are re-read when the configuration changes, so a renewal only needs `ferrix reload`.
+
+For automatic certificates, use `acme` instead of file paths:
+
+```json
+"acme": { "email": "admin@example.com", "storage_dir": "./acme" },
+"vhosts": [
+  { "id": "site", "server_names": ["example.com", "www.example.com"], "listen_port": 443,
+    "tls": { "acme": true }, "routes": [ ... ] }
+]
+```
+
+Ferrix answers the HTTP-01 challenge on its plain-HTTP ports, so port 80 must reach it. Certificates are stored in `storage_dir` and renewed `renew_before_days` (default 30) before they expire. To test against Let's Encrypt staging, set `"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory"`. Wildcard names can't be validated over HTTP-01 and are skipped.
+
+## 🔌 TCP/UDP streams
+
+Layer-4 proxying, like nginx's `stream {}` block. It works for databases, Redis, MQTT, DNS and anything else that runs over TCP or UDP:
+
+```json
+"upstreams": {
+  "pg": { "name": "pg", "algorithm": "least_conn",
+          "targets": [{ "url": "tcp://10.0.0.5:5432" }, { "url": "tcp://10.0.0.6:5432" }] }
+},
+"streams": [
+  { "id": "postgres", "listen": "0.0.0.0:5432", "protocol": "tcp", "upstream": "pg",
+    "connect_timeout_ms": 5000, "idle_timeout_ms": 600000 }
+]
+```
+
+Streams use the pool's balancing algorithm and passive health marking. `ferrix import` converts nginx `stream {}` blocks automatically. Streams start with the process; adding a new one needs a restart.

@@ -11,6 +11,8 @@ export interface ServerStatus {
 }
 
 export interface MetricsSnapshot {
+  /** false when the core runs with metrics disabled (the default). */
+  enabled?: boolean;
   uptime_seconds: number;
   total_requests: number;
   active_connections: number;

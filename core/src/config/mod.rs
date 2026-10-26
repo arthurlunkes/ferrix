@@ -21,10 +21,101 @@ pub struct FerrixConfig {
     pub upstreams: HashMap<String, UpstreamConfig>,
     #[serde(default)]
     pub vhosts: Vec<VirtualHost>,
+    #[serde(default)]
+    pub acme: AcmeConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+    /// Layer-4 (TCP/UDP) proxies, like nginx's `stream {}` block.
+    #[serde(default)]
+    pub streams: Vec<StreamConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProtocol {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamConfig {
+    pub id: String,
+    /// Address to listen on, e.g. `0.0.0.0:5432`.
+    pub listen: String,
+    #[serde(default)]
+    pub protocol: StreamProtocol,
+    /// Upstream pool to forward to; targets are `host:port` (a `tcp://`/`udp://`/`http://`
+    /// prefix is ignored), balanced with the pool's algorithm.
+    pub upstream: String,
+    #[serde(default = "default_stream_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    /// Close a TCP connection or forget a UDP session after this long without traffic.
+    #[serde(default = "default_stream_idle_timeout_ms")]
+    pub idle_timeout_ms: u64,
+}
+
+fn default_stream_connect_timeout_ms() -> u64 {
+    5_000
+}
+fn default_stream_idle_timeout_ms() -> u64 {
+    600_000
+}
+
+/// Request metrics and the in-memory request log (what the dashboard and the
+/// Prometheus `/metrics` endpoint show). Off by default, like nginx's `stub_status`:
+/// when disabled the proxy does no per-request bookkeeping at all.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Automatic certificates (Let's Encrypt or any ACME v2 CA) for virtual hosts whose
+/// `tls.acme` is enabled. HTTP-01 challenges are answered on every plain-HTTP port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcmeConfig {
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default = "default_acme_directory")]
+    pub directory_url: String,
+    #[serde(default = "default_acme_storage")]
+    pub storage_dir: String,
+    #[serde(default = "default_acme_renew_days")]
+    pub renew_before_days: u32,
+}
+
+pub const LETS_ENCRYPT_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+fn default_acme_directory() -> String {
+    LETS_ENCRYPT_PRODUCTION.to_string()
+}
+fn default_acme_storage() -> String {
+    "./acme".to_string()
+}
+fn default_acme_renew_days() -> u32 {
+    30
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            email: None,
+            directory_url: default_acme_directory(),
+            storage_dir: default_acme_storage(),
+            renew_before_days: default_acme_renew_days(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
+    /// Run the control-plane API. Without it Ferrix is configured only through the
+    /// JSON file (reloaded with `ferrix reload` / SIGHUP).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
     #[serde(default = "default_admin_listen")]
     pub listen: String,
 
@@ -33,6 +124,10 @@ pub struct AdminConfig {
 
     #[serde(default)]
     pub cors_origins: Vec<String>,
+
+    /// Serve the Prometheus `/metrics` endpoint without admin authentication.
+    #[serde(default)]
+    pub metrics_public: bool,
 }
 
 fn default_admin_listen() -> String {
@@ -42,9 +137,11 @@ fn default_admin_listen() -> String {
 impl Default for AdminConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             listen: default_admin_listen(),
             auth: AdminAuthConfig::default(),
             cors_origins: Vec::new(),
+            metrics_public: false,
         }
     }
 }
@@ -103,6 +200,90 @@ pub struct HttpConfig {
 
     #[serde(default = "default_proxy_request_buffer_size")]
     pub proxy_request_buffer_size: u64,
+
+    #[serde(default)]
+    pub compression: CompressionConfig,
+
+    /// Add an `X-Request-Id` (kept when the client already sent one) to the upstream
+    /// request and to the response.
+    #[serde(default)]
+    pub request_id: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionLevel {
+    Fastest,
+    #[default]
+    Default,
+    Best,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionAlgorithm {
+    Zstd,
+    Br,
+    Gzip,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub level: CompressionLevel,
+    /// Responses smaller than this (when the size is known) are sent as-is.
+    #[serde(default = "default_compression_min_length")]
+    pub min_length: u64,
+    /// Preference order when the client accepts several encodings.
+    #[serde(default = "default_compression_algorithms")]
+    pub algorithms: Vec<CompressionAlgorithm>,
+    /// MIME types to compress; `text/*` style prefixes are allowed.
+    #[serde(default = "default_compression_types")]
+    pub types: Vec<String>,
+}
+
+fn default_compression_min_length() -> u64 {
+    1024
+}
+fn default_compression_algorithms() -> Vec<CompressionAlgorithm> {
+    vec![
+        CompressionAlgorithm::Zstd,
+        CompressionAlgorithm::Br,
+        CompressionAlgorithm::Gzip,
+    ]
+}
+fn default_compression_types() -> Vec<String> {
+    [
+        "text/*",
+        "application/json",
+        "application/javascript",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/rss+xml",
+        "application/atom+xml",
+        "application/manifest+json",
+        "application/wasm",
+        "image/svg+xml",
+        "font/ttf",
+        "font/otf",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            level: CompressionLevel::default(),
+            min_length: default_compression_min_length(),
+            algorithms: default_compression_algorithms(),
+            types: default_compression_types(),
+        }
+    }
 }
 
 fn default_http_listen() -> String {
@@ -151,6 +332,8 @@ impl Default for HttpConfig {
             proxy_send_timeout_ms: default_proxy_send_timeout_ms(),
             client_max_body_size: default_client_max_body_size(),
             proxy_request_buffer_size: default_proxy_request_buffer_size(),
+            compression: CompressionConfig::default(),
+            request_id: false,
         }
     }
 }
@@ -184,6 +367,9 @@ pub enum LoadBalanceAlgorithm {
     LeastConn,
     IpHash,
     Random,
+    /// Ketama-style consistent hashing on `hash_key`; adding or removing a server only
+    /// remaps the keys that belonged to it (nginx `hash ... consistent`).
+    ConsistentHash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +438,11 @@ pub struct UpstreamConfig {
 
     #[serde(default = "default_true")]
     pub verify_tls: bool,
+
+    /// Key for `consistent_hash`: `$remote_addr` (default), `$request_uri`, `$uri`,
+    /// `$host`, `$http_<header>`, `$cookie_<name>` or `$arg_<name>`.
+    #[serde(default)]
+    pub hash_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,17 +473,29 @@ pub struct VirtualHost {
     pub tls: Option<TlsConfig>,
     #[serde(default)]
     pub routes: Vec<RouteRule>,
+
+    /// Custom error pages: status code (e.g. "404", or "5xx" for a whole class) to an
+    /// HTML file on disk, like nginx `error_page`.
+    #[serde(default)]
+    pub error_pages: HashMap<String, String>,
 }
 
 fn default_vhost_port() -> u16 {
     8000
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TlsConfig {
+    #[serde(default)]
     pub cert_path: String,
 
+    #[serde(default)]
     pub key_path: String,
+
+    /// Obtain and renew the certificate automatically via ACME instead of reading
+    /// `cert_path`/`key_path`.
+    #[serde(default)]
+    pub acme: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -506,6 +709,30 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub cache: Option<CacheConfig>,
+
+    /// Overrides `http.compression.enabled` for this route.
+    #[serde(default)]
+    pub compression: Option<bool>,
+
+    #[serde(default)]
+    pub cors: Option<CorsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CorsConfig {
+    /// Allowed origins; `*` allows any origin.
+    #[serde(default)]
+    pub allow_origins: Vec<String>,
+    #[serde(default)]
+    pub allow_methods: Vec<String>,
+    #[serde(default)]
+    pub allow_headers: Vec<String>,
+    #[serde(default)]
+    pub expose_headers: Vec<String>,
+    #[serde(default)]
+    pub allow_credentials: bool,
+    #[serde(default)]
+    pub max_age_secs: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -550,6 +777,8 @@ impl Default for RouteRule {
             proxy_next_upstream: None,
             access_log: true,
             cache: None,
+            compression: None,
+            cors: None,
         }
     }
 }
@@ -589,6 +818,7 @@ impl Default for FerrixConfig {
                     expected_status: 200,
                 }),
                 verify_tls: true,
+                hash_key: None,
             },
         );
 
@@ -642,6 +872,7 @@ impl Default for FerrixConfig {
                     ..Default::default()
                 },
             ],
+            error_pages: Default::default(),
         };
 
         Self {
@@ -650,6 +881,9 @@ impl Default for FerrixConfig {
             real_ip: RealIpConfig::default(),
             upstreams,
             vhosts: vec![default_vhost],
+            acme: Default::default(),
+            metrics: Default::default(),
+            streams: Vec::new(),
         }
     }
 }

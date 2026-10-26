@@ -195,6 +195,7 @@ export function App() {
                 onClearLogs={() => setLiveLogs([])}
                 isStreamingPaused={isStreamingPaused}
                 onTogglePause={() => setIsStreamingPaused(!isStreamingPaused)}
+                metricsDisabled={metrics?.enabled === false}
               />
             }
           />

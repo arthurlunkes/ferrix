@@ -1,6 +1,6 @@
 use regex::Regex;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::{AdminAuthMode, FerrixConfig, RouteMatchType, RouteTargetType, VirtualHost};
@@ -124,44 +124,69 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
         validate_vhost_routes(cfg, vhost, &base, &mut report);
 
         if let Some(tls) = &vhost.tls {
-            for (field, path) in [("cert_path", &tls.cert_path), ("key_path", &tls.key_path)] {
-                if !Path::new(path).is_file() {
-                    report.warn(
-                        format!("{}.tls.{}", base, field),
-                        format!("o arquivo '{}' não existe no momento", path),
+            if tls.acme {
+                if crate::acme::domains_for(vhost).is_empty() {
+                    report.error(
+                        format!("{}.tls.acme", base),
+                        "ACME precisa de pelo menos um server_name com domínio exato \
+                         (curingas e regex não podem ser validados por HTTP-01)"
+                            .to_string(),
                     );
+                }
+            } else {
+                for (field, path) in [("cert_path", &tls.cert_path), ("key_path", &tls.key_path)] {
+                    if !Path::new(path).is_file() {
+                        report.warn(
+                            format!("{}.tls.{}", base, field),
+                            format!("o arquivo '{}' não existe no momento", path),
+                        );
+                    }
                 }
             }
         }
     }
 
-    validate_shared_tls_ports(cfg, &mut report);
+    validate_acme(cfg, &mut report);
+
+    for (i, st) in cfg.streams.iter().enumerate() {
+        let base = format!("streams[{}]", i);
+        if st.listen.parse::<std::net::SocketAddr>().is_err() {
+            report.error(
+                format!("{}.listen", base),
+                format!("'{}' não é um endereço host:porta válido", st.listen),
+            );
+        }
+        if !cfg.upstreams.contains_key(&st.upstream) {
+            report.error(
+                format!("{}.upstream", base),
+                format!("o upstream '{}' não existe", st.upstream),
+            );
+        }
+    }
 
     report
 }
 
-fn validate_shared_tls_ports(cfg: &FerrixConfig, report: &mut ValidationReport) {
-    let mut first_tls_vhost_by_port: HashMap<u16, &str> = HashMap::new();
-
-    for vhost in &cfg.vhosts {
-        if vhost.tls.is_none() {
-            continue;
-        }
-        match first_tls_vhost_by_port.get(&vhost.listen_port) {
-            None => {
-                first_tls_vhost_by_port.insert(vhost.listen_port, &vhost.id);
-            }
-            Some(first_id) => {
-                report.warn(
-                    format!("vhosts[{}].tls", vhost.id),
-                    format!(
-                        "a porta {} já usa o certificado do host '{}'; o Ferrix ainda não \
-                         escolhe certificado por SNI, então este aqui é ignorado",
-                        vhost.listen_port, first_id
-                    ),
-                );
-            }
-        }
+fn validate_acme(cfg: &FerrixConfig, report: &mut ValidationReport) {
+    let uses_acme = cfg
+        .vhosts
+        .iter()
+        .any(|v| v.tls.as_ref().is_some_and(|t| t.acme));
+    if !uses_acme {
+        return;
+    }
+    let serves_port_80 = cfg
+        .vhosts
+        .iter()
+        .any(|v| v.listen_port == 80 && v.tls.is_none())
+        || cfg.http.listen.ends_with(":80");
+    if !serves_port_80 {
+        report.warn(
+            "acme",
+            "nenhum host HTTP escuta na porta 80; a Let's Encrypt valida o domínio \
+             (desafio HTTP-01) pela porta 80"
+                .to_string(),
+        );
     }
 }
 
@@ -261,6 +286,10 @@ fn validate_upstreams(cfg: &FerrixConfig, report: &mut ValidationReport) {
             let tpath = format!("{}.targets[{}].url", base, i);
             match url::Url::parse(&target.url) {
                 Ok(u) if u.scheme() == "http" || u.scheme() == "https" => {}
+                // Layer-4 targets are only meaningful for pools used by `streams`.
+                Ok(u)
+                    if (u.scheme() == "tcp" || u.scheme() == "udp")
+                        && cfg.streams.iter().any(|s| s.upstream == upstream.name) => {}
                 Ok(u) => report.error(
                     &tpath,
                     format!("esquema '{}' não suportado; use http ou https", u.scheme()),

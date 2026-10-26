@@ -1,9 +1,11 @@
 use axum::http::HeaderMap;
 use base64::prelude::*;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::config::{BasicAuthConfig, LimitConnConfig, RateLimitConfig, RateLimitMode};
@@ -25,8 +27,24 @@ struct Bucket {
     last_update: Instant,
 }
 
+// Buckets and counters are split over independent shards so worker threads that hit
+// different keys never wait on the same lock. Keys are any hashable value (e.g. a
+// `(route_id, client_ip)` tuple) reduced to a 64-bit hash, which avoids formatting a
+// String per request; a collision would only merge two clients' quotas.
+const SHARDS: usize = 64;
+
+fn key_hash(key: impl Hash) -> u64 {
+    let mut h = DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
+fn shards<T: Default>() -> Box<[Mutex<T>]> {
+    (0..SHARDS).map(|_| Mutex::new(T::default())).collect()
+}
+
 pub struct RateLimiter {
-    buckets: RwLock<HashMap<String, Bucket>>,
+    buckets: Box<[Mutex<HashMap<u64, Bucket>>]>,
 }
 
 impl Default for RateLimiter {
@@ -37,26 +55,25 @@ impl Default for RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        Self {
-            buckets: RwLock::new(HashMap::new()),
-        }
+        Self { buckets: shards() }
     }
 
-    pub fn check(&self, key: &str, config: &RateLimitConfig) -> RateLimitDecision {
+    pub fn check(&self, key: impl Hash, config: &RateLimitConfig) -> RateLimitDecision {
         let rate = config.requests_per_second as f64;
         if rate <= 0.0 {
             return RateLimitDecision::Reject;
         }
         let burst = config.burst as f64;
         let now = crate::clock::now();
+        let key = key_hash(key);
 
-        let mut map = match self.buckets.write() {
+        let mut map = match self.buckets[key as usize % SHARDS].lock() {
             Ok(m) => m,
 
             Err(_) => return RateLimitDecision::Allow,
         };
 
-        let bucket = map.entry(key.to_string()).or_insert(Bucket {
+        let bucket = map.entry(key).or_insert(Bucket {
             excess: 0.0,
             last_update: now,
         });
@@ -89,22 +106,34 @@ impl RateLimiter {
 
     pub fn sweep(&self) {
         let now = crate::clock::now();
-        if let Ok(mut map) = self.buckets.write() {
-            map.retain(|_, b| {
-                now.duration_since(b.last_update) < BUCKET_IDLE_TTL || b.excess > 0.0
-            });
+        for shard in self.buckets.iter() {
+            if let Ok(mut map) = shard.lock() {
+                map.retain(|_, b| {
+                    now.duration_since(b.last_update) < BUCKET_IDLE_TTL || b.excess > 0.0
+                });
+            }
         }
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.buckets.read().map(|m| m.len()).unwrap_or(0)
+        self.buckets
+            .iter()
+            .map(|s| s.lock().map(|m| m.len()).unwrap_or(0))
+            .sum()
     }
 }
 
-#[derive(Default)]
+type CounterShard = Mutex<HashMap<u64, Arc<AtomicI64>>>;
+
 pub struct ConnLimiter {
-    counters: RwLock<HashMap<String, Arc<AtomicI64>>>,
+    counters: Box<[CounterShard]>,
+}
+
+impl Default for ConnLimiter {
+    fn default() -> Self {
+        Self { counters: shards() }
+    }
 }
 
 pub struct ConnGuard {
@@ -122,23 +151,18 @@ impl ConnLimiter {
         Self::default()
     }
 
-    fn counter_for(&self, key: &str) -> Arc<AtomicI64> {
-        if let Ok(map) = self.counters.read() {
-            if let Some(c) = map.get(key) {
-                return c.clone();
-            }
+    fn counter_for(&self, key: u64) -> Arc<AtomicI64> {
+        match self.counters[key as usize % SHARDS].lock() {
+            Ok(mut map) => map
+                .entry(key)
+                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
+                .clone(),
+            Err(_) => Arc::new(AtomicI64::new(0)),
         }
-        let mut map = match self.counters.write() {
-            Ok(m) => m,
-            Err(_) => return Arc::new(AtomicI64::new(0)),
-        };
-        map.entry(key.to_string())
-            .or_insert_with(|| Arc::new(AtomicI64::new(0)))
-            .clone()
     }
 
-    pub fn acquire(&self, key: &str, config: &LimitConnConfig) -> Option<ConnGuard> {
-        let counter = self.counter_for(key);
+    pub fn acquire(&self, key: impl Hash, config: &LimitConnConfig) -> Option<ConnGuard> {
+        let counter = self.counter_for(key_hash(key));
         let previous = counter.fetch_add(1, Ordering::AcqRel);
         if previous >= config.max_connections as i64 {
             counter.fetch_sub(1, Ordering::AcqRel);
@@ -148,8 +172,10 @@ impl ConnLimiter {
     }
 
     pub fn sweep(&self) {
-        if let Ok(mut map) = self.counters.write() {
-            map.retain(|_, c| c.load(Ordering::Relaxed) > 0);
+        for shard in self.counters.iter() {
+            if let Ok(mut map) = shard.lock() {
+                map.retain(|_, c| c.load(Ordering::Relaxed) > 0);
+            }
         }
     }
 }
@@ -358,7 +384,7 @@ mod tests {
         let rl = RateLimiter::new();
         let cfg = limit(1000, 0, RateLimitMode::NoDelay);
         for i in 0..100 {
-            rl.check(&format!("ip-{}", i), &cfg);
+            rl.check(format!("ip-{}", i), &cfg);
         }
         assert_eq!(rl.len(), 100);
 
@@ -410,7 +436,8 @@ mod tests {
         drop(cl.acquire("ocioso", &cfg));
         cl.sweep();
 
-        assert_eq!(cl.counters.read().unwrap().len(), 1);
+        let live: usize = cl.counters.iter().map(|s| s.lock().unwrap().len()).sum();
+        assert_eq!(live, 1);
     }
 
     fn matcher(entries: &[&str]) -> IpMatcher {

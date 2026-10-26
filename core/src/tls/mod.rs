@@ -65,6 +65,7 @@ mod tests {
             satisfy: Satisfy::All,
             tls,
             routes: vec![],
+            error_pages: Default::default(),
         }
     }
 
@@ -98,6 +99,7 @@ mod tests {
                 Some(TlsConfig {
                     cert_path: "/c.pem".into(),
                     key_path: "/k.pem".into(),
+                    acme: false,
                 }),
             )],
             ..Default::default()
@@ -119,6 +121,7 @@ mod tests {
                     Some(TlsConfig {
                         cert_path: "/primeiro.pem".into(),
                         key_path: "/primeiro-key.pem".into(),
+                        acme: false,
                     }),
                 ),
                 vhost(
@@ -126,6 +129,7 @@ mod tests {
                     Some(TlsConfig {
                         cert_path: "/segundo.pem".into(),
                         key_path: "/segundo-key.pem".into(),
+                        acme: false,
                     }),
                 ),
             ],
@@ -147,6 +151,7 @@ mod tests {
                     Some(TlsConfig {
                         cert_path: "/c.pem".into(),
                         key_path: "/k.pem".into(),
+                        acme: false,
                     }),
                 ),
             ],

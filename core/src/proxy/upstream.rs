@@ -1,11 +1,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::config::{LoadBalanceAlgorithm, UpstreamConfig, UpstreamTarget};
 use crate::health::HealthChecker;
+use crate::proxy::hashring::HashRing;
 
 pub struct UpstreamPoolManager {
     rr_indices: RwLock<HashMap<String, AtomicUsize>>,
@@ -63,26 +65,51 @@ impl UpstreamPoolManager {
         }
     }
 
-    pub fn select_targets(
+    /// Failover order for `consistent_hash` upstreams: ring order from the key's owner,
+    /// skipping unavailable servers, then the backups.
+    pub fn select_targets_hashed<'a>(
         &self,
-        upstream: &UpstreamConfig,
-        client_ip: &str,
-    ) -> Vec<UpstreamTarget> {
-        let live: Vec<&UpstreamTarget> = upstream.targets.iter().filter(|t| !t.down).collect();
-        if live.is_empty() {
+        upstream: &'a UpstreamConfig,
+        ring: &HashRing,
+        hash: u64,
+    ) -> Vec<&'a UpstreamTarget> {
+        let usable = |t: &&UpstreamTarget| !t.down && self.is_available(t);
+        let mut out: Vec<&UpstreamTarget> = ring
+            .order(hash)
+            .into_iter()
+            .filter_map(|i| upstream.targets.get(i))
+            .filter(usable)
+            .collect();
+        out.extend(upstream.targets.iter().filter(|t| t.backup).filter(usable));
+        if out.is_empty() {
+            // Everything looks unavailable: still try the key's owner, like the other
+            // algorithms do as a last resort.
+            out.extend(
+                ring.order(hash)
+                    .into_iter()
+                    .filter_map(|i| upstream.targets.get(i))
+                    .filter(|t| !t.down),
+            );
+        }
+        out
+    }
+
+    pub fn select_targets<'a>(
+        &self,
+        upstream: &'a UpstreamConfig,
+        client_ip: IpAddr,
+    ) -> Vec<&'a UpstreamTarget> {
+        let live = || upstream.targets.iter().filter(|t| !t.down);
+        if live().next().is_none() {
             return Vec::new();
         }
 
-        let primary: Vec<UpstreamTarget> = live
-            .iter()
+        let primary: Vec<&UpstreamTarget> = live()
             .filter(|t| !t.backup && self.is_available(t))
-            .map(|t| (*t).clone())
             .collect();
 
-        let backups: Vec<UpstreamTarget> = live
-            .iter()
+        let backups: Vec<&UpstreamTarget> = live()
             .filter(|t| t.backup && self.is_available(t))
-            .map(|t| (*t).clone())
             .collect();
 
         if !primary.is_empty() {
@@ -96,8 +123,7 @@ impl UpstreamPoolManager {
             return self.order_by_algorithm(upstream, backups, client_ip);
         }
 
-        let fallback: Vec<UpstreamTarget> = live.iter().map(|t| (*t).clone()).collect();
-        self.order_by_algorithm(upstream, fallback, client_ip)
+        self.order_by_algorithm(upstream, live().collect(), client_ip)
     }
 
     fn next_rr_index(&self, pool_name: &str, len: usize) -> usize {
@@ -120,12 +146,12 @@ impl UpstreamPoolManager {
         counter.fetch_add(1, Ordering::Relaxed) % len
     }
 
-    fn order_by_algorithm(
+    fn order_by_algorithm<'a>(
         &self,
         upstream: &UpstreamConfig,
-        pool: Vec<UpstreamTarget>,
-        client_ip: &str,
-    ) -> Vec<UpstreamTarget> {
+        mut pool: Vec<&'a UpstreamTarget>,
+        client_ip: IpAddr,
+    ) -> Vec<&'a UpstreamTarget> {
         if pool.len() <= 1 {
             return pool;
         }
@@ -133,41 +159,36 @@ impl UpstreamPoolManager {
         match upstream.algorithm {
             LoadBalanceAlgorithm::RoundRobin => {
                 let idx = self.next_rr_index(&upstream.name, pool.len());
-                rotate(pool, idx)
+                pool.rotate_left(idx);
+                pool
             }
             LoadBalanceAlgorithm::WeightedRoundRobin => {
-                let mut weighted: Vec<&UpstreamTarget> = Vec::new();
-                for t in &pool {
-                    for _ in 0..t.weight.max(1) {
-                        weighted.push(t);
+                let total: usize = pool.iter().map(|t| t.weight.max(1) as usize).sum();
+                let mut pick = self.next_rr_index(&upstream.name, total);
+                let mut idx = 0;
+                for (i, t) in pool.iter().enumerate() {
+                    let w = t.weight.max(1) as usize;
+                    if pick < w {
+                        idx = i;
+                        break;
                     }
+                    pick -= w;
                 }
-                if weighted.is_empty() {
-                    return pool;
-                }
-                let idx = self.next_rr_index(&upstream.name, weighted.len());
-                let primary = weighted[idx].clone();
-
-                let mut ordered = vec![primary.clone()];
-                ordered.extend(pool.into_iter().filter(|t| t.url != primary.url));
-                ordered
+                let primary = pool.remove(idx);
+                pool.insert(0, primary);
+                pool
             }
             LoadBalanceAlgorithm::LeastConn => {
-                let mut with_conns: Vec<(UpstreamTarget, i64)> = pool
-                    .into_iter()
-                    .map(|t| {
-                        let conns = self.active_conns(&t.url);
-                        (t, conns)
-                    })
-                    .collect();
-                with_conns.sort_by_key(|(_, c)| *c);
-                with_conns.into_iter().map(|(t, _)| t).collect()
+                pool.sort_by_cached_key(|t| self.active_conns(&t.url));
+                pool
             }
-            LoadBalanceAlgorithm::IpHash => {
+            // Without a ring (e.g. route tester) fall back to hashing the client address.
+            LoadBalanceAlgorithm::IpHash | LoadBalanceAlgorithm::ConsistentHash => {
                 let mut hasher = DefaultHasher::new();
                 client_ip.hash(&mut hasher);
                 let idx = (hasher.finish() as usize) % pool.len();
-                rotate(pool, idx)
+                pool.rotate_left(idx);
+                pool
             }
             LoadBalanceAlgorithm::Random => {
                 let nanos = std::time::SystemTime::now()
@@ -175,15 +196,11 @@ impl UpstreamPoolManager {
                     .unwrap_or_default()
                     .subsec_nanos() as usize;
                 let idx = nanos % pool.len();
-                rotate(pool, idx)
+                pool.rotate_left(idx);
+                pool
             }
         }
     }
-}
-
-fn rotate(pool: Vec<UpstreamTarget>, start: usize) -> Vec<UpstreamTarget> {
-    let len = pool.len();
-    (0..len).map(|i| pool[(start + i) % len].clone()).collect()
 }
 
 #[cfg(test)]
@@ -209,6 +226,7 @@ mod tests {
             targets,
             health_check: None,
             verify_tls: true,
+            hash_key: None,
         }
     }
 
@@ -216,7 +234,11 @@ mod tests {
         UpstreamPoolManager::new(Arc::new(HealthChecker::new()))
     }
 
-    fn urls(targets: &[UpstreamTarget]) -> Vec<&str> {
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn urls<'a>(targets: &[&'a UpstreamTarget]) -> Vec<&'a str> {
         targets.iter().map(|t| t.url.as_str()).collect()
     }
 
@@ -225,17 +247,17 @@ mod tests {
         let m = manager();
         let p = pool("p", vec![target("a"), target("b"), target("c")]);
 
-        assert_eq!(m.select_targets(&p, "1.1.1.1")[0].url, "a");
-        assert_eq!(m.select_targets(&p, "1.1.1.1")[0].url, "b");
-        assert_eq!(m.select_targets(&p, "1.1.1.1")[0].url, "c");
-        assert_eq!(m.select_targets(&p, "1.1.1.1")[0].url, "a");
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1"))[0].url, "a");
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1"))[0].url, "b");
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1"))[0].url, "c");
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1"))[0].url, "a");
     }
 
     #[test]
     fn every_candidate_is_offered_for_failover() {
         let m = manager();
         let p = pool("p", vec![target("a"), target("b"), target("c")]);
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
 
         assert_eq!(selected.len(), 3);
         assert_eq!(urls(&selected), vec!["a", "b", "c"]);
@@ -248,7 +270,7 @@ mod tests {
         fora.down = true;
         let p = pool("p", vec![target("a"), fora, target("c")]);
 
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
         assert_eq!(selected.len(), 2);
         assert!(!urls(&selected).contains(&"b"));
     }
@@ -260,7 +282,7 @@ mod tests {
         a.down = true;
         let p = pool("p", vec![a]);
 
-        assert!(m.select_targets(&p, "1.1.1.1").is_empty());
+        assert!(m.select_targets(&p, ip("1.1.1.1")).is_empty());
     }
 
     #[test]
@@ -270,7 +292,7 @@ mod tests {
         reserva.backup = true;
         let p = pool("p", vec![target("a"), reserva]);
 
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
         assert_eq!(urls(&selected), vec!["a", "reserva"]);
     }
 
@@ -283,7 +305,7 @@ mod tests {
         reserva.backup = true;
         let p = pool("p", vec![principal, reserva]);
 
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
         assert_eq!(urls(&selected), vec!["reserva"]);
     }
 
@@ -295,11 +317,11 @@ mod tests {
         let p = pool("p", vec![limitado, target("livre")]);
 
         m.inc_conn("limitado");
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
         assert_eq!(urls(&selected), vec!["livre"]);
 
         m.dec_conn("limitado");
-        assert_eq!(m.select_targets(&p, "1.1.1.1").len(), 2);
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1")).len(), 2);
     }
 
     #[test]
@@ -310,7 +332,7 @@ mod tests {
         let p = pool("p", vec![limitado]);
 
         m.inc_conn("unico");
-        assert_eq!(urls(&m.select_targets(&p, "1.1.1.1")), vec!["unico"]);
+        assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1"))), vec!["unico"]);
     }
 
     #[test]
@@ -319,9 +341,9 @@ mod tests {
         let mut p = pool("p", vec![target("a"), target("b"), target("c")]);
         p.algorithm = LoadBalanceAlgorithm::IpHash;
 
-        let first = m.select_targets(&p, "10.0.0.1")[0].url.clone();
+        let first = m.select_targets(&p, ip("10.0.0.1"))[0].url.clone();
         for _ in 0..10 {
-            assert_eq!(m.select_targets(&p, "10.0.0.1")[0].url, first);
+            assert_eq!(m.select_targets(&p, ip("10.0.0.1"))[0].url, first);
         }
     }
 
@@ -333,7 +355,7 @@ mod tests {
 
         let chosen: std::collections::HashSet<String> = (0..40)
             .map(|i| {
-                m.select_targets(&p, &format!("10.0.0.{}", i))[0]
+                m.select_targets(&p, ip(&format!("10.0.0.{}", i)))[0]
                     .url
                     .clone()
             })
@@ -350,7 +372,7 @@ mod tests {
 
         m.inc_conn("ocupado");
         m.inc_conn("ocupado");
-        assert_eq!(m.select_targets(&p, "1.1.1.1")[0].url, "ocioso");
+        assert_eq!(m.select_targets(&p, ip("1.1.1.1"))[0].url, "ocioso");
     }
 
     #[test]
@@ -363,7 +385,7 @@ mod tests {
 
         let mut pesado_count = 0;
         for _ in 0..40 {
-            if m.select_targets(&p, "1.1.1.1")[0].url == "pesado" {
+            if m.select_targets(&p, ip("1.1.1.1"))[0].url == "pesado" {
                 pesado_count += 1;
             }
         }
@@ -383,21 +405,23 @@ mod tests {
         let mut p = pool("p", vec![pesado, target("leve")]);
         p.algorithm = LoadBalanceAlgorithm::WeightedRoundRobin;
 
-        let selected = m.select_targets(&p, "1.1.1.1");
+        let selected = m.select_targets(&p, ip("1.1.1.1"));
         assert_eq!(selected.len(), 2);
     }
 
     #[test]
     fn empty_pool_yields_nothing() {
         let m = manager();
-        assert!(m.select_targets(&pool("p", vec![]), "1.1.1.1").is_empty());
+        assert!(m
+            .select_targets(&pool("p", vec![]), ip("1.1.1.1"))
+            .is_empty());
     }
 
     #[test]
     fn single_target_pool_is_returned_as_is() {
         let m = manager();
         let p = pool("p", vec![target("unico")]);
-        assert_eq!(urls(&m.select_targets(&p, "1.1.1.1")), vec!["unico"]);
+        assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1"))), vec!["unico"]);
     }
 
     #[test]

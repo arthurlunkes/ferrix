@@ -47,7 +47,20 @@ pub fn create_admin_router(state: AdminState) -> Router {
         ))
         .with_state(state.clone());
 
+    let metrics_route = Router::new()
+        .route("/metrics", get(prometheus_metrics))
+        .with_state(state.clone());
+    let metrics_route = if state.store.config().admin.metrics_public {
+        metrics_route
+    } else {
+        metrics_route.route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_auth,
+        ))
+    };
+
     let mut router = Router::new()
+        .merge(metrics_route)
         .route(
             "/",
             get(|| async {
@@ -76,6 +89,39 @@ pub fn create_admin_router(state: AdminState) -> Router {
     }
 
     router
+}
+
+async fn prometheus_metrics(State(state): State<AdminState>) -> axum::response::Response {
+    let config = state.store.config();
+    if !config.metrics.enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            "metrics are disabled; set \"metrics\": { \"enabled\": true } in ferrix.json",
+        )
+            .into_response();
+    }
+    let mut upstreams: Vec<(String, String, bool)> = config
+        .upstreams
+        .values()
+        .flat_map(|u| {
+            u.targets.iter().map(|t| {
+                (
+                    u.name.clone(),
+                    t.url.clone(),
+                    !t.down && state.health_checker.is_healthy(&t.url),
+                )
+            })
+        })
+        .collect();
+    upstreams.sort();
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        state.metrics.prometheus(&upstreams),
+    )
+        .into_response()
 }
 
 async fn require_admin_auth(

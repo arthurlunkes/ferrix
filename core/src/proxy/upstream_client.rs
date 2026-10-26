@@ -1,14 +1,14 @@
 use axum::body::{Body, Bytes};
-use axum::http::{HeaderMap, Method, Request, Response};
+use axum::http::{HeaderMap, Method, Response};
 use http_body::{Body as HttpBody, Frame, SizeHint};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::Sleep;
+use tokio_rustls::TlsConnector;
+
+use super::h1::{self, H1Error, RequestBody, Target};
 
 #[derive(Debug)]
 pub enum UpstreamError {
@@ -38,103 +38,95 @@ pub enum OutgoingBody {
     Streaming(Body),
 }
 
-const POOL_SHARDS: usize = 64;
-
-thread_local! {
-
-    static SHARD: usize = {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % POOL_SHARDS
-    };
-}
-
 pub struct UpstreamClient {
-    http: Box<[std::sync::OnceLock<Client<HttpConnector, Body>>]>,
-    connector: HttpConnector,
-    https: reqwest::Client,
+    connect_timeout: Duration,
     read_timeout: Duration,
+    verify_tls: bool,
+    tls: TlsConnector,
 }
 
 impl UpstreamClient {
     pub fn new(connect_timeout: Duration, read_timeout: Duration, verify_tls: bool) -> Self {
-        let mut connector = HttpConnector::new();
-        connector.set_connect_timeout(Some(connect_timeout));
-        connector.set_nodelay(true);
-
-        let http = (0..POOL_SHARDS)
-            .map(|_| std::sync::OnceLock::new())
-            .collect();
-
-        let https = reqwest::Client::builder()
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(100)
-            .connect_timeout(connect_timeout)
-            .read_timeout(read_timeout)
-            .danger_accept_invalid_certs(!verify_tls)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
         Self {
-            http,
-            connector,
-            https,
+            connect_timeout,
             read_timeout,
+            verify_tls,
+            tls: h1::tls_connector(verify_tls),
         }
     }
 
-    fn http_client(&self) -> &Client<HttpConnector, Body> {
-        let shard = SHARD.with(|s| *s);
-        self.http[shard].get_or_init(|| {
-            Client::builder(TokioExecutor::new())
-                .pool_idle_timeout(Duration::from_secs(90))
-                .pool_max_idle_per_host(100)
-                .build(self.connector.clone())
-        })
-    }
-
+    /// `base` is the target URL (`http://host:port`), `path` the path and query to request.
     pub async fn send(
         &self,
-        method: Method,
-        url: &str,
-        headers: HeaderMap,
+        method: &Method,
+        base: &str,
+        path: &str,
+        headers: &HeaderMap,
         body: OutgoingBody,
     ) -> Result<Response<Body>, UpstreamError> {
-        if url.starts_with("http://") {
-            self.send_plain(method, url, headers, body).await
-        } else {
-            self.send_tls(method, url, headers, body).await
-        }
-    }
-
-    async fn send_plain(
-        &self,
-        method: Method,
-        url: &str,
-        headers: HeaderMap,
-        body: OutgoingBody,
-    ) -> Result<Response<Body>, UpstreamError> {
-        let body = match body {
-            OutgoingBody::Empty => Body::empty(),
-            OutgoingBody::Buffered(b) => Body::from(b),
-            OutgoingBody::Streaming(b) => b,
-        };
-        let mut req = Request::builder()
-            .method(method)
-            .uri(url)
-            .body(body)
-            .map_err(|e| UpstreamError::Other(format!("Invalid upstream URL: {}", e)))?;
-        *req.headers_mut() = headers;
-
+        let base = base.trim_end_matches('/');
+        let target = Target::parse(base)
+            .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
+        let insecure = target.tls && !self.verify_tls;
         let deadline = tokio::time::Instant::from_std(crate::clock::now() + self.read_timeout);
-        let resp = match tokio::time::timeout_at(deadline, self.http_client().request(req)).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                let msg = format!("Error communicating with upstream: {}", e);
-                return Err(if e.is_connect() && is_timeout_error(&e) {
-                    UpstreamError::Timeout(msg)
+
+        let attempt = async {
+            let (full, mut streaming) = match body {
+                OutgoingBody::Streaming(b) => (None, Some(b)),
+                OutgoingBody::Buffered(b) if !b.is_empty() => (Some(b), None),
+                _ => (None, None),
+            };
+            let content_length = headers
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
+
+            // A pooled connection can be closed by the upstream at any moment; when that
+            // happens before any response byte arrives, the request is replayed once on
+            // a fresh connection. Streaming bodies can't be replayed, so they always use
+            // a new connection.
+            let mut reuse = streaming.is_none();
+            loop {
+                let pooled = if reuse {
+                    h1::pooled(base, insecure)
                 } else {
-                    UpstreamError::Other(msg)
-                });
+                    None
+                };
+                let reused = pooled.is_some();
+                let conn = match pooled {
+                    Some(c) => c,
+                    None => {
+                        let tls = target.tls.then_some((&self.tls, insecure));
+                        h1::connect(&target, base, self.connect_timeout, tls).await?
+                    }
+                };
+                let req_body = match (&full, streaming.take()) {
+                    (_, Some(b)) => RequestBody::Stream(b, content_length),
+                    (Some(b), None) => RequestBody::Full(b),
+                    (None, None) => RequestBody::Empty,
+                };
+                match h1::exchange(conn, method, path, target.authority, headers, req_body).await {
+                    Err(H1Error::Stale(_)) if reused => {
+                        reuse = false;
+                        continue;
+                    }
+                    other => return other,
+                }
+            }
+        };
+
+        let resp = match tokio::time::timeout_at(deadline, attempt).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(H1Error::ConnectTimeout)) => {
+                return Err(UpstreamError::Timeout(
+                    "Error communicating with upstream: connect timed out".to_string(),
+                ))
+            }
+            Ok(Err(e)) => {
+                return Err(UpstreamError::Other(format!(
+                    "Error communicating with upstream: {}",
+                    e
+                )))
             }
             Err(_) => {
                 return Err(UpstreamError::Timeout(
@@ -147,54 +139,6 @@ impl UpstreamClient {
         let body = Body::new(ReadTimeoutBody::new(incoming, self.read_timeout));
         Ok(Response::from_parts(parts, body))
     }
-
-    async fn send_tls(
-        &self,
-        method: Method,
-        url: &str,
-        headers: HeaderMap,
-        body: OutgoingBody,
-    ) -> Result<Response<Body>, UpstreamError> {
-        let mut req = self.https.request(method, url).headers(headers);
-        match body {
-            OutgoingBody::Empty => {}
-            OutgoingBody::Buffered(b) => req = req.body(b),
-            OutgoingBody::Streaming(b) => {
-                req = req.body(reqwest::Body::wrap_stream(b.into_data_stream()))
-            }
-        }
-
-        let res = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                UpstreamError::Timeout(e.to_string())
-            } else {
-                UpstreamError::Other(e.to_string())
-            }
-        })?;
-
-        let mut builder = Response::builder().status(res.status());
-        if let Some(h) = builder.headers_mut() {
-            *h = res.headers().clone();
-        }
-        use futures_util::TryStreamExt;
-        let stream = res.bytes_stream().map_err(std::io::Error::other);
-        builder
-            .body(Body::from_stream(stream))
-            .map_err(|e| UpstreamError::Other(e.to_string()))
-    }
-}
-
-fn is_timeout_error(e: &hyper_util::client::legacy::Error) -> bool {
-    let mut source = std::error::Error::source(e);
-    while let Some(err) = source {
-        if let Some(io) = err.downcast_ref::<std::io::Error>() {
-            if io.kind() == std::io::ErrorKind::TimedOut {
-                return true;
-            }
-        }
-        source = err.source();
-    }
-    false
 }
 
 struct ReadTimeoutBody<B> {

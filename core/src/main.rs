@@ -1,15 +1,13 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use ferrix::{admin, config, health, metrics, proxy, tls as tls_plan};
 
-use axum::extract::{ConnectInfo, Request, State};
-use axum::response::Response;
-use axum::Router;
-use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -77,43 +75,18 @@ enum Commands {
     },
 }
 
-#[derive(Clone)]
-struct ProxyListenerState {
-    engine: Arc<ProxyEngine>,
-    listen_port: u16,
-    is_tls: bool,
-}
-
-#[axum::debug_handler]
-async fn proxy_handler(
-    State(state): State<ProxyListenerState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    req: Request,
-) -> Response {
-    state
-        .engine
-        .handle_request(state.listen_port, state.is_tls, addr, req)
-        .await
-}
-
-fn proxy_router(engine: Arc<ProxyEngine>, listen_port: u16, is_tls: bool) -> Router {
-    Router::new()
-        .fallback(proxy_handler)
-        .with_state(ProxyListenerState {
-            engine,
-            listen_port,
-            is_tls,
-        })
-}
-
 #[cfg(unix)]
-fn spawn_workers<F, Fut>(addr: SocketAddr, workers: usize, serve: F)
-where
-    F: Fn(std::net::TcpListener) -> Fut + Send + Clone + 'static,
-    Fut: std::future::Future<Output = ()>,
-{
+fn spawn_workers(
+    addr: SocketAddr,
+    workers: usize,
+    engine: Arc<ProxyEngine>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+) {
     for worker in 0..workers.max(1) {
-        let serve = serve.clone();
+        // Each worker gets its own handle so per-request Arc clones touch a counter
+        // owned by that thread instead of one shared by every core.
+        let engine = Arc::new((*engine).clone());
+        let tls = tls.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("ferrix-worker-{}", worker))
             .spawn(move || {
@@ -127,10 +100,16 @@ where
                         return;
                     }
                 };
-                match bind_reuseport(addr) {
-                    Ok(listener) => runtime.block_on(serve(listener)),
-                    Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
-                }
+                let listener = match bind_reuseport(addr) {
+                    Ok(l) => l,
+                    Err(e) => return error!("Failed to bind Proxy listener to {}: {}", addr, e),
+                };
+                runtime.block_on(async move {
+                    match tokio::net::TcpListener::from_std(listener) {
+                        Ok(l) => ferrix::server::serve(l, engine, addr.port(), tls).await,
+                        Err(e) => error!("Proxy listener on {}: {}", addr, e),
+                    }
+                });
             });
         if let Err(e) = spawned {
             error!("Failed to start worker {} of {}: {}", worker, addr, e);
@@ -150,42 +129,27 @@ fn bind_reuseport(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     Ok(socket.into())
 }
 
-#[cfg(unix)]
+#[cfg(not(unix))]
+fn spawn_workers(
+    addr: SocketAddr,
+    _workers: usize,
+    engine: Arc<ProxyEngine>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+) {
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => ferrix::server::serve(l, engine, addr.port(), tls).await,
+            Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
+        }
+    });
+}
+
 fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, workers: usize) {
     info!(
         "Reverse Proxy Traffic listening on http://{} ({} workers)",
         addr, workers
     );
-    spawn_workers(addr, workers, move |listener| {
-        let app = proxy_router(engine.clone(), addr.port(), false);
-        async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(l) => l,
-                Err(e) => return error!("Proxy listener em {}: {}", addr, e),
-            };
-            let service = app.into_make_service_with_connect_info::<SocketAddr>();
-            if let Err(e) = axum::serve(listener, service).await {
-                error!("Proxy server on {} encountered an error: {}", addr, e);
-            }
-        }
-    });
-}
-
-#[cfg(not(unix))]
-fn spawn_plain_listener(addr: SocketAddr, engine: Arc<ProxyEngine>, _workers: usize) {
-    let app = proxy_router(engine, addr.port(), false);
-    tokio::spawn(async move {
-        match tokio::net::TcpListener::bind(&addr).await {
-            Ok(listener) => {
-                info!("Reverse Proxy Traffic listening on http://{}", addr);
-                let service = app.into_make_service_with_connect_info::<SocketAddr>();
-                if let Err(e) = axum::serve(listener, service).await {
-                    error!("Proxy server on {} encountered an error: {}", addr, e);
-                }
-            }
-            Err(e) => error!("Failed to bind Proxy listener to {}: {}", addr, e),
-        }
-    });
+    spawn_workers(addr, workers, engine, None);
 }
 
 fn spawn_tls_listener(
@@ -193,62 +157,25 @@ fn spawn_tls_listener(
     engine: Arc<ProxyEngine>,
     source: tls_plan::TlsSource,
     workers: usize,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let tls_config =
-            match RustlsConfig::from_pem_file(&source.cert_path, &source.key_path).await {
-                Ok(c) => c,
-                Err(e) => {
-                    return error!(
-                    "Failed to load TLS certificate for '{}' (cert: {}, key: {}) on port {}: {}. \
-                     This port will not start; other ports continue normally.",
-                    source.vhost_name, source.cert_path, source.key_path, addr.port(), e
-                )
-                }
-            };
-        info!(
-            "Reverse Proxy Traffic listening on https://{} (certificate for '{}', {} workers)",
-            addr, source.vhost_name, workers
-        );
-        serve_tls(addr, engine, tls_config, workers);
-    })
-}
-
-#[cfg(unix)]
-fn serve_tls(addr: SocketAddr, engine: Arc<ProxyEngine>, tls_config: RustlsConfig, workers: usize) {
-    spawn_workers(addr, workers, move |listener| {
-        let app = proxy_router(engine.clone(), addr.port(), true);
-        let tls_config = tls_config.clone();
-        async move {
-            let server = match axum_server::from_tcp_rustls(listener, tls_config) {
-                Ok(s) => s,
-                Err(e) => return error!("Proxy HTTPS listener em {}: {}", addr, e),
-            };
-            let service = app.into_make_service_with_connect_info::<SocketAddr>();
-            if let Err(e) = server.serve(service).await {
-                error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
-            }
-        }
-    });
-}
-
-#[cfg(not(unix))]
-fn serve_tls(
-    addr: SocketAddr,
-    engine: Arc<ProxyEngine>,
-    tls_config: RustlsConfig,
-    _workers: usize,
-) {
-    let app = proxy_router(engine, addr.port(), true);
-    tokio::spawn(async move {
-        let service = app.into_make_service_with_connect_info::<SocketAddr>();
-        if let Err(e) = axum_server::bind_rustls(addr, tls_config)
-            .serve(service)
-            .await
-        {
-            error!("Proxy HTTPS server on {} encountered an error: {}", addr, e);
-        }
-    });
+) -> Result<(), String> {
+    let resolver = ferrix::server::SniResolver::new(engine.store.clone(), addr.port())
+        .and_then(ferrix::server::tls_acceptor)
+        .map_err(|e| {
+            format!(
+                "Failed to load TLS certificates for port {} (first: '{}', cert: {}): {}. \
+                 This port will not start; other ports continue normally.",
+                addr.port(),
+                source.vhost_name,
+                source.cert_path,
+                e
+            )
+        })?;
+    info!(
+        "Reverse Proxy Traffic listening on https://{} (SNI certificates, {} workers)",
+        addr, workers
+    );
+    spawn_workers(addr, workers, engine, Some(resolver));
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -804,6 +731,7 @@ async fn run_server(args: Args) -> Result<(), String> {
 
     let store = Arc::new(ConfigStore::new(config, config_path.clone()));
     let metrics = MetricsCollector::new(1000);
+    metrics.start_rps_ticker();
     let health_checker = Arc::new(HealthChecker::new());
 
     health_checker
@@ -816,6 +744,7 @@ async fn run_server(args: Args) -> Result<(), String> {
         health_checker.clone(),
     ));
     proxy_engine.start_background_sweeper();
+    ferrix::acme::AcmeManager::new(store.clone(), proxy_engine.acme_challenges.clone()).start();
 
     let admin_router = create_admin_router(AdminState {
         store: store.clone(),
@@ -823,8 +752,13 @@ async fn run_server(args: Args) -> Result<(), String> {
         health_checker: health_checker.clone(),
     });
 
+    let admin_enabled = store.config().admin.enabled;
     let admin_listen_clone = admin_listen.clone();
     let admin_handle = tokio::spawn(async move {
+        if !admin_enabled {
+            info!("Control Plane API disabled (admin.enabled = false)");
+            return;
+        }
         match tokio::net::TcpListener::bind(&admin_listen_clone).await {
             Ok(listener) => {
                 info!(
@@ -843,7 +777,6 @@ async fn run_server(args: Args) -> Result<(), String> {
     });
 
     let proxy_workers = store.config().http.worker_threads;
-    let mut proxy_handles: Vec<JoinHandle<()>> = Vec::with_capacity(port_plan.len());
     let mut proxy_ports_summary = Vec::with_capacity(port_plan.len());
     for plan in &port_plan {
         let addr: SocketAddr = format!("{}:{}", proxy_host, plan.port)
@@ -853,12 +786,11 @@ async fn run_server(args: Args) -> Result<(), String> {
         match &plan.tls {
             Some(source) => {
                 proxy_ports_summary.push(format!("https://{}", addr));
-                proxy_handles.push(spawn_tls_listener(
-                    addr,
-                    proxy_engine.clone(),
-                    source.clone(),
-                    proxy_workers,
-                ));
+                if let Err(e) =
+                    spawn_tls_listener(addr, proxy_engine.clone(), source.clone(), proxy_workers)
+                {
+                    error!("{}", e);
+                }
             }
             None => {
                 proxy_ports_summary.push(format!("http://{}", addr));
@@ -866,6 +798,19 @@ async fn run_server(args: Args) -> Result<(), String> {
                 spawn_plain_listener(addr, proxy_engine.clone(), proxy_workers);
             }
         }
+    }
+
+    for stream in store.config().streams.clone() {
+        proxy_ports_summary.push(format!(
+            "{}://{} -> {}",
+            match stream.protocol {
+                config::StreamProtocol::Tcp => "tcp",
+                config::StreamProtocol::Udp => "udp",
+            },
+            stream.listen,
+            stream.upstream
+        ));
+        ferrix::stream::spawn(proxy_engine.clone(), stream);
     }
 
     let pid_file = pid_file_path(&args.config);
@@ -879,7 +824,9 @@ async fn run_server(args: Args) -> Result<(), String> {
     for port_url in &proxy_ports_summary {
         println!("│  🌐 Proxy:             {:<42}│", port_url);
     }
-    println!("│  ⚙️  Control Plane API: http://{:<42}│", admin_listen);
+    if admin_enabled {
+        println!("│  ⚙️  Control Plane API: http://{:<42}│", admin_listen);
+    }
     println!("│  📄 Configuration:     {:<42}│", config_path);
     println!("│                                                                  │");
     println!("│  💡 Tip: Run 'ferrix --help' to see all commands.                │");
@@ -938,9 +885,6 @@ async fn run_server(args: Args) -> Result<(), String> {
 
     let _ = std::fs::remove_file(&pid_file);
     admin_handle.abort();
-    for handle in &proxy_handles {
-        handle.abort();
-    }
 
     Ok(())
 }

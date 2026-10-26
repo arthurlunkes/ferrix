@@ -9,6 +9,7 @@ import {
   ArrowUpDown,
   Radio,
 } from "lucide-react";
+import { MetricsDisabledNotice } from "../components/MetricsDisabledNotice";
 import { RequestLog } from "../services/api";
 import { RequestDetailModal } from "../components/RequestDetailModal";
 
@@ -17,6 +18,7 @@ interface LiveRequestsProps {
   onClearLogs: () => void;
   isStreamingPaused: boolean;
   onTogglePause: () => void;
+  metricsDisabled?: boolean;
 }
 
 export const LiveRequests: React.FC<LiveRequestsProps> = ({
@@ -24,6 +26,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
   onClearLogs,
   isStreamingPaused,
   onTogglePause,
+  metricsDisabled,
 }) => {
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -88,7 +91,7 @@ export const LiveRequests: React.FC<LiveRequestsProps> = ({
 
   return (
     <div className="space-y-6">
-      {}
+      {metricsDisabled && <MetricsDisabledNotice />}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-[#111827]/90 border border-gray-800 rounded-2xl p-4 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">

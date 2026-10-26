@@ -58,13 +58,18 @@ pub async fn get_status(State(state): State<AdminState>) -> impl IntoResponse {
 }
 
 pub async fn get_metrics(State(state): State<AdminState>) -> impl IntoResponse {
-    Json(state.metrics.get_metrics_snapshot())
+    let mut snap = state.metrics.get_metrics_snapshot();
+    snap.enabled = state.store.config().metrics.enabled;
+    Json(snap)
 }
 
 pub async fn get_logs(
     State(state): State<AdminState>,
     Query(params): Query<LogsQuery>,
 ) -> impl IntoResponse {
+    if !state.store.config().metrics.enabled {
+        return Json(Vec::new());
+    }
     let limit = params.limit.unwrap_or(100).min(500);
     let logs = state
         .metrics

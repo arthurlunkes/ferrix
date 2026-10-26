@@ -1,10 +1,14 @@
+use axum::http::{HeaderName, HeaderValue};
 use regex::Regex;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{
-    validate::compile_route_regex, FerrixConfig, RouteMatchType, RouteRule, VirtualHost,
+    validate::compile_route_regex, FerrixConfig, LoadBalanceAlgorithm, RouteMatchType, RouteRule,
+    VirtualHost,
 };
 use crate::net::cidr::IpMatcher;
+use crate::proxy::hashring::HashRing;
 use crate::proxy::realip::RealIpResolver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +109,26 @@ impl ServerNamePattern {
     }
 }
 
+fn compile_response_headers(
+    vhost: &VirtualHost,
+    route: &RouteRule,
+) -> Vec<(HeaderName, HeaderValue)> {
+    let mut merged: Vec<(HeaderName, HeaderValue)> = Vec::new();
+    for (k, v) in vhost.headers.iter().chain(route.add_headers.iter()) {
+        let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) else {
+            continue;
+        };
+        match merged.iter_mut().find(|(n, _)| *n == name) {
+            Some(slot) => slot.1 = value,
+            None => merged.push((name, value)),
+        }
+    }
+    merged
+}
+
 #[derive(Debug)]
 struct CompiledRoute {
     match_type: RouteMatchType,
@@ -113,10 +137,12 @@ struct CompiledRoute {
     regex: Option<Regex>,
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
+
+    response_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl CompiledRoute {
-    fn build(route: &RouteRule) -> Self {
+    fn build(vhost: &VirtualHost, route: &RouteRule) -> Self {
         let regex = if route.match_type.is_regex() {
             compile_route_regex(route.match_type, &route.path_prefix).ok()
         } else {
@@ -128,6 +154,7 @@ impl CompiledRoute {
             regex,
             allowed_ips: IpMatcher::compile(&route.allowed_ips).0,
             denied_ips: IpMatcher::compile(&route.denied_ips).0,
+            response_headers: compile_response_headers(vhost, route),
         }
     }
 
@@ -157,6 +184,7 @@ pub struct CompiledConfig {
     pub config: Arc<FerrixConfig>,
     pub real_ip: RealIpResolver,
     vhosts: Vec<CompiledVHost>,
+    rings: HashMap<String, HashRing>,
 }
 
 impl CompiledConfig {
@@ -171,18 +199,33 @@ impl CompiledConfig {
                     .iter()
                     .filter_map(|n| ServerNamePattern::parse(n))
                     .collect(),
-                routes: v.routes.iter().map(CompiledRoute::build).collect(),
+                routes: v
+                    .routes
+                    .iter()
+                    .map(|r| CompiledRoute::build(v, r))
+                    .collect(),
                 allowed_ips: IpMatcher::compile(&v.allowed_ips).0,
                 denied_ips: IpMatcher::compile(&v.denied_ips).0,
             })
             .collect();
 
         let real_ip = RealIpResolver::new(&config.real_ip);
+        let rings = config
+            .upstreams
+            .iter()
+            .filter(|(_, u)| u.algorithm == LoadBalanceAlgorithm::ConsistentHash)
+            .map(|(name, u)| (name.clone(), HashRing::build(u)))
+            .collect();
         Self {
             config,
             real_ip,
             vhosts,
+            rings,
         }
+    }
+
+    pub fn hash_ring(&self, upstream: &str) -> Option<&HashRing> {
+        self.rings.get(upstream)
     }
 
     pub fn vhost_acl(&self, vhost_index: usize) -> Option<(&IpMatcher, &IpMatcher)> {
@@ -201,6 +244,20 @@ impl CompiledConfig {
             .routes
             .get(route_index)
             .map(|r| (&r.allowed_ips, &r.denied_ips))
+    }
+
+    // vhost-level `headers` overlaid with the route's `add_headers`, parsed once per
+    // config load instead of once per response.
+    pub fn route_response_headers(
+        &self,
+        vhost_index: usize,
+        route_index: usize,
+    ) -> &[(HeaderName, HeaderValue)] {
+        self.vhosts
+            .get(vhost_index)
+            .and_then(|v| v.routes.get(route_index))
+            .map(|r| r.response_headers.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn find_vhost(&self, host: &str, port: u16) -> Option<VHostMatch> {
@@ -400,6 +457,7 @@ mod tests {
             satisfy: Satisfy::All,
             tls: None,
             routes,
+            error_pages: Default::default(),
         }
     }
 

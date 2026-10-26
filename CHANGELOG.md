@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Compression (zstd, brotli, gzip) negotiated from `Accept-Encoding`, with static files compressed once and cached.
+- `ETag` / `Last-Modified` revalidation (`304`) and single byte ranges (`206`) for static files.
+- Several TLS certificates per port, chosen by SNI and reloaded on config changes.
+- Automatic certificates via ACME / Let's Encrypt (`tls.acme`, HTTP-01).
+- TCP/UDP stream proxying (`streams`), including import of nginx `stream {}` blocks.
+- `consistent_hash` load balancing (ketama ring on a configurable key).
+- Per-route CORS, per-vhost custom error pages and optional `X-Request-Id`.
+- Prometheus endpoint (`/metrics` on the admin port).
+- `admin.enabled` to run without the control plane.
+- The nginx importer converts `gzip*`, `hash ... consistent`, `error_page` and `stream`.
+
+### Changed
+- **Metrics are now opt-in** (`metrics.enabled`, default `false`). When disabled the proxy does no per-request bookkeeping.
+- Upstream requests use a built-in HTTP/1.1 client with a per-thread connection pool (HTTPS upstreams use rustls directly instead of reqwest).
+- Proxy ports are served by Ferrix's own accept loop (`TCP_NODELAY`, header/keep-alive timeouts applied).
+- Release builds use LTO and the mimalloc allocator; rate limiting and metrics counters are sharded to avoid cross-core contention.
+- The benchmark runs entirely in Docker, including Ferrix.
+
 - GitHub Actions CI/CD workflows for multi-platform test, lint, and automated binary releases.
 - Automated GitHub Pages documentation deployment using mdBook.
 - High-resolution widescreen repository banner (`docs/assets/ferrix-banner.png`).

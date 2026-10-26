@@ -1,3 +1,7 @@
+pub mod compress;
+pub mod cors;
+pub mod h1;
+pub mod hashring;
 pub mod matcher;
 pub mod middleware;
 pub mod realip;
@@ -18,7 +22,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::cache::ResponseCache;
 use crate::config::store::ConfigStore;
@@ -32,7 +35,7 @@ use crate::metrics::MetricsCollector;
 use matcher::CompiledConfig;
 use middleware::{AccessControl, AccessDecision, ConnLimiter, RateLimitDecision, RateLimiter};
 use realip::RealIpResolver;
-use static_files::StaticFileServer;
+use static_files::{StaticFileServer, StaticRequest};
 use upstream::UpstreamPoolManager;
 use upstream_client::{OutgoingBody, UpstreamClient, UpstreamError};
 use websocket::WebSocketProxy;
@@ -63,6 +66,7 @@ pub struct ProxyEngine {
     pub rate_limiter: Arc<RateLimiter>,
     pub conn_limiter: Arc<ConnLimiter>,
     pub response_cache: Arc<ResponseCache>,
+    pub acme_challenges: Arc<crate::acme::AcmeChallenges>,
     clients: Arc<RwLock<HashMap<ClientKey, Arc<UpstreamClient>>>>,
 }
 
@@ -84,6 +88,7 @@ impl ProxyEngine {
             rate_limiter,
             conn_limiter,
             response_cache: ResponseCache::new(),
+            acme_challenges: Arc::default(),
             clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -127,15 +132,28 @@ impl ProxyEngine {
         client_addr: SocketAddr,
         req: Request,
     ) -> Response {
-        let start_time = Instant::now();
-        self.metrics.inc_active_connections();
-
         let compiled = self.store.compiled();
+        let metrics_on = compiled.config.metrics.enabled;
+        let start_time = Instant::now();
+        if metrics_on {
+            self.metrics.inc_active_connections();
+        }
+
         let response = self
-            .route_and_serve(&compiled, listen_port, is_tls, client_addr, req, start_time)
+            .route_and_serve(
+                &compiled,
+                listen_port,
+                is_tls,
+                client_addr,
+                req,
+                start_time,
+                metrics_on,
+            )
             .await;
 
-        self.metrics.dec_active_connections();
+        if metrics_on {
+            self.metrics.dec_active_connections();
+        }
         response
     }
 
@@ -148,44 +166,52 @@ impl ProxyEngine {
         client_addr: SocketAddr,
         req: Request,
         start_time: Instant,
+        metrics_on: bool,
     ) -> Response {
         let method = req.method().clone();
         let uri = req.uri().clone();
         let req_headers = req.headers();
 
         let client_ip = compiled.real_ip.resolve(client_addr.ip(), req_headers);
-        let client_ip_str = client_ip.to_string();
 
-        let host = req_headers
+        let host_header = req_headers
             .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .to_string();
-
-        let user_agent = req_headers
-            .get(header::USER_AGENT)
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string());
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static(""));
+        let user_agent = req_headers.get(header::USER_AGENT).cloned();
 
         let is_ws = WebSocketProxy::is_websocket_request(req_headers);
 
-        let response = match compiled.find_vhost(&host, listen_port) {
+        let host = host_header
+            .to_str()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        let acme_token = uri
+            .path()
+            .strip_prefix(crate::acme::CHALLENGE_PREFIX)
+            .and_then(|t| self.acme_challenges.key_authorization(t));
+        let response = match compiled.find_vhost(host, listen_port) {
+            _ if acme_token.is_some() => (
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                acme_token.unwrap_or_default(),
+            )
+                .into_response(),
             Some(m) => {
                 let vhost = &compiled.config.vhosts[m.vhost_index];
-                self.serve_vhost(
-                    compiled,
-                    m.vhost_index,
-                    vhost,
-                    is_tls,
-                    client_ip,
-                    &client_ip_str,
-                    req,
-                    is_ws,
-                )
-                .await
+                let resp = self
+                    .serve_vhost(
+                        compiled,
+                        m.vhost_index,
+                        vhost,
+                        is_tls,
+                        client_ip,
+                        req,
+                        is_ws,
+                    )
+                    .await;
+                apply_error_page(vhost, resp).await
             }
             None => (
                 StatusCode::NOT_FOUND,
@@ -194,17 +220,21 @@ impl ProxyEngine {
                 .into_response(),
         };
 
+        if !metrics_on {
+            return response;
+        }
+
         let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
         let status_code = response.status().as_u16();
         let skip_log = response.extensions().get::<SkipAccessLog>().is_some();
 
         let log = RequestLog {
-            id: Uuid::new_v4().to_string(),
+            id: next_request_id(),
             timestamp: crate::clock::utc_now(),
-            client_ip: client_ip_str,
-            method: method.to_string(),
-            uri: uri.to_string(),
-            host,
+            client_ip,
+            method,
+            uri,
+            host: host_header,
             status: status_code,
             latency_ms: (elapsed_ms * 100.0).round() / 100.0,
 
@@ -214,18 +244,9 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            upstream: response
-                .headers()
-                .get("X-Ferrix-Upstream")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
+            upstream: response.headers().get("X-Ferrix-Upstream").cloned(),
             user_agent,
             is_websocket: is_ws,
-            error: if status_code >= 400 {
-                Some(format!("HTTP {}", status_code))
-            } else {
-                None
-            },
         };
 
         self.metrics.record_request(log, !skip_log);
@@ -260,7 +281,6 @@ impl ProxyEngine {
         vhost: &VirtualHost,
         is_tls: bool,
         client_ip: IpAddr,
-        client_ip_str: &str,
         req: Request,
         is_ws: bool,
     ) -> Response {
@@ -274,7 +294,7 @@ impl ProxyEngine {
         match AccessControl::evaluate(vhost.satisfy, ip_ok, vhost.basic_auth.as_ref(), headers) {
             AccessDecision::Allow => {}
             AccessDecision::Forbidden => {
-                warn!(ip = %client_ip_str, "IP recusado pelo controle de acesso");
+                warn!(ip = %client_ip, "IP recusado pelo controle de acesso");
                 return (
                     StatusCode::FORBIDDEN,
                     "403 Forbidden - Access Denied by Ferrix ACL",
@@ -293,8 +313,8 @@ impl ProxyEngine {
 
         let _vhost_conn_guard = match &vhost.limit_conn {
             Some(cfg) => {
-                let key = format!("vhost:{}:{}", vhost.id, client_ip_str);
-                match self.conn_limiter.acquire(&key, cfg) {
+                let key = ("vhost", vhost.id.as_str(), client_ip);
+                match self.conn_limiter.acquire(key, cfg) {
                     Some(g) => Some(g),
                     None => return limit_response(cfg.status, "connection limit"),
                 }
@@ -303,27 +323,19 @@ impl ProxyEngine {
         };
 
         if let Some(rl) = &vhost.rate_limit {
-            let key = format!("vhost:{}:{}", vhost.id, client_ip_str);
-            match self.rate_limiter.check(&key, rl) {
+            let key = ("vhost", vhost.id.as_str(), client_ip);
+            match self.rate_limiter.check(key, rl) {
                 RateLimitDecision::Allow => {}
                 RateLimitDecision::Delay(d) => tokio::time::sleep(d).await,
                 RateLimitDecision::Reject => {
-                    warn!(ip = %client_ip_str, "limite de taxa do host excedido");
+                    warn!(ip = %client_ip, "limite de taxa do host excedido");
                     return rate_limit_response(rl);
                 }
             }
         }
 
-        self.process_vhost_routes(
-            compiled,
-            vhost_index,
-            vhost,
-            is_tls,
-            client_ip_str,
-            req,
-            is_ws,
-        )
-        .await
+        self.process_vhost_routes(compiled, vhost_index, vhost, is_tls, client_ip, req, is_ws)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -333,7 +345,7 @@ impl ProxyEngine {
         vhost_index: usize,
         vhost: &VirtualHost,
         is_tls: bool,
-        client_ip: &str,
+        client_ip: IpAddr,
         req: Request,
         is_ws: bool,
     ) -> Response {
@@ -349,11 +361,7 @@ impl ProxyEngine {
             || route.basic_auth.is_some()
         {
             let route_ip_ok = match compiled.route_acl(vhost_index, matched.route_index) {
-                Some((allow, deny)) => match client_ip.parse() {
-                    Ok(ip) => AccessControl::is_ip_allowed(ip, allow, deny),
-
-                    Err(_) => false,
-                },
+                Some((allow, deny)) => AccessControl::is_ip_allowed(client_ip, allow, deny),
                 None => true,
             };
 
@@ -384,8 +392,8 @@ impl ProxyEngine {
 
         let _route_conn_guard = match &route.limit_conn {
             Some(cfg) => {
-                let key = format!("route:{}:{}", route.id, client_ip);
-                match self.conn_limiter.acquire(&key, cfg) {
+                let key = ("route", route.id.as_str(), client_ip);
+                match self.conn_limiter.acquire(key, cfg) {
                     Some(g) => Some(g),
                     None => return limit_response(cfg.status, "connection limit"),
                 }
@@ -394,20 +402,46 @@ impl ProxyEngine {
         };
 
         if let Some(rl) = &route.rate_limit {
-            let key = format!("route:{}:{}", route.id, client_ip);
-            match self.rate_limiter.check(&key, rl) {
+            let key = ("route", route.id.as_str(), client_ip);
+            match self.rate_limiter.check(key, rl) {
                 RateLimitDecision::Allow => {}
                 RateLimitDecision::Delay(d) => tokio::time::sleep(d).await,
                 RateLimitDecision::Reject => return rate_limit_response(rl),
             }
         }
 
-        let mut custom_headers = vhost.headers.clone();
-        for (k, v) in &route.add_headers {
-            custom_headers.insert(k.clone(), v.clone());
-        }
-
         let (mut parts, body) = req.into_parts();
+
+        if let Some(cors_cfg) = &route.cors {
+            if let Some(r) = cors::preflight(cors_cfg, &parts.method, &parts.headers) {
+                return r;
+            }
+        }
+        let origin = route
+            .cors
+            .as_ref()
+            .and_then(|_| parts.headers.get(header::ORIGIN).cloned());
+
+        let request_id = if compiled.config.http.request_id {
+            let id = parts
+                .headers
+                .get(X_REQUEST_ID)
+                .filter(|v| !v.is_empty() && v.len() <= 200)
+                .cloned()
+                .unwrap_or_else(new_request_id);
+            parts.headers.insert(X_REQUEST_ID, id.clone());
+            Some(id)
+        } else {
+            None
+        };
+
+        let compression = &compiled.config.http.compression;
+        let encoding =
+            if route.compression.unwrap_or(compression.enabled) && parts.method != Method::HEAD {
+                compress::negotiate(&parts.headers, compression)
+            } else {
+                None
+            };
 
         let mut resp = match route.target_type {
             RouteTargetType::Redirect => {
@@ -432,8 +466,17 @@ impl ProxyEngine {
                     &req_path
                 };
 
-                match StaticFileServer::serve_file(root_dir, file_path, route.try_files.as_deref())
-                    .await
+                let static_req = StaticRequest {
+                    headers: &parts.headers,
+                    encoding: encoding.map(|a| (a, compression)),
+                };
+                match StaticFileServer::serve_file(
+                    root_dir,
+                    file_path,
+                    route.try_files.as_deref(),
+                    &static_req,
+                )
+                .await
                 {
                     Ok(r) => r,
                     Err(code) => {
@@ -458,7 +501,14 @@ impl ProxyEngine {
                         .into_response();
                 };
 
-                let targets = self.pool_manager.select_targets(upstream_cfg, client_ip);
+                let targets = match compiled.hash_ring(upstream_name) {
+                    Some(ring) => {
+                        let hash = ring.key.hash(&parts, client_ip);
+                        self.pool_manager
+                            .select_targets_hashed(upstream_cfg, ring, hash)
+                    }
+                    None => self.pool_manager.select_targets(upstream_cfg, client_ip),
+                };
                 if targets.is_empty() {
                     return (
                         StatusCode::BAD_GATEWAY,
@@ -531,13 +581,21 @@ impl ProxyEngine {
             }
         };
 
-        for (k, v) in custom_headers {
-            if let (Ok(name), Ok(val)) = (
-                HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(&v),
-            ) {
-                resp.headers_mut().insert(name, val);
+        if let Some(algo) = encoding {
+            if compress::should_compress(&resp, compression) {
+                resp = compress::compress(resp, algo, compression.level);
             }
+        }
+
+        for (name, value) in compiled.route_response_headers(vhost_index, matched.route_index) {
+            resp.headers_mut().insert(name.clone(), value.clone());
+        }
+
+        if let Some(cors_cfg) = &route.cors {
+            cors::decorate(cors_cfg, origin.as_ref(), &mut resp);
+        }
+        if let Some(id) = request_id {
+            resp.headers_mut().insert(X_REQUEST_ID, id);
         }
 
         if !route.access_log {
@@ -554,9 +612,9 @@ impl ProxyEngine {
         route: &RouteRule,
         upstream_name: &str,
         upstream_cfg: &UpstreamConfig,
-        targets: Vec<UpstreamTarget>,
+        targets: Vec<&UpstreamTarget>,
         is_tls: bool,
-        client_ip: &str,
+        client_ip: IpAddr,
         req: Request,
     ) -> Response {
         let http = &compiled.config.http;
@@ -658,8 +716,6 @@ impl ProxyEngine {
                 }
             }
 
-            let full_target_url = format!("{}{}", target.url.trim_end_matches('/'), target_path);
-
             self.pool_manager.inc_conn(&target.url);
             let start = crate::clock::now();
 
@@ -671,7 +727,7 @@ impl ProxyEngine {
             };
 
             let result = client
-                .send(method.clone(), &full_target_url, headers, outgoing)
+                .send(&method, &target.url, &target_path, &headers, outgoing)
                 .await;
             self.pool_manager.dec_conn(&target.url);
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -871,6 +927,69 @@ fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -
     }
 }
 
+/// Swaps the body of an error response for the vhost's custom page (`error_pages`),
+/// keeping the status. Responses that came from an upstream are passed through, like
+/// nginx without `proxy_intercept_errors`.
+async fn apply_error_page(vhost: &VirtualHost, resp: Response) -> Response {
+    let status = resp.status();
+    if status.as_u16() < 400
+        || vhost.error_pages.is_empty()
+        || resp.headers().contains_key("X-Ferrix-Upstream")
+    {
+        return resp;
+    }
+    let code = status.as_u16().to_string();
+    let class = format!("{}xx", status.as_u16() / 100);
+    let Some(path) = vhost
+        .error_pages
+        .get(&code)
+        .or_else(|| vhost.error_pages.get(&class))
+    else {
+        return resp;
+    };
+    let page = match tokio::fs::read(path).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(path = %path, error = %e, "custom error page not readable");
+            return resp;
+        }
+    };
+    let (mut parts, _) = resp.into_parts();
+    parts.headers.remove(header::CONTENT_ENCODING);
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(page.len()));
+    Response::from_parts(parts, Body::from(page))
+}
+
+const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+
+fn new_request_id() -> HeaderValue {
+    let id = uuid::Uuid::new_v4();
+    HeaderValue::from_str(id.simple().encode_lower(&mut uuid::Uuid::encode_buffer()))
+        .unwrap_or_else(|_| HeaderValue::from_static("0"))
+}
+
+// Unique per process without a shared atomic: the high bits identify the thread, the low
+// bits count requests on it, so workers never contend on the same cache line.
+fn next_request_id() -> u64 {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_THREAD: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static NEXT: Cell<u64> = Cell::new(NEXT_THREAD.fetch_add(1, Ordering::Relaxed) << 40);
+    }
+    NEXT.with(|n| {
+        let id = n.get();
+        n.set(id + 1);
+        id
+    })
+}
+
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in [
         header::CONNECTION,
@@ -890,9 +1009,10 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
 fn forwarded_headers(
     incoming: &HeaderMap,
     route: &RouteRule,
-    client_ip: &str,
+    client_ip: IpAddr,
     is_tls: bool,
 ) -> HeaderMap {
+    let client_ip = &client_ip.to_string();
     let scheme = scheme_str(is_tls);
     let mut headers = incoming.clone();
     strip_hop_by_hop(&mut headers);
@@ -1305,6 +1425,7 @@ mod tests {
             satisfy: crate::config::Satisfy::All,
             tls: None,
             routes: Vec::new(),
+            error_pages: Default::default(),
         };
         let get_x = parts_full("/x", &[("host", "a.com")]);
         let head_x = Request::builder()

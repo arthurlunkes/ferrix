@@ -9,6 +9,7 @@ import {
   Radio,
   ArrowUpRight,
 } from "lucide-react";
+import { MetricsDisabledNotice } from "../components/MetricsDisabledNotice";
 import {
   AreaChart,
   Area,
@@ -115,7 +116,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-6">
-      {}
+      {metrics?.enabled === false && <MetricsDisabledNotice />}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           title="Total Requests"

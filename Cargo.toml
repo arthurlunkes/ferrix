@@ -13,3 +13,8 @@ repository = "https://github.com/arthurlunkes/ferrix"
 homepage = "https://arthurlunkes.github.io/ferrix"
 documentation = "https://arthurlunkes.github.io/ferrix"
 readme = "README.md"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
