@@ -1,10 +1,25 @@
 # Contributing to Ferrix
 
-Thanks for your interest! All help is welcome: bug fixes, new features, documentation, tests or ideas.
+Thanks for your interest! Ferrix is open source under the Apache-2.0 license, and all help is welcome: bug fixes, new features, documentation, translations, tests or ideas. First-time contributors are very welcome — if you're unsure about anything, just open an issue or a draft PR and ask.
+
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Security problems go through [SECURITY.md](SECURITY.md), not public issues.
+
+## Development setup
+
+```bash
+git clone https://github.com/<your-user>/ferrix.git && cd ferrix
+cargo build --workspace                       # Rust core
+(cd backend && npm install && npm run build)  # Node.js backend
+(cd frontend && npm install && npm run dev)   # React dashboard with hot reload
+./target/debug/ferrix --config ferrix.json    # creates ferrix.json on first run
+node test_backends.js                         # optional mock upstreams
+```
+
+Where things live: `core/` (Rust proxy engine), `backend/` (Node.js API + dashboard server), `frontend/` (React UI), `docs/` (mdBook docs), `benchmarks/` (nginx comparison).
 
 ## Reporting issues
 
-Open an _issue_ describing:
+Open an [_issue_](https://github.com/arthurlunkes/ferrix/issues/new/choose) describing:
 
 - what you did (commands, the relevant part of `ferrix.json` — **without tokens or passwords**);
 - what you expected to happen;

@@ -7,6 +7,8 @@
   <a href="https://arthurlunkes.github.io/ferrix"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation"></a>
   <a href="https://semver.org"><img src="https://img.shields.io/badge/semver-2.0.0-orange.svg" alt="SemVer"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"></a>
+  <a href="https://github.com/arthurlunkes/ferrix/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"><img src="https://img.shields.io/github/issues/arthurlunkes/ferrix/good%20first%20issue?label=good%20first%20issues&color=7057ff" alt="Good first issues"></a>
 </p>
 
 # Ferrix — A high-performance web server and reverse proxy in Rust, inspired by Nginx
@@ -14,6 +16,8 @@
 **Ferrix** is an asynchronous web server and reverse proxy built in **Rust** (Tokio, Hyper and Axum). It comes with a modern admin web UI in **React + Tailwind CSS** and a **REST API** for dynamic configuration without restarts (_zero-downtime hot-reload_), real-time metrics and live request inspection via Server-Sent Events (SSE).
 
 > **Where does the name come from?** _Ferrix_ combines **ferr-**, from _ferrum_ (Latin for iron) — because iron, over time, turns into **rust**, the language it is written in — with the trailing **-x** of **nginx**, the server that inspired it. In other words: an nginx made of rust. 🦀
+
+> **🌱 Ferrix is open source (Apache-2.0) and looking for contributors!** Whether you know Rust, React, Node.js, or just want to improve the docs or test it against your nginx configs, your help is welcome. Jump to [How you can help](#-how-you-can-help).
 
 ---
 
@@ -223,9 +227,21 @@ Performance contributions are very welcome!
 
 ---
 
-## 🤝 Contributing
+## 🤝 How you can help
 
-Contributions are very welcome! Open an _issue_ to report bugs or suggest ideas, or send a _pull request_. See [CONTRIBUTING.md](CONTRIBUTING.md) for the step-by-step guide.
+Ferrix is a community project: you are free to use it, fork it, change it and send improvements back. No contribution is too small.
+
+**Good places to start:**
+
+- 🦀 **Rust core** — close the gap with nginx on proxy throughput and large files (`sendfile`/zero-copy), add missing nginx directives, write tests.
+- 🔄 **nginx importer** — try `core/src/nginx` with your real `nginx.conf` files and report what doesn't convert.
+- ⚛️ **Dashboard** — UX improvements, new charts, accessibility (`frontend/`).
+- 📚 **Docs** — the docs in [`docs/`](docs/README.md) are in Portuguese; English translations are very welcome.
+- 🐛 **Testing** — run it, break it, and [open an issue](https://github.com/arthurlunkes/ferrix/issues/new/choose).
+
+Look for issues labeled [`good first issue`](https://github.com/arthurlunkes/ferrix/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/arthurlunkes/ferrix/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). Read [CONTRIBUTING.md](CONTRIBUTING.md) for the setup and PR workflow, and please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Found a vulnerability? See [SECURITY.md](SECURITY.md).
+
+If you like the project, a ⭐ on GitHub helps others find it!
 
 ## 📄 License
 
