@@ -92,6 +92,9 @@ fn spawn_workers(
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
+                    // File reads that can't use sendfile are rare; don't let bursts
+                    // grow a large pool of idle threads (each with its own stack/heap).
+                    .max_blocking_threads(2)
                     .build()
                 {
                     Ok(rt) => rt,
@@ -188,6 +191,14 @@ fn main() -> ExitCode {
     runtime.block_on(async_main())
 }
 
+#[cfg(unix)]
+fn configured_worker_threads() -> usize {
+    // On Unix the proxy runs on its own per-core worker threads; this shared runtime
+    // only carries the admin API, health checks, ACME and TCP/UDP streams.
+    2
+}
+
+#[cfg(not(unix))]
 fn configured_worker_threads() -> usize {
     let default = std::thread::available_parallelism()
         .map(|n| n.get())

@@ -5,7 +5,7 @@ use logger::RequestLog;
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
@@ -49,14 +49,25 @@ struct Stripe {
     buckets: [AtomicU64; BUCKETS.len() + 1],
     latency_sum_us: AtomicU64,
 
-    latencies: Box<[AtomicU64]>,
+    // Allocated on first use, so a Ferrix with metrics disabled never pays for them.
+    latencies: OnceLock<Box<[AtomicU64]>>,
     latency_head: AtomicUsize,
 
-    log_slots: Box<[Mutex<Option<RequestLog>>]>,
+    log_slots: OnceLock<Box<[Mutex<Option<RequestLog>>]>>,
     log_head: AtomicUsize,
 }
 
 impl Stripe {
+    fn latencies(&self) -> &[AtomicU64] {
+        self.latencies
+            .get_or_init(|| (0..LATENCY_WINDOW).map(|_| AtomicU64::new(0)).collect())
+    }
+
+    fn log_slots(&self) -> &[Mutex<Option<RequestLog>>] {
+        self.log_slots
+            .get_or_init(|| (0..LOG_CAPACITY).map(|_| Mutex::new(None)).collect())
+    }
+
     fn new() -> Self {
         Self {
             requests: AtomicU64::new(0),
@@ -65,9 +76,9 @@ impl Stripe {
             active: AtomicI64::new(0),
             buckets: Default::default(),
             latency_sum_us: AtomicU64::new(0),
-            latencies: (0..LATENCY_WINDOW).map(|_| AtomicU64::new(0)).collect(),
+            latencies: OnceLock::new(),
             latency_head: AtomicUsize::new(0),
-            log_slots: (0..LOG_CAPACITY).map(|_| Mutex::new(None)).collect(),
+            log_slots: OnceLock::new(),
             log_head: AtomicUsize::new(0),
         }
     }
@@ -169,7 +180,7 @@ impl MetricsCollector {
             .fetch_add((log.latency_ms * 1000.0) as u64, Ordering::Relaxed);
 
         let i = s.latency_head.fetch_add(1, Ordering::Relaxed) % LATENCY_WINDOW;
-        s.latencies[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
+        s.latencies()[i].store(log.latency_ms.to_bits(), Ordering::Relaxed);
 
         if !log_line {
             return;
@@ -180,7 +191,7 @@ impl MetricsCollector {
         }
 
         let slot = s.log_head.fetch_add(1, Ordering::AcqRel) % LOG_CAPACITY;
-        if let Ok(mut l) = s.log_slots[slot].lock() {
+        if let Ok(mut l) = s.log_slots()[slot].lock() {
             *l = Some(log);
         }
     }
@@ -195,11 +206,14 @@ impl MetricsCollector {
 
         let mut all: Vec<RequestLog> = Vec::new();
         for s in self.stripes.iter() {
+            let Some(slots) = s.log_slots.get() else {
+                continue;
+            };
             let head = s.log_head.load(Ordering::Acquire);
             let filled = head.min(LOG_CAPACITY);
             for k in 1..=filled {
                 let idx = (head - k) % LOG_CAPACITY;
-                let Ok(slot) = s.log_slots[idx].lock() else {
+                let Ok(slot) = slots[idx].lock() else {
                     continue;
                 };
                 let Some(log) = slot.as_ref() else { continue };
@@ -237,9 +251,12 @@ impl MetricsCollector {
 
         let mut sorted: Vec<f64> = Vec::new();
         for s in self.stripes.iter() {
+            let Some(latencies) = s.latencies.get() else {
+                continue;
+            };
             let filled = s.latency_head.load(Ordering::Relaxed).min(LATENCY_WINDOW);
             sorted.extend(
-                s.latencies[..filled]
+                latencies[..filled]
                     .iter()
                     .map(|a| f64::from_bits(a.load(Ordering::Relaxed))),
             );

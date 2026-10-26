@@ -77,10 +77,12 @@ pub async fn serve(
             // Plain HTTP/1.1 goes through Ferrix's own fast path first; it hands the
             // connection to hyper for anything it doesn't handle itself.
             let conn = match tls {
-                None => match crate::h1server::serve(tcp, addr, &engine, port, &fast).await {
-                    crate::h1server::Outcome::Done => return,
-                    crate::h1server::Outcome::Handoff(tcp, prefix) => Conn::Plain(tcp, prefix),
-                },
+                None => {
+                    match Box::pin(crate::h1server::serve(tcp, addr, &engine, port, &fast)).await {
+                        crate::h1server::Outcome::Done => return,
+                        crate::h1server::Outcome::Handoff(tcp, prefix) => Conn::Plain(tcp, prefix),
+                    }
+                }
                 Some(acceptor) => Conn::Tls(acceptor, tcp),
             };
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
@@ -96,26 +98,33 @@ pub async fn serve(
                 }
             });
 
-            let result = match conn {
-                Conn::Plain(tcp, prefix) => {
-                    let io = crate::h1server::Rewind::new(tcp, prefix);
-                    builder
-                        .serve_connection_with_upgrades(TokioIo::new(io), service)
-                        .await
+            // Boxed: hyper's connection state is only needed for handed-off connections.
+            // Boxed: hyper's connection state is only needed for handed-off connections.
+            let result = Box::pin(async move {
+                match conn {
+                    Conn::Plain(tcp, prefix) => {
+                        let io = crate::h1server::Rewind::new(tcp, prefix);
+                        Some(
+                            builder
+                                .serve_connection_with_upgrades(TokioIo::new(io), service)
+                                .await,
+                        )
+                    }
+                    Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
+                        Ok(stream) => Some(
+                            builder
+                                .serve_connection_with_upgrades(TokioIo::new(stream), service)
+                                .await,
+                        ),
+                        Err(e) => {
+                            debug!(%addr, error = %e, "TLS handshake failed");
+                            None
+                        }
+                    },
                 }
-                Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
-                    Ok(stream) => {
-                        builder
-                            .serve_connection_with_upgrades(TokioIo::new(stream), service)
-                            .await
-                    }
-                    Err(e) => {
-                        debug!(%addr, error = %e, "TLS handshake failed");
-                        return;
-                    }
-                },
-            };
-            if let Err(e) = result {
+            })
+            .await;
+            if let Some(Err(e)) = result {
                 debug!(%addr, error = %e, "connection closed with error");
             }
         });

@@ -7,6 +7,7 @@ WORKDIR /src
 RUN apk add --no-cache musl-dev
 
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY core ./core
 
 RUN cargo build --release --workspace

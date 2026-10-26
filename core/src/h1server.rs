@@ -67,12 +67,17 @@ pub async fn serve(
     port: u16,
     settings: &Settings,
 ) -> Outcome {
-    let mut buf = BytesMut::with_capacity(8 * 1024);
+    let mut buf = BytesMut::with_capacity(2 * 1024);
     let mut out: Vec<u8> = Vec::with_capacity(1024);
     let mut first = true;
 
     loop {
         // Wait for (the rest of) a request head.
+        // Like nginx's keep-alive handling: an idle connection gives its read buffer back
+        // instead of holding it for as long as the client keeps the socket open.
+        if !first && buf.is_empty() && buf.capacity() > 0 {
+            buf = BytesMut::new();
+        }
         let wait = if first && buf.is_empty() {
             settings.header_timeout
         } else if buf.is_empty() {
@@ -108,7 +113,9 @@ pub async fn serve(
         *req.version_mut() = head.version;
         *req.headers_mut() = head.headers;
 
-        let resp = engine.handle_request(port, false, addr, req).await;
+        // Boxed so the (large) request state machine only exists while a request is in
+        // flight; an idle keep-alive connection holds just this loop's small state.
+        let resp = Box::pin(engine.handle_request(port, false, addr, req)).await;
         if write_response(&mut tcp, &mut out, resp, is_head, http10, keep_alive)
             .await
             .is_err()
@@ -157,7 +164,7 @@ async fn read_head(
         if buf.len() >= MAX_HEAD {
             return Err(HeadError::Bad(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE));
         }
-        buf.reserve(8 * 1024);
+        buf.reserve(2 * 1024);
         let read = crate::clock::timeout_at_ms(deadline, tcp.read_buf(buf)).await;
         match read {
             Ok(Ok(0)) | Ok(Err(_)) => return Ok(None),
@@ -632,5 +639,43 @@ mod tests {
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("content-length: 5\r\n") && !s.contains("999"));
         assert!(s.contains("date: ") && s.ends_with("\r\n\r\n"));
+    }
+}
+
+#[cfg(test)]
+mod footprint {
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn idle_connections_stay_small() {
+        let store = Arc::new(crate::config::store::ConfigStore::new(
+            Default::default(),
+            "x",
+        ));
+        let engine = crate::proxy::ProxyEngine::new(
+            store,
+            crate::metrics::MetricsCollector::new(0),
+            Arc::new(crate::health::HealthChecker::new()),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tcp = tokio::net::TcpStream::connect(l.local_addr().unwrap())
+            .await
+            .unwrap();
+        let settings = super::Settings {
+            header_timeout: std::time::Duration::ZERO,
+            keepalive_timeout: std::time::Duration::ZERO,
+        };
+        let addr = "127.0.0.1:1".parse().unwrap();
+        let fut = super::serve(tcp, addr, &engine, 1, &settings);
+        eprintln!(
+            "h1server::serve future = {} bytes",
+            std::mem::size_of_val(&fut)
+        );
+        let req = axum::http::Request::new(axum::body::Body::empty());
+        let hr = engine.handle_request(1, false, addr, req);
+        eprintln!(
+            "handle_request future = {} bytes",
+            std::mem::size_of_val(&hr)
+        );
     }
 }

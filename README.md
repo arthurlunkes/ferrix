@@ -221,7 +221,7 @@ METRICS=1 benchmarks/run.sh    # Ferrix with metrics enabled
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. nginx still uses far less memory (~10 MB vs. ~55 MB), which is the next focus.
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. Memory under the same load is ~15–19 MB for Ferrix vs. ~10 MB for nginx (it was ~55 MB before the memory work below).
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
@@ -230,7 +230,8 @@ With `metrics.enabled` the cost is about 4–9%.
 - **Coarse per-worker timers and a cached clock**, like nginx's timer tree and `ngx_time_update`: no clock syscalls per request, which matters on hosts without a TSC.
 - **Built-in HTTP/1.1 upstream client with a per-thread connection pool** (like Pingora): no channels or extra tasks per request, no locks, and response headers parsed without copying values.
 - **No shared hot spots:** metrics counters, rate-limit buckets and request IDs are sharded per thread, and per-route headers are compiled when the config loads.
-- **LTO + mimalloc** release builds.
+- **LTO + mimalloc** release builds, with mimalloc committing memory on demand instead of up front.
+- **Small idle footprint:** an idle keep-alive connection holds ~2 KB (request state is boxed only while a request runs), read buffers start at 2 KB and are released when a connection goes idle (like nginx's keep-alive handling), metrics storage is only allocated when metrics are on, and file checks are plain `stat` calls instead of a growing blocking-thread pool.
 - **In-memory static file cache** (files up to 1 MB, revalidated against the disk every second) and a **cached clock** updated every millisecond, like nginx's `ngx_time_update`.
 
 Performance contributions are very welcome!

@@ -29,6 +29,9 @@ use tokio_rustls::TlsConnector;
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_HEADERS: usize = 128;
 const READ_CHUNK: usize = 16 * 1024;
+// Most upstream responses (head + small body) fit here; bigger bodies grow the buffer
+// in READ_CHUNK steps.
+const HEAD_CHUNK: usize = 4 * 1024;
 const MAX_IDLE_PER_HOST: usize = 256;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -362,7 +365,7 @@ pub async fn exchange(
     }
     conn.stream.flush().await.map_err(H1Error::Io)?;
 
-    let mut buf = BytesMut::with_capacity(READ_CHUNK);
+    let mut buf = BytesMut::with_capacity(HEAD_CHUNK);
     let (parts, kind, keep_alive) = read_head(&mut conn.stream, &mut buf, method).await?;
 
     let mut body = H1Body {
@@ -427,7 +430,7 @@ async fn read_head(
         if buf.len() >= MAX_HEAD_BYTES {
             return Err(H1Error::Protocol("response head too large"));
         }
-        buf.reserve(READ_CHUNK);
+        buf.reserve(HEAD_CHUNK);
         let n = stream.read_buf(buf).await.map_err(|e| {
             if received_any {
                 H1Error::Io(e)

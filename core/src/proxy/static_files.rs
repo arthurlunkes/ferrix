@@ -373,8 +373,10 @@ async fn respond_large(
     if let Conditional::NotModified = check_conditional(&meta, req.headers) {
         return Ok(not_modified(&meta));
     }
-    let mut file = tokio::fs::File::open(&path)
-        .await
+    // A plain open is a fast syscall; going through tokio::fs would park the request on
+    // the blocking thread pool for it.
+    let mut file = std::fs::File::open(&path)
+        .map(tokio::fs::File::from_std)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match parse_range(req.headers, &meta) {
         RangeReq::Satisfiable(s, e) => {
@@ -399,8 +401,10 @@ async fn respond_large(
     }
 }
 
+// A synchronous stat, like nginx does: the inode is hot in the kernel cache, so this costs
+// microseconds, while tokio::fs would hop to (and grow) the blocking thread pool.
 async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
-    let meta = tokio::fs::metadata(&entry.file_path).await;
+    let meta = std::fs::metadata(&entry.file_path);
     let same = match meta {
         Ok(m) => {
             m.is_file() && m.len() == entry.meta.len && m.modified().ok() == entry.meta.modified
