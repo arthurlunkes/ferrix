@@ -231,20 +231,22 @@ For meaningful numbers, close other heavy programs (browsers, IDEs, other contai
 
 "–": Traefik and Pingora are proxies only and don't serve files. The other servers run with the minimal configs in [`benchmarks/conf/`](benchmarks/conf/) (4 workers/threads each, no extra tuning), so they may do better with tuning their own docs recommend; contributions that improve those configs are welcome. Pingora is measured through the minimal proxy in [`benchmarks/pingora/`](benchmarks/pingora/).
 
-**Ferrix vs. nginx memory in detail**, measured right after each load (`wrk`, 256 connections), each scenario in a fresh process. **PSS** (proportional set size) is the fair number for comparing one Ferrix process with nginx's master + 4 workers: RSS counts the memory the nginx processes share (binary, libraries) once per process, PSS splits it between them.
+**Memory in detail**, measured in a fresh container for each situation, right after that load alone (`wrk`, 256 connections, 8 s). The "Memory" column of the table above is different: it's measured once, after all three scenarios ran back to back. Values are **PSS** (proportional set size), the fair number for comparing a single process (Ferrix, Traefik, Pingora, Pingap, Ferron) with nginx's master + 4 workers: plain RSS counts the memory nginx's processes share (binary, libraries) once per process, which would make nginx look about twice as big (~21 MB).
 
-| Situation               | Ferrix PSS | nginx PSS   | Ferrix RSS | nginx RSS (sum) |
-| ----------------------- | ---------- | ----------- | ---------- | --------------- |
-| Idle, right after start | **9.5 MB** | 11.1 MB     | 11.8 MB    | 21.8 MB         |
-| 1.4 KB static file      | 12.7 MB    | **11.3 MB** | 16.7 MB    | 22.7 MB         |
-| 133 KB static file      | 17–28 MB   | **11.4 MB** | 18–33 MB   | 23.3 MB         |
-| Reverse proxy           | 17.3 MB    | **11.4 MB** | 19.9 MB    | 23.2 MB         |
+| Server | Idle | After 1.4 KB file load | After 133 KB file load | After proxy load |
+| --- | --- | --- | --- | --- |
+| **Ferrix** | 9.1 MB | 13.3 MB | 20.2 MB | **14.9 MB** |
+| nginx 1.27 | 10.5 MB | **10.7 MB** | **10.6 MB** | 10.8 MB |
+| Pingora 0.9 | **5.2 MB** | – | – | 18.8 MB |
+| Pingap 0.16.1 | 22.5 MB | 40.8 MB | 46.0 MB | 39.6 MB |
+| Ferron 2.8.1 | 19.9 MB | 42.3 MB | 44.8 MB | 59.9 MB |
+| Traefik 3.5.6 | 80.4 MB | – | – | 177.9 MB |
 
 Before the memory work, Ferrix's RSS was 25 MB idle and 56–68 MB under these loads.
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.6× faster than nginx, is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and within ~5% on proxying. Among the Rust and Go alternatives, it is ~1.8× Pingora's proxy throughput and well ahead of Pingap, Ferron and Traefik in every scenario, while using less memory than all of them; only nginx uses less. Idle, Ferrix now uses less memory than nginx (9.5 vs. 11.1 MB PSS); under load it uses 1.1–2.5× nginx's ~11 MB, and the 133 KB file case varies the most. The remaining gap is mostly the Tokio runtime, the allocator and per-connection state, which is the next focus.
+**Where we stand:** Ferrix serves small static files ~1.6× faster than nginx, is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and within ~5% on proxying. Among the Rust and Go alternatives, it is ~1.8× Pingora's proxy throughput and well ahead of Pingap, Ferron and Traefik in every scenario, while using less memory than all of them under load (Pingora's minimal proxy is lighter only when idle); only nginx stays lower under load. Idle, Ferrix uses less memory than nginx (9.1 vs. 10.5 MB PSS); under load it uses 1.2–1.9× nginx's ~11 MB, with the 133 KB file case the highest. The remaining gap is mostly the Tokio runtime, the allocator and per-connection state, which is the next focus.
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
