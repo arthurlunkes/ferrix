@@ -185,6 +185,8 @@ pub struct CompiledConfig {
     pub real_ip: RealIpResolver,
     vhosts: Vec<CompiledVHost>,
     rings: HashMap<String, HashRing>,
+    // `X-Ferrix-Upstream` value for each target, by upstream name and target index.
+    target_headers: HashMap<String, Vec<Option<HeaderValue>>>,
 }
 
 impl CompiledConfig {
@@ -216,12 +218,29 @@ impl CompiledConfig {
             .filter(|(_, u)| u.algorithm == LoadBalanceAlgorithm::ConsistentHash)
             .map(|(name, u)| (name.clone(), HashRing::build(u)))
             .collect();
+        let target_headers = config
+            .upstreams
+            .iter()
+            .map(|(name, u)| {
+                let values = u
+                    .targets
+                    .iter()
+                    .map(|t| HeaderValue::from_str(&t.url).ok())
+                    .collect();
+                (name.clone(), values)
+            })
+            .collect();
         Self {
             config,
             real_ip,
             vhosts,
             rings,
+            target_headers,
         }
+    }
+
+    pub fn target_header(&self, upstream: &str, index: usize) -> Option<&HeaderValue> {
+        self.target_headers.get(upstream)?.get(index)?.as_ref()
     }
 
     pub fn hash_ring(&self, upstream: &str) -> Option<&HashRing> {

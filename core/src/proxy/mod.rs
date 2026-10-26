@@ -17,9 +17,8 @@ use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, TryStreamExt};
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::warn;
 
@@ -43,13 +42,6 @@ use websocket::WebSocketProxy;
 #[derive(Debug, Clone, Copy)]
 struct SkipAccessLog;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ClientKey {
-    connect_ms: u64,
-    read_ms: u64,
-    verify_tls: bool,
-}
-
 #[derive(Debug)]
 enum RequestBody {
     Buffered(Bytes),
@@ -67,7 +59,6 @@ pub struct ProxyEngine {
     pub conn_limiter: Arc<ConnLimiter>,
     pub response_cache: Arc<ResponseCache>,
     pub acme_challenges: Arc<crate::acme::AcmeChallenges>,
-    clients: Arc<RwLock<HashMap<ClientKey, Arc<UpstreamClient>>>>,
 }
 
 impl ProxyEngine {
@@ -89,7 +80,6 @@ impl ProxyEngine {
             conn_limiter,
             response_cache: ResponseCache::new(),
             acme_challenges: Arc::default(),
-            clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -106,25 +96,6 @@ impl ProxyEngine {
         });
     }
 
-    fn client_for(&self, key: ClientKey) -> Arc<UpstreamClient> {
-        if let Ok(map) = self.clients.read() {
-            if let Some(c) = map.get(&key) {
-                return c.clone();
-            }
-        }
-
-        let client = Arc::new(UpstreamClient::new(
-            Duration::from_millis(key.connect_ms),
-            Duration::from_millis(key.read_ms),
-            key.verify_tls,
-        ));
-
-        if let Ok(mut map) = self.clients.write() {
-            map.insert(key, client.clone());
-        }
-        client
-    }
-
     pub async fn handle_request(
         &self,
         listen_port: u16,
@@ -134,7 +105,12 @@ impl ProxyEngine {
     ) -> Response {
         let compiled = self.store.compiled();
         let metrics_on = compiled.config.metrics.enabled;
-        let start_time = Instant::now();
+        // A precise clock read only when someone will look at the latency.
+        let start_time = if metrics_on {
+            Instant::now()
+        } else {
+            crate::clock::now()
+        };
         if metrics_on {
             self.metrics.inc_active_connections();
         }
@@ -244,7 +220,7 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            upstream: response.headers().get("X-Ferrix-Upstream").cloned(),
+            upstream: response.headers().get(X_FERRIX_UPSTREAM).cloned(),
             user_agent,
             is_websocket: is_ws,
         };
@@ -618,28 +594,26 @@ impl ProxyEngine {
         req: Request,
     ) -> Response {
         let http = &compiled.config.http;
-        let method = req.method().clone();
-        let path_and_query = req
-            .uri()
+        let (mut parts, body) = req.into_parts();
+        let method = &parts.method;
+        let path_and_query = parts
+            .uri
             .path_and_query()
             .map(|pq| pq.as_str())
-            .unwrap_or("/")
-            .to_string();
+            .unwrap_or("/");
 
-        let target_path = if route.strip_prefix {
+        let target_path: std::borrow::Cow<str> = if route.strip_prefix {
             let stripped = path_and_query
                 .strip_prefix(&route.path_prefix)
-                .unwrap_or(&path_and_query);
+                .unwrap_or(path_and_query);
             if stripped.starts_with('/') {
-                stripped.to_string()
+                stripped.into()
             } else {
-                format!("/{}", stripped)
+                format!("/{}", stripped).into()
             }
         } else {
-            path_and_query
+            path_and_query.into()
         };
-
-        let (parts, body) = req.into_parts();
 
         if let Some(declared) = parts
             .headers
@@ -683,16 +657,19 @@ impl ProxyEngine {
             1
         };
 
-        let client_key = ClientKey {
-            connect_ms: route
-                .proxy_connect_timeout_ms
-                .unwrap_or(http.proxy_connect_timeout_ms),
-            read_ms: route
-                .proxy_read_timeout_ms
-                .unwrap_or(http.proxy_read_timeout_ms),
-            verify_tls: upstream_cfg.verify_tls,
-        };
-        let client = self.client_for(client_key);
+        let client = UpstreamClient::new(
+            Duration::from_millis(
+                route
+                    .proxy_connect_timeout_ms
+                    .unwrap_or(http.proxy_connect_timeout_ms),
+            ),
+            Duration::from_millis(
+                route
+                    .proxy_read_timeout_ms
+                    .unwrap_or(http.proxy_read_timeout_ms),
+            ),
+            upstream_cfg.verify_tls,
+        );
 
         let attempt_deadline = next_upstream
             .timeout_ms
@@ -702,6 +679,10 @@ impl ProxyEngine {
             RequestBody::Buffered(b) => (Some(b), None),
             RequestBody::Streaming(b) => (None, Some(b)),
         };
+
+        prepare_forwarded_headers(&mut parts.headers, route, client_ip, is_tls);
+        let headers = &parts.headers;
+        let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn;
 
         let mut last_error: Option<String> = None;
 
@@ -716,10 +697,14 @@ impl ProxyEngine {
                 }
             }
 
-            self.pool_manager.inc_conn(&target.url);
-            let start = crate::clock::now();
+            // Connection counts only matter to least_conn and max_conns; skip the shared
+            // counters otherwise.
+            let counted = track_conns || target.max_conns.is_some();
+            if counted {
+                self.pool_manager.inc_conn(&target.url);
+            }
+            let start_ms = crate::clock::mono_ms();
 
-            let headers = forwarded_headers(&parts.headers, route, client_ip, is_tls);
             let outgoing = match (&buffered_body, streaming_body.take()) {
                 (Some(bytes), _) if !bytes.is_empty() => OutgoingBody::Buffered(bytes.clone()),
                 (_, Some(body)) => OutgoingBody::Streaming(body),
@@ -727,10 +712,12 @@ impl ProxyEngine {
             };
 
             let result = client
-                .send(&method, &target.url, &target_path, &headers, outgoing)
+                .send(method, &target.url, &target_path, headers, outgoing)
                 .await;
-            self.pool_manager.dec_conn(&target.url);
-            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+            if counted {
+                self.pool_manager.dec_conn(&target.url);
+            }
+            let elapsed_ms = crate::clock::mono_ms().saturating_sub(start_ms) as f64;
 
             match result {
                 Ok(upstream_res) => {
@@ -751,7 +738,15 @@ impl ProxyEngine {
                     self.health_checker
                         .mark_success(upstream_name, &target.url, elapsed_ms);
 
-                    return self.build_upstream_response(upstream_res, &target.url);
+                    let target_index = upstream_cfg
+                        .targets
+                        .iter()
+                        .position(|t| std::ptr::eq(t, *target))
+                        .unwrap_or(0);
+                    return build_upstream_response(
+                        upstream_res,
+                        compiled.target_header(upstream_name, target_index),
+                    );
                 }
                 Err(err) => {
                     let retryable = should_retry_error(&next_upstream.conditions, &err);
@@ -776,15 +771,6 @@ impl ProxyEngine {
                 err_msg
             )))
             .unwrap()
-    }
-
-    fn build_upstream_response(&self, upstream_res: Response, target_url: &str) -> Response {
-        let (mut parts, body) = upstream_res.into_parts();
-        strip_hop_by_hop(&mut parts.headers);
-        if let Ok(v) = HeaderValue::from_str(target_url) {
-            parts.headers.insert("X-Ferrix-Upstream", v);
-        }
-        Response::from_parts(parts, body)
     }
 
     async fn store_if_cacheable(&self, key: String, cfg: &CacheConfig, resp: Response) -> Response {
@@ -934,7 +920,7 @@ async fn apply_error_page(vhost: &VirtualHost, resp: Response) -> Response {
     let status = resp.status();
     if status.as_u16() < 400
         || vhost.error_pages.is_empty()
-        || resp.headers().contains_key("X-Ferrix-Upstream")
+        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
     {
         return resp;
     }
@@ -990,65 +976,85 @@ fn next_request_id() -> u64 {
     })
 }
 
+const HOP_BY_HOP: [HeaderName; 9] = [
+    header::CONNECTION,
+    HeaderName::from_static("keep-alive"),
+    header::PROXY_AUTHENTICATE,
+    header::PROXY_AUTHORIZATION,
+    header::TE,
+    header::TRAILER,
+    HeaderName::from_static("trailers"),
+    header::TRANSFER_ENCODING,
+    header::UPGRADE,
+];
+
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    for name in [
-        header::CONNECTION,
-        HeaderName::from_static("keep-alive"),
-        header::PROXY_AUTHENTICATE,
-        header::PROXY_AUTHORIZATION,
-        header::TE,
-        header::TRAILER,
-        HeaderName::from_static("trailers"),
-        header::TRANSFER_ENCODING,
-        header::UPGRADE,
-    ] {
+    // Usually none are present; one pass over the (few) names beats nine hashed removals.
+    if !headers.keys().any(|k| HOP_BY_HOP.contains(k)) {
+        return;
+    }
+    for name in HOP_BY_HOP {
         headers.remove(name);
     }
 }
 
-fn forwarded_headers(
-    incoming: &HeaderMap,
+const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
+const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
+const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
+pub const X_FERRIX_UPSTREAM: HeaderName = HeaderName::from_static("x-ferrix-upstream");
+
+fn build_upstream_response(
+    upstream_res: Response,
+    upstream_header: Option<&HeaderValue>,
+) -> Response {
+    let (mut parts, body) = upstream_res.into_parts();
+    strip_hop_by_hop(&mut parts.headers);
+    if let Some(v) = upstream_header {
+        parts.headers.insert(X_FERRIX_UPSTREAM, v.clone());
+    }
+    Response::from_parts(parts, body)
+}
+
+/// Turns the client's request headers into the ones sent upstream, in place (the
+/// request is consumed by the proxy anyway, so there's no need to copy the map).
+fn prepare_forwarded_headers(
+    headers: &mut HeaderMap,
     route: &RouteRule,
     client_ip: IpAddr,
     is_tls: bool,
-) -> HeaderMap {
-    let client_ip = &client_ip.to_string();
+) {
     let scheme = scheme_str(is_tls);
-    let mut headers = incoming.clone();
-    strip_hop_by_hop(&mut headers);
-    headers.remove(header::HOST);
+    let host = headers.remove(header::HOST);
+    strip_hop_by_hop(headers);
 
-    let xff = RealIpResolver::proxy_add_x_forwarded_for(incoming, client_ip);
-    let set = |headers: &mut HeaderMap, name: &str, value: &str| {
-        if let (Ok(n), Ok(v)) = (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            headers.insert(n, v);
-        }
-    };
+    let ip = client_ip.to_string();
+    let xff = RealIpResolver::proxy_add_x_forwarded_for(headers, &ip);
+    let ip_value = HeaderValue::from_str(&ip).ok();
+    let xff_value = HeaderValue::from_str(&xff).ok();
 
-    set(&mut headers, "X-Real-IP", client_ip);
-    set(&mut headers, "X-Forwarded-For", &xff);
-
-    set(&mut headers, "X-Forwarded-Proto", scheme);
+    if let Some(v) = &ip_value {
+        headers.insert(X_REAL_IP, v.clone());
+    }
+    if let Some(v) = &xff_value {
+        headers.insert(X_FORWARDED_FOR, v.clone());
+    }
+    headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static(scheme));
 
     for (k, v) in &route.proxy_set_headers {
-        let resolved = match v.as_str() {
-            "$host" => incoming
-                .get(header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or(""),
-            "$remote_addr" => client_ip,
-
-            "$proxy_add_x_forwarded_for" => &xff,
-            "$scheme" => scheme,
-            other => other,
+        let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
+            continue;
         };
-        set(&mut headers, k, resolved);
+        let value = match v.as_str() {
+            "$host" => host.clone(),
+            "$remote_addr" => ip_value.clone(),
+            "$proxy_add_x_forwarded_for" => xff_value.clone(),
+            "$scheme" => Some(HeaderValue::from_static(scheme)),
+            other => HeaderValue::from_str(other).ok(),
+        };
+        if let Some(value) = value {
+            headers.insert(name, value);
+        }
     }
-
-    headers
 }
 
 fn scheme_str(is_tls: bool) -> &'static str {
@@ -1416,7 +1422,7 @@ mod tests {
             name: "fallback".into(),
             server_names: vec!["*".into()],
             listen_port: 80,
-            headers: HashMap::new(),
+            headers: std::collections::HashMap::new(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),

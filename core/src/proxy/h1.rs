@@ -20,7 +20,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -103,7 +103,7 @@ pub struct Conn {
 
 struct Idle {
     conn: Conn,
-    since: Instant,
+    since_ms: u64,
 }
 
 thread_local! {
@@ -117,7 +117,8 @@ fn take_idle(key: &str, insecure: bool) -> Option<Conn> {
         let mut pools = p.borrow_mut();
         let list = pools[insecure as usize].get_mut(key)?;
         while let Some(idle) = list.pop() {
-            if idle.since.elapsed() < IDLE_TIMEOUT && idle.conn.stream.looks_alive() {
+            let idle_for = crate::clock::mono_ms().saturating_sub(idle.since_ms);
+            if idle_for < IDLE_TIMEOUT.as_millis() as u64 && idle.conn.stream.looks_alive() {
                 return Some(idle.conn);
             }
         }
@@ -136,7 +137,7 @@ fn release(conn: Conn) {
         if list.len() < MAX_IDLE_PER_HOST {
             list.push(Idle {
                 conn,
-                since: Instant::now(),
+                since_ms: crate::clock::mono_ms(),
             });
         }
     });
@@ -216,7 +217,7 @@ pub async fn connect(
     connect_timeout: Duration,
     tls: Option<(&TlsConnector, bool)>,
 ) -> Result<Conn, H1Error> {
-    let tcp = tokio::time::timeout(
+    let tcp = crate::clock::timeout(
         connect_timeout,
         TcpStream::connect((target.host, target.port)),
     )
@@ -230,7 +231,7 @@ pub async fn connect(
         (true, Some((connector, insecure))) => {
             let name = rustls::pki_types::ServerName::try_from(target.host.to_owned())
                 .map_err(|_| H1Error::Protocol("invalid TLS server name"))?;
-            let tls = tokio::time::timeout(connect_timeout, connector.connect(name, tcp))
+            let tls = crate::clock::timeout(connect_timeout, connector.connect(name, tcp))
                 .await
                 .map_err(|_| H1Error::ConnectTimeout)?
                 .map_err(H1Error::Connect)?;

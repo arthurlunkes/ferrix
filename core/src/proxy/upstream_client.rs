@@ -1,11 +1,12 @@
+use crate::clock::CoarseSleep;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, Response};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::LazyLock;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::time::Sleep;
 use tokio_rustls::TlsConnector;
 
 use super::h1::{self, H1Error, RequestBody, Target};
@@ -38,11 +39,18 @@ pub enum OutgoingBody {
     Streaming(Body),
 }
 
+// Built once per process; cloning a TlsConnector is just an Arc bump, done only when a
+// new TLS connection is opened.
+static TLS_VERIFIED: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(true));
+static TLS_INSECURE: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(false));
+
+/// Per-request settings for talking to an upstream. Connections live in the per-thread
+/// pool in `h1`, so this is a plain value with nothing shared to lock or refcount.
+#[derive(Debug, Clone, Copy)]
 pub struct UpstreamClient {
     connect_timeout: Duration,
     read_timeout: Duration,
     verify_tls: bool,
-    tls: TlsConnector,
 }
 
 impl UpstreamClient {
@@ -51,7 +59,14 @@ impl UpstreamClient {
             connect_timeout,
             read_timeout,
             verify_tls,
-            tls: h1::tls_connector(verify_tls),
+        }
+    }
+
+    fn tls(&self) -> &'static TlsConnector {
+        if self.verify_tls {
+            &TLS_VERIFIED
+        } else {
+            &TLS_INSECURE
         }
     }
 
@@ -68,7 +83,7 @@ impl UpstreamClient {
         let target = Target::parse(base)
             .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
         let insecure = target.tls && !self.verify_tls;
-        let deadline = tokio::time::Instant::from_std(crate::clock::now() + self.read_timeout);
+        let deadline_ms = crate::clock::mono_ms() + self.read_timeout.as_millis() as u64;
 
         let attempt = async {
             let (full, mut streaming) = match body {
@@ -96,7 +111,7 @@ impl UpstreamClient {
                 let conn = match pooled {
                     Some(c) => c,
                     None => {
-                        let tls = target.tls.then_some((&self.tls, insecure));
+                        let tls = target.tls.then_some((self.tls(), insecure));
                         h1::connect(&target, base, self.connect_timeout, tls).await?
                     }
                 };
@@ -115,7 +130,7 @@ impl UpstreamClient {
             }
         };
 
-        let resp = match tokio::time::timeout_at(deadline, attempt).await {
+        let resp = match crate::clock::timeout_at_ms(deadline_ms, attempt).await {
             Ok(Ok(r)) => r,
             Ok(Err(H1Error::ConnectTimeout)) => {
                 return Err(UpstreamError::Timeout(
@@ -141,19 +156,20 @@ impl UpstreamClient {
     }
 }
 
+// Fails the body when the upstream sends nothing for `dur`. The timer is only armed if
+// a read actually has to wait, so bodies that arrive with the head cost nothing.
 struct ReadTimeoutBody<B> {
     inner: B,
-    sleep: Pin<Box<Sleep>>,
+    sleep: Option<CoarseSleep>,
     dur: Duration,
     last_activity_ms: u64,
 }
 
 impl<B> ReadTimeoutBody<B> {
     fn new(inner: B, dur: Duration) -> Self {
-        let deadline = tokio::time::Instant::from_std(crate::clock::now() + dur);
         Self {
             inner,
-            sleep: Box::pin(tokio::time::sleep_until(deadline)),
+            sleep: None,
             dur,
             last_activity_ms: crate::clock::mono_ms(),
         }
@@ -179,23 +195,26 @@ where
                     this.last_activity_ms = crate::clock::mono_ms();
                     return Poll::Ready(frame.map(|r| r.map_err(Into::into)));
                 }
-                Poll::Pending => match this.sleep.as_mut().poll(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(()) => {
-                        let idle_ms = crate::clock::mono_ms().saturating_sub(this.last_activity_ms);
-                        let limit_ms = this.dur.as_millis() as u64;
-                        if idle_ms >= limit_ms {
-                            return Poll::Ready(Some(Err(
-                                "tempo de leitura do upstream esgotado".into()
-                            )));
+                Poll::Pending => {
+                    let deadline = this.last_activity_ms + this.dur.as_millis() as u64;
+                    let sleep = match &mut this.sleep {
+                        Some(s) if s.deadline_ms() == deadline => s,
+                        slot => slot.insert(CoarseSleep::until_ms(deadline)),
+                    };
+                    match Pin::new(sleep).poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(()) => {
+                            if crate::clock::mono_ms().saturating_sub(this.last_activity_ms)
+                                >= this.dur.as_millis() as u64
+                            {
+                                return Poll::Ready(Some(Err(
+                                    "tempo de leitura do upstream esgotado".into(),
+                                )));
+                            }
+                            this.sleep = None;
                         }
-
-                        let remaining = Duration::from_millis(limit_ms - idle_ms);
-                        let deadline =
-                            tokio::time::Instant::from_std(crate::clock::now() + remaining);
-                        this.sleep.as_mut().reset(deadline);
                     }
-                },
+                }
             }
         }
     }

@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 use axum::body::Body;
 use hyper::body::Incoming;
 use hyper::Request;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -32,14 +32,18 @@ pub async fn serve(
 ) {
     let http = engine.store.config().http.clone();
     let mut builder = auto::Builder::new(TokioExecutor::new());
+    // Coarse timers and a once-per-second Date header keep clock syscalls out of the
+    // request path (see crate::clock).
     builder
         .http1()
-        .timer(TokioTimer::new())
+        .timer(crate::clock::CoarseTimer)
+        .auto_date_header(false)
         .keep_alive(http.keepalive_timeout_ms > 0)
         .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
     builder
         .http2()
-        .timer(TokioTimer::new())
+        .timer(crate::clock::CoarseTimer)
+        .auto_date_header(false)
         .keep_alive_interval(None);
     let builder = Arc::new(builder);
     let is_tls = tls.is_some();
@@ -63,11 +67,13 @@ pub async fn serve(
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let engine = engine.clone();
                 async move {
-                    Ok::<_, Infallible>(
-                        engine
-                            .handle_request(port, is_tls, addr, req.map(Body::new))
-                            .await,
-                    )
+                    let mut resp = engine
+                        .handle_request(port, is_tls, addr, req.map(Body::new))
+                        .await;
+                    resp.headers_mut()
+                        .entry(hyper::header::DATE)
+                        .or_insert_with(crate::clock::http_date);
+                    Ok::<_, Infallible>(resp)
                 }
             });
 

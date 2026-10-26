@@ -743,9 +743,14 @@ fn default_redirect_code() -> Option<u16> {
     Some(302)
 }
 
+static DEFAULT_NEXT_UPSTREAM: std::sync::LazyLock<ProxyNextUpstreamConfig> =
+    std::sync::LazyLock::new(ProxyNextUpstreamConfig::default);
+
 impl RouteRule {
-    pub fn next_upstream(&self) -> ProxyNextUpstreamConfig {
-        self.proxy_next_upstream.clone().unwrap_or_default()
+    pub fn next_upstream(&self) -> &ProxyNextUpstreamConfig {
+        self.proxy_next_upstream
+            .as_ref()
+            .unwrap_or(&DEFAULT_NEXT_UPSTREAM)
     }
 }
 

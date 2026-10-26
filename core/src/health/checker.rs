@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
@@ -22,9 +23,21 @@ pub struct TargetHealthStatus {
 pub struct HealthChecker {
     statuses: Arc<RwLock<HashMap<String, TargetHealthStatus>>>,
 
+    // Targets that are unhealthy or have recent failures. While it is zero (the normal
+    // case) the per-request checks skip the shared map entirely.
+    troubled: Arc<AtomicUsize>,
+
     http_client: reqwest::Client,
 
     http_client_insecure: reqwest::Client,
+}
+
+fn recount(map: &HashMap<String, TargetHealthStatus>, troubled: &AtomicUsize) {
+    let n = map
+        .values()
+        .filter(|s| !s.healthy || s.consecutive_fails > 0)
+        .count();
+    troubled.store(n, Ordering::Release);
 }
 
 impl Default for HealthChecker {
@@ -44,12 +57,16 @@ impl HealthChecker {
 
         Self {
             statuses: Arc::new(RwLock::new(HashMap::new())),
+            troubled: Arc::new(AtomicUsize::new(0)),
             http_client: build(false),
             http_client_insecure: build(true),
         }
     }
 
     pub fn is_healthy(&self, target_url: &str) -> bool {
+        if self.troubled.load(Ordering::Acquire) == 0 {
+            return true;
+        }
         if let Ok(map) = self.statuses.read() {
             if let Some(st) = map.get(target_url) {
                 return st.healthy;
@@ -80,10 +97,16 @@ impl HealthChecker {
                 }
                 entry.healthy = false;
             }
+            recount(&map, &self.troubled);
         }
     }
 
     pub fn mark_success(&self, upstream_name: &str, target_url: &str, latency_ms: f64) {
+        // Nothing to clear while every target is clean; latency for the dashboard comes
+        // from the active health checks.
+        if self.troubled.load(Ordering::Acquire) == 0 {
+            return;
+        }
         if let Ok(map) = self.statuses.read() {
             if let Some(st) = map.get(target_url) {
                 let recent = st.last_checked.is_some_and(|t| {
@@ -113,6 +136,7 @@ impl HealthChecker {
             entry.healthy = true;
             entry.latency_ms = latency_ms;
             entry.last_checked = Some(crate::clock::utc_now());
+            recount(&map, &self.troubled);
         }
     }
 
@@ -164,6 +188,7 @@ impl HealthChecker {
                             let timeout = Duration::from_secs(hc.timeout_secs.max(1));
                             let max_fails = target.max_fails;
                             let statuses = self.statuses.clone();
+                            let troubled = self.troubled.clone();
 
                             tokio::spawn(async move {
                                 let full_url =
@@ -213,6 +238,7 @@ impl HealthChecker {
                                             entry.healthy = false;
                                         }
                                     }
+                                    recount(&map, &troubled);
                                 }
                             });
                         }

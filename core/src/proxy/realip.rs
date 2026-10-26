@@ -61,21 +61,20 @@ impl RealIpResolver {
     }
 
     pub fn proxy_add_x_forwarded_for(headers: &HeaderMap, client_ip: &str) -> String {
-        let existing: Vec<String> = headers
+        let mut out = String::new();
+        for part in headers
             .get_all("x-forwarded-for")
             .iter()
             .filter_map(|v| v.to_str().ok())
             .flat_map(|v| v.split(','))
-            .map(|s| s.trim())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-
-        if existing.is_empty() {
-            client_ip.to_string()
-        } else {
-            format!("{}, {}", existing.join(", "), client_ip)
+        {
+            out.push_str(part);
+            out.push_str(", ");
         }
+        out.push_str(client_ip);
+        out
     }
 }
 
