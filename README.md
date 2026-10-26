@@ -218,20 +218,21 @@ METRICS=1 benchmarks/run.sh    # Ferrix with metrics enabled
 | Static file, 1.4 KB     | **173.4k**   | 104.0k      | **2.4 ms** | 3.2 ms    |
 | Static file, 133 KB     | 48.6k        | 49.1k       | 6.1 ms     | 6.2 ms    |
 | Reverse proxy           | 77.2k        | 80.3k       | 4.6 ms     | 4.4 ms    |
-| **Memory** (after the run, `docker stats`) | 14.9 MiB | **10.5 MiB** | | |
 
-**Memory (RSS) of the Ferrix process**, measured with the same load (`wrk`, 256 connections), each scenario in a fresh process:
+**Memory**, measured right after each load (`wrk`, 256 connections), each scenario in a fresh process. **PSS** (proportional set size) is the fair number for comparing one Ferrix process with nginx's master + 4 workers: RSS counts the memory the nginx processes share (binary, libraries) once per process, PSS splits it between them.
 
-| Situation                          | Before the memory work | Now      |
-| ---------------------------------- | ---------------------- | -------- |
-| Idle, right after start            | 25 MB                  | **12 MB** |
-| After the 1.4 KB static file load  | 61 MB                  | **16 MB** |
-| After the proxy load               | 56 MB                  | **20 MB** |
-| After the 133 KB static file load  | 68 MB                  | 24–33 MB |
+| Situation              | Ferrix PSS  | nginx PSS   | Ferrix RSS | nginx RSS (sum) |
+| ---------------------- | ----------- | ----------- | ---------- | --------------- |
+| Idle, right after start | **9.5 MB** | 11.1 MB     | 11.8 MB    | 21.8 MB         |
+| 1.4 KB static file     | 12.7 MB     | **11.3 MB** | 16.7 MB    | 22.7 MB         |
+| 133 KB static file     | 17–28 MB    | **11.4 MB** | 18–33 MB   | 23.3 MB         |
+| Reverse proxy          | 17.3 MB     | **11.4 MB** | 19.9 MB    | 23.2 MB         |
+
+Before the memory work, Ferrix's RSS was 25 MB idle and 56–68 MB under these loads.
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. Memory under the same load is ~15–19 MB for Ferrix vs. ~10 MB for nginx (it was ~55 MB before the memory work below); the remaining gap is mostly the Tokio runtime, the allocator and the TLS/admin code being resident.
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx and is now level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and on proxying. Idle, Ferrix now uses less memory than nginx (9.5 vs. 11.1 MB PSS); under load it uses 1.1–2.5× nginx's ~11 MB, and the 133 KB file case varies the most. The remaining gap is mostly the Tokio runtime, the allocator and per-connection state, which is the next focus.
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
