@@ -1,0 +1,10 @@
+globals {
+    default_http_port 9005
+    default_https_port #null
+}
+:9005 {
+    root "/www"
+    location "/proxy" remove_base=#true {
+        proxy "http://127.0.0.1:9100"
+    }
+}

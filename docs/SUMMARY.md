@@ -8,3 +8,4 @@
 - [04. Configuration Guide](04-guia-de-configuracao.md)
 - [05. REST API Reference](05-api-rest.md)
 - [06. Web Dashboard Manual](06-dashboard-web.md)
+- [07. Glossary](07-glossario.md)

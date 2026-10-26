@@ -1,0 +1,16 @@
+http:
+  routers:
+    proxy:
+      entryPoints: [web]
+      rule: "PathPrefix(`/proxy`)"
+      middlewares: [strip]
+      service: be
+  middlewares:
+    strip:
+      stripPrefix:
+        prefixes: ["/proxy"]
+  services:
+    be:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9100"

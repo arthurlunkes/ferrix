@@ -1,0 +1,22 @@
+[basic]
+threads = 4
+
+[upstreams.be]
+addrs = ["127.0.0.1:9100"]
+
+[plugins.files]
+category = "directory"
+path = "/www"
+
+[locations.proxy]
+path = "/proxy"
+upstream = "be"
+rewrite = "^/proxy/(.*)$ /$1"
+
+[locations.static]
+path = "/"
+plugins = ["files"]
+
+[servers.bench]
+addr = "0.0.0.0:9004"
+locations = ["proxy", "static"]

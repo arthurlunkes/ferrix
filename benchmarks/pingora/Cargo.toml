@@ -1,0 +1,22 @@
+# Minimal reverse proxy built on Cloudflare's Pingora, used only by benchmarks/run.sh.
+# Pingora is a library, not a ready-made server, so this mirrors its load_balancer
+# example: forward /proxy/* to the benchmark upstream, plain HTTP, no TLS.
+[package]
+name = "pingora-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of Ferrix's workspace.
+[workspace]
+
+[dependencies]
+pingora = { version = "=0.9.0", features = ["proxy"] }
+async-trait = "0.1"
+# tokio 1.54 rejects the zero-capacity BufStream that pingora-core 0.9.0 creates;
+# the lockfile pins 1.53.0 until Pingora adapts.
+tokio = "=1.53.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

@@ -45,3 +45,6 @@ Welcome to the official documentation for **Ferrix** — a high-performance web 
    - Overview of all views (Dashboard, Virtual Hosts, Live Requests, Upstreams, Nginx Import, Config Editor).
    - Real-time request inspection and telemetry.
    - Visual configuration management without manually editing files.
+
+7. [**07. Glossary**](07-glossario.md)
+   - What p50, p99, req/s, RSS/PSS, sendfile, SNI, ACME and the other terms mean.

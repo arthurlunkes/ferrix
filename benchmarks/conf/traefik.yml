@@ -1,0 +1,8 @@
+entryPoints:
+  web:
+    address: ":9003"
+providers:
+  file:
+    filename: /etc/traefik/traefik-dynamic.yml
+log:
+  level: ERROR

@@ -133,6 +133,7 @@ Then:
 You can choose between the **ultra-lean Core image** (~20 MB) and the **Full All-in-One image** with the Web Dashboard:
 
 #### Option A: Ultra-lean Core only (~20 MB, pure Rust proxy & API)
+
 ```bash
 docker run -d \
   --name ferrix \
@@ -143,6 +144,7 @@ docker run -d \
 ```
 
 #### Option B: Full All-in-One (Core + React Web Dashboard on :8080)
+
 ```bash
 docker run -d \
   --name ferrix-full \
@@ -154,6 +156,7 @@ docker run -d \
 ```
 
 Or using Docker Compose:
+
 ```bash
 docker compose up ferrix-core   # Run ultra-lean Core
 # or
@@ -180,20 +183,20 @@ sudo ./core/scripts/install.sh
 
 ## 📡 Management REST API
 
-| Method   | Endpoint               | Description                                           |
-| -------- | ---------------------- | ----------------------------------------------------- |
-| `GET`    | `/api/status`          | Uptime, ports and counters                            |
-| `GET`    | `/api/metrics`         | Metrics snapshot (RPS, p95 latency, status codes)     |
-| `GET`    | `/api/logs`            | Paginated log history with search and filters         |
-| `GET`    | `/api/logs/stream`     | Live request stream via Server-Sent Events (SSE)      |
-| `GET`    | `/api/config`          | Active JSON configuration                             |
-| `POST`   | `/api/config`          | Updates the global config with atomic hot-reload      |
-| `GET`    | `/api/vhosts`          | List virtual hosts                                    |
-| `POST`   | `/api/vhosts`          | Create or update a virtual host                       |
-| `DELETE` | `/api/vhosts/:id`      | Delete a virtual host                                 |
-| `GET`    | `/api/upstreams`       | List upstream pools and their health                  |
-| `POST`   | `/api/upstreams`       | Create or update an upstream pool                     |
-| `DELETE` | `/api/upstreams/:name` | Delete an upstream pool                               |
+| Method   | Endpoint               | Description                                       |
+| -------- | ---------------------- | ------------------------------------------------- |
+| `GET`    | `/api/status`          | Uptime, ports and counters                        |
+| `GET`    | `/api/metrics`         | Metrics snapshot (RPS, p95 latency, status codes) |
+| `GET`    | `/api/logs`            | Paginated log history with search and filters     |
+| `GET`    | `/api/logs/stream`     | Live request stream via Server-Sent Events (SSE)  |
+| `GET`    | `/api/config`          | Active JSON configuration                         |
+| `POST`   | `/api/config`          | Updates the global config with atomic hot-reload  |
+| `GET`    | `/api/vhosts`          | List virtual hosts                                |
+| `POST`   | `/api/vhosts`          | Create or update a virtual host                   |
+| `DELETE` | `/api/vhosts/:id`      | Delete a virtual host                             |
+| `GET`    | `/api/upstreams`       | List upstream pools and their health              |
+| `POST`   | `/api/upstreams`       | Create or update an upstream pool                 |
+| `DELETE` | `/api/upstreams/:name` | Delete an upstream pool                           |
 
 Full documentation (in Portuguese) in [`docs/`](docs/README.md).
 
@@ -201,32 +204,36 @@ Full documentation (in Portuguese) in [`docs/`](docs/README.md).
 
 ## 📊 Benchmark: Ferrix vs. nginx
 
-An honest comparison against nginx 1.27 on the same machine. Everything needed to reproduce it lives in [`benchmarks/`](benchmarks/), and **everything runs in Docker** (Ferrix is built from this repo's `Dockerfile`), so results don't depend on what's installed on the host:
+An honest comparison on the same machine. Everything needed to reproduce it lives in [`benchmarks/`](benchmarks/), and **everything runs in Docker with pinned versions**, so results don't depend on what's installed on the host. The script can compare Ferrix with **nginx 1.27, Traefik 3.5.6, Pingora 0.9 (Cloudflare), Pingap 0.16.1 and Ferron 2.8.1**; each server runs alone on the same 4 cores. Traefik and Pingora are proxies only, so they skip the static-file scenarios. Pingora is a library, so [`benchmarks/pingora/`](benchmarks/pingora/) holds a minimal proxy built from its official example.
 
 ```bash
-benchmarks/run.sh              # Ferrix and nginx, 10 s per scenario
-benchmarks/run.sh ferrix 30s   # only Ferrix, 30 s per scenario
-METRICS=1 benchmarks/run.sh    # Ferrix with metrics enabled
+benchmarks/run.sh                       # all six servers, 10 s per scenario
+benchmarks/run.sh ferrix nginx -d 30s   # only these two, 30 s per scenario
+METRICS=1 benchmarks/run.sh ferrix      # Ferrix with metrics enabled
 ```
+
+For meaningful numbers, close other heavy programs (browsers, IDEs, other containers) first: they aren't pinned to the benchmark's cores and add noise to every server.
+
+> Unfamiliar with a term (p50, p99, PSS, sendfile...)? See the [glossary](docs/07-glossario.md).
 
 **Setup:** both servers pinned to the same 4 CPU cores (`worker_threads: 4` vs. `worker_processes 4`), nginx with `sendfile on` and upstream keepalive, load generated by `wrk` (8 threads, 256 connections) on separate cores, and the upstream is a separate nginx returning a 20-byte body. Requires Docker and a machine with 16+ logical cores.
 
 **Latest results** (same run for both servers, default config with metrics off; absolute numbers depend on the machine, so compare only numbers from the same run):
 
-| Scenario                | Ferrix req/s | nginx req/s | Ferrix p99 | nginx p99 |
-| ----------------------- | ------------ | ----------- | ---------- | --------- |
-| Static file, 1.4 KB     | **173.4k**   | 104.0k      | **2.4 ms** | 3.2 ms    |
-| Static file, 133 KB     | 48.6k        | 49.1k       | 6.1 ms     | 6.2 ms    |
-| Reverse proxy           | 77.2k        | 80.3k       | 4.6 ms     | 4.4 ms    |
+| Scenario            | Ferrix req/s | nginx req/s | Ferrix p99 | nginx p99 |
+| ------------------- | ------------ | ----------- | ---------- | --------- |
+| Static file, 1.4 KB | **173.4k**   | 104.0k      | **2.4 ms** | 3.2 ms    |
+| Static file, 133 KB | 48.6k        | 49.1k       | 6.1 ms     | 6.2 ms    |
+| Reverse proxy       | 77.2k        | 80.3k       | 4.6 ms     | 4.4 ms    |
 
 **Memory**, measured right after each load (`wrk`, 256 connections), each scenario in a fresh process. **PSS** (proportional set size) is the fair number for comparing one Ferrix process with nginx's master + 4 workers: RSS counts the memory the nginx processes share (binary, libraries) once per process, PSS splits it between them.
 
-| Situation              | Ferrix PSS  | nginx PSS   | Ferrix RSS | nginx RSS (sum) |
-| ---------------------- | ----------- | ----------- | ---------- | --------------- |
+| Situation               | Ferrix PSS | nginx PSS   | Ferrix RSS | nginx RSS (sum) |
+| ----------------------- | ---------- | ----------- | ---------- | --------------- |
 | Idle, right after start | **9.5 MB** | 11.1 MB     | 11.8 MB    | 21.8 MB         |
-| 1.4 KB static file     | 12.7 MB     | **11.3 MB** | 16.7 MB    | 22.7 MB         |
-| 133 KB static file     | 17–28 MB    | **11.4 MB** | 18–33 MB   | 23.3 MB         |
-| Reverse proxy          | 17.3 MB     | **11.4 MB** | 19.9 MB    | 23.2 MB         |
+| 1.4 KB static file      | 12.7 MB    | **11.3 MB** | 16.7 MB    | 22.7 MB         |
+| 133 KB static file      | 17–28 MB   | **11.4 MB** | 18–33 MB   | 23.3 MB         |
+| Reverse proxy           | 17.3 MB    | **11.4 MB** | 19.9 MB    | 23.2 MB         |
 
 Before the memory work, Ferrix's RSS was 25 MB idle and 56–68 MB under these loads.
 
