@@ -100,8 +100,11 @@ Type=simple
 User=${RUN_USER}
 WorkingDirectory=${CONFIG_DIR}
 ExecStart=${INSTALL_DIR}/${BIN_NAME} --config ${CONFIG_DIR}/ferrix.yaml
+# O systemd já reinicia o Ferrix se ele cair; dispensa o processo master dele e
+# economiza a memória de um segundo processo.
+Environment=FERRIX_SUPERVISOR=0
 Restart=on-failure
-RestartSec=3s
+RestartSec=1s
 LimitNOFILE=65536
 NoNewPrivileges=true
 # Permite escutar em portas privilegiadas (80, 443...) sem rodar como root. Concedida

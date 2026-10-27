@@ -133,6 +133,7 @@ docker run -d \
   -p 8000:8000 \
   -p 8081:8081 \
   -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
+  --restart unless-stopped \
   ghcr.io/arthurlunkes/ferrix:latest
 ```
 
@@ -146,6 +147,7 @@ docker run -d \
   -p 8000:8000 \
   -p 8080:8080 \
   -v $(pwd)/ferrix-data:/etc/ferrix \
+  --restart unless-stopped \
   ghcr.io/arthurlunkes/ferrix:full
 docker logs ferrix-full   # shows the admin token
 ```

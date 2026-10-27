@@ -157,8 +157,10 @@ them. Configuration errors are not retried: the server exits and so does the mas
 Release builds use `panic = "abort"`: a bug that panics ends the server process instead
 of unwinding, which saves ~1 MB of resident code; the master brings it back.
 
-Under a service manager that already restarts Ferrix (systemd `Restart=`, Docker
-`restart:`), you can run the server directly with `FERRIX_SUPERVISOR=0`.
+The master is a second process (~3–4 MB). Where something else already restarts Ferrix,
+it's turned off with `FERRIX_SUPERVISOR=0`, and that's the default in the places Ferrix
+ships with one: the Docker images (start them with `--restart unless-stopped`, as the
+`docker-compose.yml` does) and the systemd unit from `install.sh` (`Restart=on-failure`).
 
 ## 🧪 Testing with Mock Backends
 
@@ -212,6 +214,7 @@ docker run -d \
   -p 8000:8000 \
   -p 8080:8080 \
   -v $(pwd)/ferrix-data:/etc/ferrix \
+  --restart unless-stopped \
   ghcr.io/arthurlunkes/ferrix:full
 docker logs ferrix-full
 ```

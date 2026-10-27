@@ -39,7 +39,10 @@ RUN chmod +x /usr/local/bin/entrypoint-full.sh
 
 VOLUME ["/etc/ferrix"]
 
-ENV FERRIX_CONFIG=/etc/ferrix/ferrix.yaml
+# The container runtime restarts Ferrix (`--restart` / compose `restart:`), so the
+# built-in master process isn't needed: one process, less memory.
+ENV FERRIX_CONFIG=/etc/ferrix/ferrix.yaml \
+    FERRIX_SUPERVISOR=0
 
 # 8000: proxy traffic · 8080: admin API and web dashboard
 EXPOSE 8000 8080
@@ -67,6 +70,8 @@ WORKDIR /etc/ferrix
 VOLUME ["/etc/ferrix"]
 
 EXPOSE 8000 8081
+
+ENV FERRIX_SUPERVISOR=0
 
 ENTRYPOINT ["/usr/local/bin/ferrix"]
 CMD ["--config", "/etc/ferrix/ferrix.yaml"]

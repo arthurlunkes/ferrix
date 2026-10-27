@@ -174,6 +174,22 @@ fn main() -> ExitCode {
     // keeps ~2 MB less resident with no measurable throughput cost, like nginx giving
     // request pools back as soon as a request ends.
     unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+
+    // The master process only waits for its child and forwards signals, so it runs
+    // before (and without) the server's async runtime.
+    #[cfg(unix)]
+    if let Ok(Ok(mut args)) = Args::from_env() {
+        let runs_server = matches!(args.command, Some(Commands::Run) | None)
+            && std::env::args().len() > 1
+            && !args.test
+            && args.signal.is_none()
+            && !args.worker_process;
+        if runs_server && supervisor::enabled() {
+            resolve_config_path(&mut args);
+            ferrix::log::init("ferrix=info");
+            return supervisor::run(&pid_file_path(&args.config));
+        }
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(configured_worker_threads())
         .enable_all()
@@ -319,12 +335,6 @@ async fn async_main() -> ExitCode {
         },
         Some(Commands::Run) | None => {
             ferrix::log::init("ferrix=info");
-
-            #[cfg(unix)]
-            if !args.worker_process && supervisor::enabled() {
-                let pid_file = pid_file_path(&args.config);
-                return supervisor::run(&args, &pid_file).await;
-            }
 
             let worker_process = args.worker_process;
             match run_server(args).await {
