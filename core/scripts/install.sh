@@ -83,8 +83,8 @@ fi
 
 echo "==> Preparando ${CONFIG_DIR}..."
 as_root mkdir -p "${CONFIG_DIR}"
-if [ ! -f "${CONFIG_DIR}/ferrix.json" ] && [ -f "${PROJECT_ROOT}/ferrix.json" ]; then
-    as_root cp "${PROJECT_ROOT}/ferrix.json" "${CONFIG_DIR}/ferrix.json"
+if [ ! -f "${CONFIG_DIR}/ferrix.yaml" ] && [ -f "${PROJECT_ROOT}/ferrix.yaml" ]; then
+    as_root cp "${PROJECT_ROOT}/ferrix.yaml" "${CONFIG_DIR}/ferrix.yaml"
 fi
 # O processo roda como ${RUN_USER}, não root: sem isto ele não conseguiria
 # persistir hot-reload nem gravar o arquivo de PID.
@@ -103,7 +103,7 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 WorkingDirectory=${CONFIG_DIR}
-ExecStart=${INSTALL_DIR}/${BIN_NAME} --config ${CONFIG_DIR}/ferrix.json
+ExecStart=${INSTALL_DIR}/${BIN_NAME} --config ${CONFIG_DIR}/ferrix.yaml
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65536
@@ -187,8 +187,8 @@ echo "   Para ver os logs:"
 echo "     journalctl -u ferrix -u ferrix-backend -f"
 echo ""
 echo "   Painel:        http://localhost:8080"
-echo "   Tráfego proxy: porta configurada em ${CONFIG_DIR}/ferrix.json (http.listen)"
+echo "   Tráfego proxy: porta configurada em ${CONFIG_DIR}/ferrix.yaml (http.listen)"
 echo ""
 echo "   Na primeira vez que o Core rodar, ele gera um token de administração e"
-echo "   grava em ${CONFIG_DIR}/ferrix.json — veja com:"
+echo "   grava em ${CONFIG_DIR}/ferrix.yaml — veja com:"
 echo "     journalctl -u ferrix | grep 'Token de administração'"

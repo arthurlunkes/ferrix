@@ -111,7 +111,7 @@ Monitor availability and performance across backend server targets:
 
 For engineers who prefer editing configurations in code:
 
-- **Syntax-Highlighted Editor**: Full `ferrix.json` with line numbers and linting.
+- **Syntax-Highlighted Editor**: Full `ferrix.yaml` with line numbers and linting.
 - **"Validate & Hot-Reload"**: Validates JSON syntax and atomically updates the running server.
 - **Export & Import**:
   - Download active configuration backups (`Export JSON`).

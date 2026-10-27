@@ -14,6 +14,9 @@ Ferrix exposes a modern REST API on its administrative port (default `8080` / `8
 | `GET`    | `/api/logs/stream`     | Live event stream via Server-Sent Events (SSE)             |
 | `GET`    | `/api/config`          | Returns active global configuration                        |
 | `POST`   | `/api/config`          | Applies new configuration with zero-downtime hot-reload    |
+| `GET`    | `/api/config/yaml`     | Active configuration as YAML text (what `ferrix.yaml` holds) |
+| `POST`   | `/api/config/yaml`     | Applies YAML text: parsed, validated, saved, hot-reloaded  |
+| `POST`   | `/api/config/yaml/validate` | Validates YAML text without applying it               |
 | `GET`    | `/api/vhosts`          | Lists all Virtual Hosts                                    |
 | `POST`   | `/api/vhosts`          | Creates or updates a Virtual Host                          |
 | `DELETE` | `/api/vhosts/:id`      | Deletes a Virtual Host                                     |
@@ -132,6 +135,17 @@ es.addEventListener("request", (event) => {
 ---
 
 ## 4. Configuration Management & Hot-Reload
+
+### `GET` / `POST /api/config/yaml`
+
+The same configuration as `/api/config`, but as the YAML text stored in `ferrix.yaml` (`Content-Type: application/yaml`). The dashboard's config editor uses these. `POST` answers with the same JSON result as `POST /api/config`, or `400` with the YAML error.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/config/yaml > ferrix.yaml
+# edit ferrix.yaml, then:
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/yaml" \
+     --data-binary @ferrix.yaml http://localhost:8081/api/config/yaml
+```
 
 ### `GET /api/config`
 

@@ -60,7 +60,7 @@ Optimized binary location: `target/release/ferrix`.
 ```
 
 By default:
-- If `ferrix.json` does not exist, Ferrix automatically generates a default initial configuration with a secure random token.
+- If `ferrix.yaml` does not exist, Ferrix automatically generates a default initial configuration with a secure random token.
 - The control plane API and web dashboard listen at: `http://127.0.0.1:8081`.
 - The HTTP reverse proxy traffic listener binds to: `http://0.0.0.0:8000`.
 
@@ -84,7 +84,7 @@ Main commands:
   import    Import and convert existing nginx.conf configurations
 
 Global options:
-  -c, --config <FILE>      Configuration file path [default: ferrix.json]
+  -c, --config <FILE>      Configuration file path [default: ferrix.yaml]
   -t, --test               Test configuration file syntax and exit
   -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
   -h, --help               Display all detailed help options
@@ -135,7 +135,7 @@ node test_backends.js
 In terminal 2, start Ferrix:
 
 ```bash
-./target/release/ferrix run --config ferrix.json
+./target/release/ferrix run --config ferrix.yaml
 ```
 
 Send requests to `http://localhost:8000/api` and verify:
@@ -157,7 +157,7 @@ docker run -d \
   --name ferrix \
   -p 8000:8000 \
   -p 8081:8081 \
-  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   ghcr.io/arthurlunkes/ferrix:latest
 ```
 
@@ -171,7 +171,7 @@ docker run -d \
   -p 8000:8000 \
   -p 8081:8081 \
   -p 8080:8080 \
-  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   ghcr.io/arthurlunkes/ferrix:full
 ```
 
@@ -185,7 +185,7 @@ services:
       - "8000:8000"
       - "8081:8081"
     volumes:
-      - ./ferrix.json:/etc/ferrix/ferrix.json
+      - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
 ```
 
 Run with:

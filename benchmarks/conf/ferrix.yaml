@@ -1,0 +1,29 @@
+# Ferrix under test: 4 workers, a proxy route and a static route. @WWW@ is replaced by run.sh.
+admin:
+  listen: 127.0.0.1:9081
+http:
+  listen: 0.0.0.0:9001
+  worker_threads: 4
+upstreams:
+  be:
+    name: be
+    algorithm: round_robin
+    targets:
+      - url: http://127.0.0.1:9100
+vhosts:
+  - id: bench
+    name: bench
+    server_names: ["*"]
+    listen_port: 9001
+    routes:
+      - id: proxy
+        path_prefix: /proxy
+        strip_prefix: true
+        target_type: proxy_upstream
+        upstream_name: be
+        websocket_enabled: false
+      - id: static
+        path_prefix: /
+        target_type: static_files
+        static_root: "@WWW@"
+        websocket_enabled: false

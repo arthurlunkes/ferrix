@@ -20,6 +20,26 @@ use health::HealthChecker;
 use metrics::MetricsCollector;
 use proxy::ProxyEngine;
 
+const DEFAULT_CONFIG: &str = "ferrix.yaml";
+const LEGACY_CONFIG: &str = "ferrix.json";
+
+/// Older versions created `ferrix.json`. When no `-c` was given and only that file
+/// exists, keep using it (JSON is still read and written) rather than silently
+/// starting from a fresh default config.
+fn resolve_config_path(args: &mut Args) {
+    if args.config == Path::new(DEFAULT_CONFIG)
+        && !args.config.exists()
+        && Path::new(LEGACY_CONFIG).exists()
+    {
+        eprintln!(
+            "ferrix: using {} (JSON). YAML is now the config format; convert it with \
+             `ferrix convert-config {} {}` and remove the old file.",
+            LEGACY_CONFIG, LEGACY_CONFIG, DEFAULT_CONFIG
+        );
+        args.config = PathBuf::from(LEGACY_CONFIG);
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "ferrix",
@@ -31,7 +51,7 @@ struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(short, long, default_value = "ferrix.json", global = true)]
+    #[arg(short, long, default_value = DEFAULT_CONFIG, global = true)]
     config: PathBuf,
 
     #[arg(long, global = true)]
@@ -62,6 +82,12 @@ enum Commands {
     Status,
 
     Test,
+
+    /// Rewrite a configuration file in another format (e.g. an old ferrix.json as YAML).
+    ConvertConfig {
+        from: PathBuf,
+        to: PathBuf,
+    },
 
     Import {
         #[arg(long)]
@@ -219,12 +245,10 @@ fn configured_worker_threads() -> usize {
     let Ok(args) = Args::try_parse() else {
         return default;
     };
-    std::fs::read_to_string(&args.config)
+    FerrixConfig::load(&args.config)
         .ok()
-        .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
-        .and_then(|v| v.get("http")?.get("worker_threads")?.as_u64())
+        .map(|c| c.http.worker_threads)
         .filter(|&n| n > 0)
-        .map(|n| n as usize)
         .unwrap_or(default)
 }
 
@@ -238,7 +262,8 @@ async fn async_main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    resolve_config_path(&mut args);
 
     if args.test {
         return match run_test(&args.config) {
@@ -268,6 +293,18 @@ async fn async_main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::ConvertConfig { ref from, ref to }) => {
+            match FerrixConfig::load(from).and_then(|c| c.save_to_file(to)) {
+                Ok(()) => {
+                    println!("✔ {} written from {}", to.display(), from.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("ferrix: {}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(Commands::Import {
             ref from,
             ref out,
@@ -350,7 +387,7 @@ Main commands:
   test      Test configuration file syntax (shortcut: ferrix -t)
 
 Global options:
-  -c, --config <FILE>      Configuration file path [default: ferrix.json]
+  -c, --config <FILE>      Configuration file path [default: ferrix.yaml]
   -t, --test               Test configuration file syntax and exit
   -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
   -h, --help               Display all detailed help options
@@ -434,17 +471,22 @@ fn run_import(from: &Path, out: Option<&Path>, report_path: Option<&Path>) -> Re
     let result = ferrix::nginx::convert::import_file(from)
         .map_err(|e| format!("ferrix: failed to import {}:\n  {}", from.display(), e))?;
 
-    let json = serde_json::to_string_pretty(&result.config)
-        .map_err(|e| format!("ferrix: failed to serialize converted configuration: {}", e))?;
-
     match out {
         Some(path) => {
-            std::fs::write(path, &json)
-                .map_err(|e| format!("ferrix: failed to write {}: {}", path.display(), e))?;
+            result
+                .config
+                .save_to_file(path)
+                .map_err(|e| format!("ferrix: {}", e))?;
             println!("✔ Converted configuration written to {}", path.display());
         }
         None => {
-            println!("{}", json);
+            let yaml = result
+                .config
+                .render(config::ConfigFormat::Yaml)
+                .map_err(|e| {
+                    format!("ferrix: failed to serialize converted configuration: {}", e)
+                })?;
+            println!("{}", yaml);
         }
     }
 

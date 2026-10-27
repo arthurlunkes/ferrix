@@ -15,32 +15,32 @@ import { Badge } from "../components/ui/Badge";
 
 interface ConfigEditorProps {
   config: FerrixConfig | null;
-  onSaveConfig: (config: FerrixConfig) => Promise<void>;
   onRefreshConfig: () => Promise<void>;
 }
 
-export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig, onRefreshConfig }) => {
-  const [jsonText, setJsonText] = useState("");
+// The editor works on the same YAML that is stored in ferrix.yaml; the core parses and
+// validates it, so the browser needs no YAML library.
+export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onRefreshConfig }) => {
+  const [yamlText, setYamlText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
 
-  useEffect(() => {
-    if (config) {
-      setJsonText(JSON.stringify(config, null, 2));
-    }
-  }, [config]);
-
-  const parseOrFail = (): FerrixConfig | null => {
+  const loadYaml = async () => {
     try {
-      return JSON.parse(jsonText);
+      setYamlText(await api.getConfigYaml());
     } catch (err: any) {
-      setError(`Invalid JSON: ${err.message}`);
-      return null;
+      setError(err.message || "Failed to load configuration");
     }
   };
+
+  useEffect(() => {
+    if (config) {
+      loadYaml();
+    }
+  }, [config]);
 
   const showIssuesFrom = (err: any, fallback: string) => {
     if (err instanceof ApiError && Array.isArray(err.body?.report?.issues)) {
@@ -55,12 +55,9 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     setError(null);
     setSuccess(null);
     setIssues([]);
-    const parsed = parseOrFail();
-    if (!parsed) return;
-
     setValidating(true);
     try {
-      const report = await api.validateConfig(parsed);
+      const report = await api.validateConfigYaml(yamlText);
       setIssues(report.issues);
       if (report.valid) {
         setSuccess(
@@ -82,12 +79,10 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     setError(null);
     setSuccess(null);
     setIssues([]);
-    const parsed = parseOrFail();
-    if (!parsed) return;
-
     setSaving(true);
     try {
-      await onSaveConfig(parsed);
+      await api.updateConfigYaml(yamlText);
+      await onRefreshConfig();
       setSuccess("Configuration validated, saved to disk, and hot-reloaded!");
       setTimeout(() => setSuccess(null), 5000);
     } catch (err: any) {
@@ -99,7 +94,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
 
   const handleReset = () => {
     if (config) {
-      setJsonText(JSON.stringify(config, null, 2));
+      loadYaml();
       setError(null);
       setSuccess(null);
       setIssues([]);
@@ -107,11 +102,11 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
   };
 
   const handleExport = () => {
-    const blob = new Blob([jsonText], { type: "application/json" });
+    const blob = new Blob([yamlText], { type: "application/yaml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "ferrix-config.json";
+    a.download = "ferrix.yaml";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -123,8 +118,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
     reader.onload = (event) => {
       try {
         const text = event.target?.result as string;
-        JSON.parse(text);
-        setJsonText(text);
+        setYamlText(text);
         setError(null);
         setIssues([]);
       } catch (err: any) {
@@ -142,15 +136,15 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
             Configuration Editor
           </h2>
           <p className="text-xs text-content-muted">
-            Full JSON configuration with validation equivalent to "nginx -t" and zero-downtime hot-reload
+            Full ferrix.yaml configuration with validation equivalent to "nginx -t" and zero-downtime hot-reload
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-2 hover:bg-surface-3 text-content-secondary text-xs font-medium cursor-pointer transition border border-border">
             <Upload className="w-3.5 h-3.5" />
-            Import JSON
-            <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+            Import YAML
+            <input type="file" accept=".yaml,.yml" onChange={handleImport} className="hidden" />
           </label>
           <Button variant="secondary" size="sm" icon={<Download className="w-3.5 h-3.5" />} onClick={handleExport}>
             Export
@@ -216,8 +210,8 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onSaveConfig
 
       <div className="bg-surface-0 border border-border rounded-2xl p-4 shadow-card">
         <textarea
-          value={jsonText}
-          onChange={(e) => setJsonText(e.target.value)}
+          value={yamlText}
+          onChange={(e) => setYamlText(e.target.value)}
           spellCheck={false}
           rows={28}
           className="w-full bg-transparent font-mono text-xs text-content-primary resize-y focus:outline-none leading-relaxed"

@@ -54,9 +54,9 @@ head -c 100000 /dev/urandom | base64 -w0 > "$WORK/www/big.txt"
 echo '<h1>ok</h1>' > "$WORK/www/index.html"
 chmod -R a+rX "$WORK"
 
-sed "s#@WWW@#/work/www#" "$HERE/conf/ferrix.json" > "$WORK/ferrix.json"
+sed "s#@WWW@#/work/www#" "$HERE/conf/ferrix.yaml" > "$WORK/ferrix.yaml"
 if [ "${METRICS:-0}" = 1 ]; then
-    sed -i 's#^{#{ "metrics": { "enabled": true },#' "$WORK/ferrix.json"
+    printf 'metrics:\n  enabled: true\n' >> "$WORK/ferrix.yaml"
 fi
 
 for s in "${SERVERS[@]}"; do
@@ -77,7 +77,7 @@ docker run -d --name ferrix-bench-up --network host --cpuset-cpus 4-7 \
 start() {
     local run=(docker run -d --name ferrix-bench-server --network host --cpuset-cpus 0-3)
     case $1 in
-        ferrix)  "${run[@]}" -v "$WORK:/work:ro" "$FERRIX_IMG" run -c /work/ferrix.json; echo 9001 >&3 ;;
+        ferrix)  "${run[@]}" -v "$WORK:/work:ro" "$FERRIX_IMG" run -c /work/ferrix.yaml; echo 9001 >&3 ;;
         nginx)   "${run[@]}" -v "$HERE/conf/nginx.conf:/etc/nginx/nginx.conf:ro" \
                      -v "$WORK/www:/www:ro" $NGINX_IMG; echo 9002 >&3 ;;
         traefik) "${run[@]}" -e GOMAXPROCS=4 -v "$HERE/conf/traefik.yml:/etc/traefik/traefik.yml:ro" \

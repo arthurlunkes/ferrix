@@ -34,9 +34,9 @@ if (-not (Test-Path $InstallPath)) {
 Copy-Item -Path $ReleaseBin -Destination (Join-Path $InstallPath "ferrix.exe") -Force
 
 # 3. Copy default configuration
-$ConfigDest = Join-Path $InstallPath "ferrix.json"
+$ConfigDest = Join-Path $InstallPath "ferrix.yaml"
 if (-not (Test-Path $ConfigDest)) {
-    $RootConfig = Join-Path $CoreDir "..\ferrix.json"
+    $RootConfig = Join-Path $CoreDir "..\ferrix.yaml"
     if (Test-Path $RootConfig) {
         Copy-Item -Path $RootConfig -Destination $ConfigDest -Force
     }

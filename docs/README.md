@@ -28,7 +28,7 @@ Welcome to the official documentation for **Ferrix** — a high-performance web 
    - Codebase structure and modularity.
 
 4. [**04. Feature & Configuration Guide**](04-guia-de-configuracao.md)
-   - `ferrix.json` configuration structure.
+   - `ferrix.yaml` configuration structure.
    - Virtual Hosts, domain matching, and prefix/regex routing rules.
    - Load balancing algorithms (Round-Robin, Weighted, Least Connections, IP Hash, Random).
    - Active health checks and automated failover (`proxy_next_upstream`).

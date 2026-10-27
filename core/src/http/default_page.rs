@@ -20,10 +20,10 @@ pub fn render(show_version: bool) -> Response {
          </style>\n</head>\n<body>\n<h1>Welcome to Ferrix{version}!</h1>\n\
          <p>If you see this page, the Ferrix web server is successfully installed and working. \
          No virtual host matched this request yet.</p>\n\
-         <p>Add a virtual host in <code>ferrix.json</code> or the dashboard, and see the \
+         <p>Add a virtual host in <code>ferrix.yaml</code> or the dashboard, and see the \
          documentation at <a href=\"https://arthurlunkes.github.io/ferrix\">arthurlunkes.github.io/ferrix</a>.</p>\n\
-         <p>To hide this page set <code>\"default_page\": false</code> in the <code>http</code> \
-         section; <code>\"server_tokens\": false</code> hides the version.</p>\n\
+         <p>To hide this page set <code>default_page: false</code> in the <code>http</code> \
+         section; <code>server_tokens: false</code> hides the version.</p>\n\
          <p><em>Thank you for using Ferrix.</em></p>\n</body>\n</html>\n"
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()

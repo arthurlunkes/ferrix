@@ -10,6 +10,7 @@ backend/dist
 book
 *.log
 .DS_Store
+ferrix.yaml
 ferrix.json
 .ferrix.pid
 

@@ -11,6 +11,7 @@ const ADMIN_TOKEN = process.env.FERRIX_ADMIN_TOKEN || "";
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use(express.text({ type: "application/yaml", limit: "10mb" }));
 
 function getRequestAuth(req: Request): string | undefined {
   const auth = req.headers["authorization"];
@@ -176,6 +177,37 @@ app.get("/api/config", (req: Request, res: Response) => {
 
 app.post("/api/config", (req: Request, res: Response) => {
   proxyToCore(req, res, "/api/config", "POST");
+});
+
+// The config editor works on ferrix.yaml text; these pass it through untouched.
+async function proxyYamlToCore(req: Request, res: Response, targetPath: string) {
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/yaml" };
+    const auth = getRequestAuth(req);
+    if (auth) headers["Authorization"] = auth;
+    const coreRes = await fetch(new URL(targetPath, CORE_URL).toString(), {
+      method: req.method,
+      headers,
+      body: req.method === "POST" ? String(req.body ?? "") : undefined,
+    });
+    res.status(coreRes.status);
+    res.setHeader("Content-Type", coreRes.headers.get("content-type") || "text/plain");
+    res.send(await coreRes.text());
+  } catch (err: any) {
+    res.status(502).json({ error: `Ferrix core unreachable: ${err.message}` });
+  }
+}
+
+app.get("/api/config/yaml", (req: Request, res: Response) => {
+  proxyYamlToCore(req, res, "/api/config/yaml");
+});
+
+app.post("/api/config/yaml", (req: Request, res: Response) => {
+  proxyYamlToCore(req, res, "/api/config/yaml");
+});
+
+app.post("/api/config/yaml/validate", (req: Request, res: Response) => {
+  proxyYamlToCore(req, res, "/api/config/yaml/validate");
 });
 
 app.post("/api/config/validate", (req: Request, res: Response) => {

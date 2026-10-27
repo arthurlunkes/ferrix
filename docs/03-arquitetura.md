@@ -49,7 +49,7 @@ In Ferrix, taking advantage of Rust's atomic pointer primitives, we use the **`a
 2. During request processing, Tokio worker threads perform a quick lock-free load (`shared_config.load()`), requiring only a single atomic CPU instruction (no mutex locks, zero lock contention).
 3. When new configuration is submitted through the web dashboard or REST API:
    - The configuration is validated;
-   - Persisted safely to `ferrix.json` on disk;
+   - Persisted safely to `ferrix.yaml` on disk;
    - Stored atomically into the pointer via `shared_config.store(Arc::new(new_config))`.
 4. All incoming connections immediately see the updated routing table, while in-flight requests complete uninterrupted.
 5. **Result**: Zero downtime, zero dropped connections, and sub-millisecond reload latency.

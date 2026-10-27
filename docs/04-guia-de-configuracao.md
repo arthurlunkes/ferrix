@@ -1,23 +1,21 @@
 # 04. Configuration & Features Guide
 
-Ferrix's configuration file is stored in **JSON** format (defaulting to `ferrix.json`), enabling straightforward manipulation visually, via scripts, or with infrastructure-as-code tools.
+Ferrix's configuration file is written in **YAML** (`ferrix.yaml` by default), easy to edit by hand, review in Git or generate from infrastructure-as-code tools. The REST API and the dashboard exchange the same structure as JSON. A `ferrix.json` from an older version is still read; `ferrix convert-config ferrix.json ferrix.yaml` converts it.
 
 ---
 
-## 📄 General Structure of `ferrix.json`
+## 📄 General Structure of `ferrix.yaml`
 
-```json
-{
-  "admin": {
-    "listen": "127.0.0.1:8081"
-  },
-  "http": {
-    "listen": "0.0.0.0:8000",
-    "worker_threads": 4
-  },
-  "upstreams": { ... },
-  "vhosts": [ ... ]
-}
+```yaml
+admin:
+  listen: 127.0.0.1:8081
+http:
+  listen: 0.0.0.0:8000
+  worker_threads: 4
+upstreams:
+  # ... see "Upstreams and Load Balancing"
+vhosts:
+  # ... see "Virtual Hosts"
 ```
 
 ---
@@ -26,29 +24,25 @@ Ferrix's configuration file is stored in **JSON** format (defaulting to `ferrix.
 
 Each Virtual Host represents a server block (equivalent to an Nginx `server { ... }` block).
 
-```json
-{
-  "id": "main-vhost",
-  "name": "My Web Application",
-  "server_names": ["mydomain.com", "www.mydomain.com", "localhost"],
-  "listen_port": 8000,
-  "headers": {
-    "X-Powered-By": "Ferrix/0.1.0",
-    "X-Frame-Options": "SAMEORIGIN",
-    "X-Content-Type-Options": "nosniff"
-  },
-  "allowed_ips": [],
-  "denied_ips": ["192.168.1.100"],
-  "basic_auth": {
-    "username": "admin",
-    "password": "secure_password_here"
-  },
-  "rate_limit": {
-    "requests_per_second": 50,
-    "burst": 100
-  },
-  "routes": [ ... ]
-}
+```yaml
+id: main-vhost
+name: My Web Application
+server_names: [mydomain.com, www.mydomain.com, localhost]
+listen_port: 8000
+headers:
+  X-Powered-By: Ferrix/0.1.0
+  X-Frame-Options: SAMEORIGIN
+  X-Content-Type-Options: nosniff
+allowed_ips: []
+denied_ips: [192.168.1.100]
+basic_auth:
+  username: admin
+  password: secure_password_here
+rate_limit:
+  requests_per_second: 50
+  burst: 100
+routes:
+  # ... see "Routing Rules"
 ```
 
 ### Virtual Host Properties:
@@ -73,24 +67,20 @@ Inside each Virtual Host, you configure path routing rules (`routes`), equivalen
 
 Forwards traffic to a backend server pool:
 
-```json
-{
-  "id": "api-route",
-  "path_prefix": "/api",
-  "strip_prefix": false,
-  "target_type": "proxy_upstream",
-  "upstream_name": "my_backend_cluster",
-  "websocket_enabled": true,
-  "proxy_set_headers": {
-    "Host": "$host",
-    "X-Real-IP": "$remote_addr",
-    "X-Forwarded-For": "$proxy_add_x_forwarded_for",
-    "X-Forwarded-Proto": "$scheme"
-  },
-  "add_headers": {
-    "Access-Control-Allow-Origin": "*"
-  }
-}
+```yaml
+id: api-route
+path_prefix: /api
+strip_prefix: false
+target_type: proxy_upstream
+upstream_name: my_backend_cluster
+websocket_enabled: true
+proxy_set_headers:
+  Host: $host
+  X-Real-IP: $remote_addr
+  X-Forwarded-For: $proxy_add_x_forwarded_for
+  X-Forwarded-Proto: $scheme
+add_headers:
+  Access-Control-Allow-Origin: '*'
 ```
 
 - `strip_prefix`: If `true`, strips `/api` from the URI path before forwarding to the backend.
@@ -101,16 +91,14 @@ Forwards traffic to a backend server pool:
 
 Serves local disk files and routes missing paths to `index.html`:
 
-```json
-{
-  "id": "frontend-route",
-  "path_prefix": "/",
-  "strip_prefix": false,
-  "target_type": "static_files",
-  "static_root": "./frontend/dist",
-  "try_files": "$uri $uri/ /index.html",
-  "websocket_enabled": false
-}
+```yaml
+id: frontend-route
+path_prefix: /
+strip_prefix: false
+target_type: static_files
+static_root: ./frontend/dist
+try_files: $uri $uri/ /index.html
+websocket_enabled: false
 ```
 
 - `static_root`: Local disk path where files are hosted.
@@ -120,15 +108,13 @@ Serves local disk files and routes missing paths to `index.html`:
 
 Redirects the browser to an alternate URL:
 
-```json
-{
-  "id": "docs-route",
-  "path_prefix": "/docs",
-  "strip_prefix": false,
-  "target_type": "redirect",
-  "redirect_url": "https://github.com/my-project",
-  "redirect_code": 301
-}
+```yaml
+id: docs-route
+path_prefix: /docs
+strip_prefix: false
+target_type: redirect
+redirect_url: https://github.com/my-project
+redirect_code: 301
 ```
 
 ---
@@ -137,35 +123,25 @@ Redirects the browser to an alternate URL:
 
 Upstreams define pools of backend servers that share incoming workload.
 
-```json
-{
-  "upstreams": {
-    "my_backend_cluster": {
-      "name": "my_backend_cluster",
-      "algorithm": "round_robin",
-      "targets": [
-        {
-          "url": "http://10.0.0.1:3000",
-          "weight": 3,
-          "max_fails": 3,
-          "fail_timeout_secs": 10
-        },
-        {
-          "url": "http://10.0.0.2:3000",
-          "weight": 1,
-          "max_fails": 3,
-          "fail_timeout_secs": 10
-        }
-      ],
-      "health_check": {
-        "path": "/health",
-        "interval_secs": 5,
-        "timeout_secs": 2,
-        "expected_status": 200
-      }
-    }
-  }
-}
+```yaml
+upstreams:
+  my_backend_cluster:
+    name: my_backend_cluster
+    algorithm: round_robin
+    targets:
+      - url: http://10.0.0.1:3000
+        weight: 3
+        max_fails: 3
+        fail_timeout_secs: 10
+      - url: http://10.0.0.2:3000
+        weight: 1
+        max_fails: 3
+        fail_timeout_secs: 10
+    health_check:
+      path: /health
+      interval_secs: 5
+      timeout_secs: 2
+      expected_status: 200
 ```
 
 ### Supported Balancing Algorithms (`algorithm`):
@@ -177,8 +153,15 @@ Upstreams define pools of backend servers that share incoming workload.
 5. **`random`**: Uniform random distribution among healthy nodes.
 6. **`consistent_hash`**: Ketama-style consistent hashing on `hash_key` (nginx `hash ... consistent`). Adding or removing a server only remaps the keys that belonged to it. `hash_key` accepts `$remote_addr` (default), `$request_uri`, `$uri`, `$host`, `$http_<header>`, `$cookie_<name>` and `$arg_<name>`.
 
-```json
-"api": { "name": "api", "algorithm": "consistent_hash", "hash_key": "$request_uri", "targets": [ ... ] }
+```yaml
+upstreams:
+  api:
+    name: api
+    algorithm: consistent_hash
+    hash_key: $request_uri
+    targets:
+      - url: http://10.0.0.1:8080
+      - url: http://10.0.0.2:8080
 ```
 
 ### Automatic Failover (_proxy_next_upstream_):
@@ -196,8 +179,9 @@ If a pool node fails (connection error, timeout, or HTTP 502/504 status code):
 
 Metrics are **off by default**, like nginx's `stub_status`. While disabled, the proxy does no per-request bookkeeping at all: no counters, no in-memory request log, no byte counting. Turn them on when you want the dashboard charts, Live Requests or Prometheus:
 
-```json
-"metrics": { "enabled": true }
+```yaml
+metrics:
+  enabled: true
 ```
 
 When enabled:
@@ -205,23 +189,28 @@ When enabled:
 - `GET /metrics` on the admin port serves Prometheus text format (`ferrix_requests_total`, `ferrix_request_duration_seconds` histogram, `ferrix_response_bytes_total`, `ferrix_active_requests`, `ferrix_upstream_up`). It uses the admin authentication unless `admin.metrics_public` is `true`.
 - `/api/metrics`, `/api/logs` and `/api/logs/stream` feed the dashboard.
 
-Turning metrics on costs roughly 4–9% of throughput in the benchmarks. The control plane itself can be switched off with `"admin": { "enabled": false }`; Ferrix is then configured only through `ferrix.json` and `ferrix reload`. The Node.js backend and the React dashboard are separate processes; the core never needs them.
+Turning metrics on costs roughly 4–9% of throughput in the benchmarks. The control plane itself can be switched off with `admin: { enabled: false }`; Ferrix is then configured only through `ferrix.yaml` and `ferrix reload`. The Node.js backend and the React dashboard are separate processes; the core never needs them.
 
 ## 🗜️ Compression
 
-```json
-"http": {
-  "compression": {
-    "enabled": true,
-    "level": "default",
-    "min_length": 1024,
-    "algorithms": ["zstd", "br", "gzip"],
-    "types": ["text/*", "application/json", "application/javascript", "image/svg+xml"]
-  }
-}
+```yaml
+http:
+  compression:
+    enabled: true
+    level: default
+    min_length: 1024
+    algorithms:
+      - zstd
+      - br
+      - gzip
+    types:
+      - text/*
+      - application/json
+      - application/javascript
+      - image/svg+xml
 ```
 
-The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`. A route can override the global switch with `"compression": true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
+The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`. A route can override the global switch with `compression: true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
 
 ## 📁 Static files: caching and ranges
 
@@ -229,28 +218,35 @@ Static responses carry `ETag` and `Last-Modified`. `If-None-Match` and `If-Modif
 
 ## 🌍 CORS
 
-```json
-"cors": {
-  "allow_origins": ["https://app.example.com"],
-  "allow_methods": ["GET", "POST"],
-  "allow_headers": ["Authorization", "Content-Type"],
-  "expose_headers": ["X-Request-Id"],
-  "allow_credentials": true,
-  "max_age_secs": 600
-}
+```yaml
+cors:
+  allow_origins:
+    - https://app.example.com
+  allow_methods:
+    - GET
+    - POST
+  allow_headers:
+    - Authorization
+    - Content-Type
+  expose_headers:
+    - X-Request-Id
+  allow_credentials: true
+  max_age_secs: 600
 ```
 
 Set this on a route. Preflight requests (`OPTIONS` with `Access-Control-Request-Method`) are answered by Ferrix without reaching the upstream. `"*"` in `allow_origins` allows any origin. With credentials enabled, the origin is echoed back instead of `*`.
 
 ## 🧾 Custom error pages and request IDs
 
-```json
-"error_pages": { "404": "/var/www/errors/404.html", "5xx": "/var/www/errors/50x.html" }
+```yaml
+error_pages:
+  '404': /var/www/errors/404.html
+  5xx: /var/www/errors/50x.html
 ```
 
 `error_pages` belongs to a virtual host and replaces the body of the errors Ferrix generates itself, while keeping the status code. Error responses that come from an upstream pass through untouched, like nginx without `proxy_intercept_errors`.
 
-`"http": { "request_id": true }` adds an `X-Request-Id` to the upstream request and to the response. An ID already sent by the client is kept.
+`http: { request_id: true }` adds an `X-Request-Id` to the upstream request and to the response. An ID already sent by the client is kept.
 
 ## 🔐 HTTPS: several certificates per port (SNI) and Let's Encrypt
 
@@ -258,12 +254,18 @@ Any number of virtual hosts can share a TLS port. The certificate is chosen per 
 
 For automatic certificates, use `acme` instead of file paths:
 
-```json
-"acme": { "email": "admin@example.com", "storage_dir": "./acme" },
-"vhosts": [
-  { "id": "site", "server_names": ["example.com", "www.example.com"], "listen_port": 443,
-    "tls": { "acme": true }, "routes": [ ... ] }
-]
+```yaml
+acme:
+  email: admin@example.com
+  storage_dir: ./acme
+vhosts:
+  - id: site
+    server_names: [example.com, www.example.com]
+    listen_port: 443
+    tls:
+      acme: true
+    routes:
+      # ...
 ```
 
 Ferrix answers the HTTP-01 challenge on its plain-HTTP ports, so port 80 must reach it. Certificates are stored in `storage_dir` and renewed `renew_before_days` (default 30) before they expire. To test against Let's Encrypt staging, set `"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory"`. Wildcard names can't be validated over HTTP-01 and are skipped.
@@ -272,15 +274,21 @@ Ferrix answers the HTTP-01 challenge on its plain-HTTP ports, so port 80 must re
 
 Layer-4 proxying, like nginx's `stream {}` block. It works for databases, Redis, MQTT, DNS and anything else that runs over TCP or UDP:
 
-```json
-"upstreams": {
-  "pg": { "name": "pg", "algorithm": "least_conn",
-          "targets": [{ "url": "tcp://10.0.0.5:5432" }, { "url": "tcp://10.0.0.6:5432" }] }
-},
-"streams": [
-  { "id": "postgres", "listen": "0.0.0.0:5432", "protocol": "tcp", "upstream": "pg",
-    "connect_timeout_ms": 5000, "idle_timeout_ms": 600000 }
-]
+```yaml
+upstreams:
+  pg:
+    name: pg
+    algorithm: least_conn
+    targets:
+      - url: tcp://10.0.0.5:5432
+      - url: tcp://10.0.0.6:5432
+streams:
+  - id: postgres
+    listen: 0.0.0.0:5432
+    protocol: tcp
+    upstream: pg
+    connect_timeout_ms: 5000
+    idle_timeout_ms: 600000
 ```
 
 Streams use the pool's balancing algorithm and passive health marking. `ferrix import` converts nginx `stream {}` blocks automatically. Streams start with the process; adding a new one needs a restart.
@@ -289,15 +297,14 @@ Streams use the pool's balancing algorithm and passive health marking. `ferrix i
 
 These live in the `http` section and mirror nginx's main-context directives:
 
-```json
-"http": {
-  "worker_threads": 4,
-  "worker_cpu_affinity": "auto",
-  "worker_connections": 4096,
-  "worker_rlimit_nofile": 65535,
-  "server_tokens": true,
-  "default_page": true
-}
+```yaml
+http:
+  worker_threads: 4
+  worker_cpu_affinity: auto
+  worker_connections: 4096
+  worker_rlimit_nofile: 65535
+  server_tokens: true
+  default_page: true
 ```
 
 | Ferrix (`http.*`) | nginx | What it does |

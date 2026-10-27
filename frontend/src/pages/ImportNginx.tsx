@@ -10,7 +10,7 @@ import { api, FerrixConfig, ImportNginxResult, MigrationNote } from "../services
 const PLACEHOLDER = `# Paste the contents of your nginx.conf here, or a site config block (server { ... }).
 #
 # Note: "include" directives to other files are not traversed here — paste pre-expanded content,
-# or use "ferrix import --from nginx.conf --out ferrix.json --report report.md" on the
+# or use "ferrix import --from nginx.conf --out ferrix.yaml --report report.md" on the
 # host where the files reside, which resolves includes automatically.
 
 server {
@@ -201,7 +201,7 @@ export const ImportNginx: React.FC<ImportNginxProps> = ({ onApplied }) => {
                 </div>
               )}
 
-              <CodeBlock code={JSON.stringify(result.config, null, 2)} maxHeight="16rem" />
+              <CodeBlock code={result.config_yaml ?? JSON.stringify(result.config, null, 2)} maxHeight="16rem" />
 
               <Button
                 variant="primary"

@@ -11,8 +11,8 @@ export const MetricsDisabledNotice: React.FC = () => (
       <p className="font-semibold text-content-primary">Metrics are disabled</p>
       <p className="text-xs text-content-muted mt-1 leading-relaxed">
         Ferrix skips per-request bookkeeping by default to stay lightweight. To see traffic
-        here, add <code className="font-mono">"metrics": {"{"} "enabled": true {"}"}</code> to
-        ferrix.json (Config Editor) and reload.
+        here, add <code className="font-mono">metrics: {"{"} enabled: true {"}"}</code> to
+        ferrix.yaml (Config Editor) and reload.
       </p>
     </div>
   </div>

@@ -258,6 +258,8 @@ export interface MigrationReport {
 
 export interface ImportNginxResult {
   config: FerrixConfig;
+  /** The converted config as YAML, ready to save as ferrix.yaml. */
+  config_yaml?: string;
   report: MigrationReport;
   validation: ValidationReport;
 }
@@ -339,6 +341,16 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function postText<T>(path: string, text: string): Promise<T> {
+  const res = await authFetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/yaml" },
+    body: text,
+  });
+  if (!res.ok) return throwApiError(res, `POST ${path} failed`);
+  return res.json();
+}
+
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -390,6 +402,21 @@ export const api = {
 
   validateConfig: (config: FerrixConfig) =>
     postJson<ValidationReport>("/config/validate", config),
+
+  /** The active configuration as YAML, as written to ferrix.yaml. */
+  async getConfigYaml(): Promise<string> {
+    const res = await authFetch(`${API_BASE}/config/yaml`);
+    if (!res.ok) return throwApiError(res, "GET /config/yaml failed");
+    return res.text();
+  },
+
+  async updateConfigYaml(yaml: string): Promise<{ status: string; report: ValidationReport }> {
+    return postText("/config/yaml", yaml);
+  },
+
+  async validateConfigYaml(yaml: string): Promise<ValidationReport> {
+    return postText("/config/yaml/validate", yaml);
+  },
 
   routeTest: (params: { host: string; path: string; port?: number }) =>
     postJson<RouteTestResult>("/route-test", params),

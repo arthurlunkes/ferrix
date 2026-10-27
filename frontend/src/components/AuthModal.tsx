@@ -40,7 +40,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onSuccess();
     } else {
       setError(
-        "Invalid or rejected token. Check your ferrix.json file.",
+        "Invalid or rejected token. Check your ferrix.yaml file.",
       );
     }
   };
@@ -75,7 +75,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           Ferrix requires a token to access telemetry, routes, and live logs.
           Enter the token configured in your{" "}
           <code className="px-1.5 py-0.5 rounded bg-gray-800 text-emerald-400 font-mono text-xs">
-            ferrix.json
+            ferrix.yaml
           </code>
           :
         </p>
@@ -92,7 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setTokenInput(e.target.value);
                 setError(null);
               }}
-              placeholder="token from ferrix.json"
+              placeholder="token from ferrix.yaml"
               className="w-full px-3.5 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               autoFocus
             />

@@ -977,25 +977,58 @@ pub enum ConfigLoad {
     },
 }
 
+/// On-disk format of the configuration file, chosen by its extension. YAML is the
+/// format; JSON is still read (and written back as JSON) for files created by older
+/// versions. The REST API always speaks JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFormat {
+    Yaml,
+    Json,
+}
+
+impl ConfigFormat {
+    pub fn of(path: &Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(e) if e.eq_ignore_ascii_case("json") => ConfigFormat::Json,
+            _ => ConfigFormat::Yaml,
+        }
+    }
+}
+
+const YAML_HEADER: &str = "# Ferrix configuration. Every option is described in\n\
+# https://arthurlunkes.github.io/ferrix (04. Configuration Guide).\n\
+# Apply changes without a restart: `ferrix reload` (or SIGHUP).\n\n";
+
 impl FerrixConfig {
+    pub fn parse(data: &str, format: ConfigFormat) -> Result<Self, String> {
+        match format {
+            ConfigFormat::Yaml => serde_saphyr::from_str(data).map_err(|e| e.to_string()),
+            ConfigFormat::Json => serde_json::from_str(data).map_err(|e| e.to_string()),
+        }
+    }
+
+    pub fn render(&self, format: ConfigFormat) -> Result<String, String> {
+        match format {
+            ConfigFormat::Yaml => serde_saphyr::to_string(self)
+                .map(|y| format!("{}{}", YAML_HEADER, y))
+                .map_err(|e| e.to_string()),
+            ConfigFormat::Json => serde_json::to_string_pretty(self).map_err(|e| e.to_string()),
+        }
+    }
+
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let p = path.as_ref();
         let data = std::fs::read_to_string(p)
             .map_err(|e| format!("Failed to read config file {}: {}", p.display(), e))?;
-        let cfg: Self = serde_json::from_str(&data)
-            .map_err(|e| format!("Invalid JSON config {}: {}", p.display(), e))?;
-        Ok(cfg)
+        Self::parse(&data, ConfigFormat::of(p))
+            .map_err(|e| format!("Invalid config {}: {}", p.display(), e))
     }
 
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> Result<ConfigLoad, String> {
         let p = path.as_ref();
 
         if p.exists() {
-            let data = std::fs::read_to_string(p)
-                .map_err(|e| format!("Failed to read config file {}: {}", p.display(), e))?;
-            let cfg: Self = serde_json::from_str(&data)
-                .map_err(|e| format!("Invalid JSON config {}: {}", p.display(), e))?;
-            return Ok(ConfigLoad::Loaded(cfg));
+            return Self::load(p).map(ConfigLoad::Loaded);
         }
 
         let mut default_cfg = Self::default();
@@ -1006,14 +1039,7 @@ impl FerrixConfig {
             username: None,
             password: None,
         };
-
-        let json = serde_json::to_string_pretty(&default_cfg)
-            .map_err(|e| format!("Failed to serialize default config: {}", e))?;
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(p, json)
-            .map_err(|e| format!("Failed to write default config to {}: {}", p.display(), e))?;
+        default_cfg.save_to_file(p)?;
 
         Ok(ConfigLoad::Created {
             config: default_cfg,
@@ -1021,14 +1047,16 @@ impl FerrixConfig {
         })
     }
 
+    /// Writes the config in the format its file extension calls for.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let p = path.as_ref();
-        let json = serde_json::to_string_pretty(self)
+        let text = self
+            .render(ConfigFormat::of(p))
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(p, json)
+        std::fs::write(p, text)
             .map_err(|e| format!("Failed to write config to {}: {}", p.display(), e))?;
         Ok(())
     }
@@ -1037,6 +1065,50 @@ impl FerrixConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yaml_round_trip_keeps_every_field() {
+        let mut cfg = FerrixConfig::default();
+        cfg.http.worker_cpu_affinity = CpuAffinity::Cores(vec![0, 2]);
+        cfg.http.compression.enabled = true;
+        cfg.metrics.enabled = true;
+        let yaml = cfg.render(ConfigFormat::Yaml).unwrap();
+        assert!(yaml.starts_with("# Ferrix configuration"));
+        let back = FerrixConfig::parse(&yaml, ConfigFormat::Yaml).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&cfg).unwrap()
+        );
+    }
+
+    #[test]
+    fn hand_written_yaml_uses_defaults_for_missing_fields() {
+        let yaml = "http:\n  listen: 0.0.0.0:8080\n  worker_cpu_affinity: auto\nvhosts:\n  - id: site\n    name: Site\n    server_names: [example.com]\n    routes:\n      - id: root\n        path_prefix: /\n        target_type: static_files\n        static_root: /var/www\n";
+        let cfg = FerrixConfig::parse(yaml, ConfigFormat::Yaml).unwrap();
+        assert_eq!(cfg.http.listen, "0.0.0.0:8080");
+        assert_eq!(cfg.http.worker_cpu_affinity, CpuAffinity::Auto);
+        assert_eq!(
+            cfg.vhosts[0].routes[0].static_root.as_deref(),
+            Some("/var/www")
+        );
+        assert_eq!(cfg.admin.listen, "127.0.0.1:8081");
+    }
+
+    #[test]
+    fn format_follows_the_extension() {
+        assert_eq!(
+            ConfigFormat::of(Path::new("ferrix.yaml")),
+            ConfigFormat::Yaml
+        );
+        assert_eq!(
+            ConfigFormat::of(Path::new("/etc/ferrix/ferrix.yml")),
+            ConfigFormat::Yaml
+        );
+        assert_eq!(
+            ConfigFormat::of(Path::new("old/ferrix.JSON")),
+            ConfigFormat::Json
+        );
+    }
 
     #[test]
     fn legacy_config_still_deserializes() {

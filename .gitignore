@@ -15,8 +15,10 @@ dist/
 /book/
 
 # Runtime, logs and configuration generated locally (never committed)
-# ferrix.json contains private admin tokens and local machine bindings.
+# ferrix.yaml (and the legacy ferrix.json) contain private admin tokens and local
+# machine bindings.
 # A default configuration is automatically generated on first run.
+ferrix.yaml
 ferrix.json
 ferrix.log
 .ferrix.pid
@@ -45,4 +47,4 @@ Thumbs.db
 *.tmp
 
 # Benchmarks config is versioned intentionally
-!benchmarks/conf/ferrix.json
+!benchmarks/conf/ferrix.yaml

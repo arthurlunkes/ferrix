@@ -11,7 +11,7 @@ git clone https://github.com/<your-user>/ferrix.git && cd ferrix
 cargo build --workspace                       # Rust core
 (cd backend && npm install && npm run build)  # Node.js backend
 (cd frontend && npm install && npm run dev)   # React dashboard with hot reload
-./target/debug/ferrix --config ferrix.json    # creates ferrix.json on first run
+./target/debug/ferrix --config ferrix.yaml    # creates ferrix.yaml on first run
 node test_backends.js                         # optional mock upstreams
 ```
 
@@ -21,7 +21,7 @@ Where things live: `core/` (Rust proxy engine; its `src/` mirrors nginx's layout
 
 Open an [_issue_](https://github.com/arthurlunkes/ferrix/issues/new/choose) describing:
 
-- what you did (commands, the relevant part of `ferrix.json` — **without tokens or passwords**);
+- what you did (commands, the relevant part of `ferrix.yaml` — **without tokens or passwords**);
 - what you expected to happen;
 - what actually happened (error messages, logs);
 - your operating system and Rust and Node.js versions.

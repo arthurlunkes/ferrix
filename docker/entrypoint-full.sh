@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 
-CONFIG_PATH="${FERRIX_CONFIG:-/etc/ferrix/ferrix.json}"
+CONFIG_PATH="${FERRIX_CONFIG:-/etc/ferrix/ferrix.yaml}"
 
-if [ ! -f "$CONFIG_PATH" ] && [ -f /etc/ferrix/ferrix.example.json ]; then
+if [ ! -f "$CONFIG_PATH" ] && [ -f /etc/ferrix/ferrix.example.yaml ]; then
     echo "[Ferrix Full] Initializing default configuration at $CONFIG_PATH..."
     mkdir -p "$(dirname "$CONFIG_PATH")"
-    cp /etc/ferrix/ferrix.example.json "$CONFIG_PATH"
+    cp /etc/ferrix/ferrix.example.yaml "$CONFIG_PATH"
 fi
 
 echo "================================================================"

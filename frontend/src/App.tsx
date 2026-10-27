@@ -139,11 +139,6 @@ export function App() {
     setConfig(cfg);
   };
 
-  const handleSaveConfig = async (newCfg: FerrixConfig) => {
-    await api.updateConfig(newCfg);
-    await loadAllData();
-  };
-
   const handleAuthSuccess = () => {
     setIsAuthenticated(true);
     setShowAuthModal(false);
@@ -214,7 +209,7 @@ export function App() {
           <Route
             path="/config"
             element={
-              <ConfigEditor config={config} onSaveConfig={handleSaveConfig} onRefreshConfig={loadAllData} />
+              <ConfigEditor config={config} onRefreshConfig={loadAllData} />
             }
           />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

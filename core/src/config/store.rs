@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn apply_swaps_config_and_recompiles_derived_state() {
-        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.json");
+        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.yaml");
         assert_eq!(store.config().vhosts.len(), 1);
 
         let mut next = FerrixConfig::default();
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn acl_is_recompiled_on_apply() {
-        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.json");
+        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.yaml");
         let mut next = FerrixConfig::default();
         next.vhosts[0].denied_ips = vec!["172.31.0.0/16".to_string()];
         store.apply(next);
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn a_held_snapshot_survives_a_reload() {
-        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.json");
+        let store = ConfigStore::new(FerrixConfig::default(), "ferrix.yaml");
         let held = store.compiled();
 
         let mut next = FerrixConfig::default();

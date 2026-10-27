@@ -28,7 +28,15 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config",
             get(handlers::get_config).post(handlers::update_config),
         )
+        .route(
+            "/config/yaml",
+            get(handlers::get_config_yaml).post(handlers::update_config_yaml),
+        )
         .route("/config/validate", post(handlers::validate_config))
+        .route(
+            "/config/yaml/validate",
+            post(handlers::validate_config_yaml),
+        )
         .route("/route-test", post(handlers::route_test))
         .route("/import/nginx", post(handlers::import_nginx))
         .route(
@@ -96,7 +104,7 @@ async fn prometheus_metrics(State(state): State<AdminState>) -> axum::response::
     if !config.metrics.enabled {
         return (
             StatusCode::NOT_FOUND,
-            "metrics are disabled; set \"metrics\": { \"enabled\": true } in ferrix.json",
+            "metrics are disabled; set metrics.enabled: true in ferrix.yaml",
         )
             .into_response();
     }

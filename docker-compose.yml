@@ -11,7 +11,7 @@ services:
       - "8000:8000"   # Reverse Proxy traffic
       - "8081:8081"   # Control Plane / Admin REST API
     volumes:
-      - ./ferrix.json:/etc/ferrix/ferrix.json
+      - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
 
   # ----------------------------------------------------------------------------
   # Option 2: Full All-in-One with React Web Dashboard
@@ -26,5 +26,5 @@ services:
       - "8081:8081"   # Control Plane / Admin REST API
       - "8080:8080"   # React Web Dashboard & Gateway
     volumes:
-      - ./ferrix.json:/etc/ferrix/ferrix.json
+      - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
 

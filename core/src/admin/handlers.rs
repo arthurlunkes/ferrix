@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::config::store::ConfigStore;
 use crate::config::validate::{validate, ValidationReport};
-use crate::config::{FerrixConfig, UpstreamConfig, VirtualHost};
+use crate::config::{ConfigFormat, FerrixConfig, UpstreamConfig, VirtualHost};
 use crate::health::HealthChecker;
 use crate::metrics::MetricsCollector;
 
@@ -88,6 +88,21 @@ pub async fn validate_config(
     Json(report_payload(&validate(&candidate)))
 }
 
+/// Same as `POST /api/config/validate`, for YAML text.
+pub async fn validate_config_yaml(body: String) -> axum::response::Response {
+    match FerrixConfig::parse(&body, ConfigFormat::Yaml) {
+        Ok(candidate) => Json(report_payload(&validate(&candidate))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status": "invalid",
+                "message": format!("Invalid YAML: {}", e),
+            })),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn update_config(
     State(state): State<AdminState>,
     Json(new_config): Json<FerrixConfig>,
@@ -118,6 +133,38 @@ pub async fn update_config(
         "report": report_payload(&report),
         "config": (*state.store.config()).clone(),
     })))
+}
+
+/// The active configuration as YAML, exactly as it would be written to `ferrix.yaml`
+/// (the dashboard's config editor works on this text).
+pub async fn get_config_yaml(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.store.config().render(ConfigFormat::Yaml) {
+        Ok(yaml) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/yaml; charset=utf-8")],
+            yaml,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Replaces the configuration from YAML text: parsed, validated, persisted and
+/// hot-reloaded, with the same JSON result as `POST /api/config`.
+pub async fn update_config_yaml(
+    state: State<AdminState>,
+    body: String,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let new_config = FerrixConfig::parse(&body, ConfigFormat::Yaml).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status": "invalid",
+                "message": format!("Invalid YAML: {}", e),
+            })),
+        )
+    })?;
+    update_config(state, Json(new_config)).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -382,6 +429,7 @@ pub async fn import_nginx(Json(req): Json<ImportNginxRequest>) -> impl IntoRespo
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "status": "success",
+                    "config_yaml": result.config.render(ConfigFormat::Yaml).unwrap_or_default(),
                     "config": result.config,
                     "report": result.report,
                     "validation": report_payload(&validation),

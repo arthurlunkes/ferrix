@@ -146,8 +146,8 @@ jobs:
           mkdir -p "${DIR_NAME}/ui"
           cp "target/${{ matrix.target }}/release/ferrix" "${DIR_NAME}/"
           cp README.md LICENSE "${DIR_NAME}/"
-          [ -f ferrix.example.json ] && cp ferrix.example.json "${DIR_NAME}/" || true
-          [ -f ferrix.json ] && cp ferrix.json "${DIR_NAME}/" || true
+          [ -f ferrix.example.yaml ] && cp ferrix.example.yaml "${DIR_NAME}/" || true
+          [ -f ferrix.yaml ] && cp ferrix.yaml "${DIR_NAME}/" || true
           cp -r frontend/dist/* "${DIR_NAME}/ui/"
           tar -czvf "${ARCHIVE_NAME}.tar.gz" -C /tmp "${ARCHIVE_NAME}"
           if command -v sha256sum >/dev/null 2>&1; then
@@ -166,8 +166,8 @@ jobs:
           mkdir -p "${DIR_NAME}/ui"
           cp "target/${{ matrix.target }}/release/ferrix.exe" "${DIR_NAME}/"
           cp README.md LICENSE "${DIR_NAME}/"
-          [ -f ferrix.example.json ] && cp ferrix.example.json "${DIR_NAME}/" || true
-          [ -f ferrix.json ] && cp ferrix.json "${DIR_NAME}/" || true
+          [ -f ferrix.example.yaml ] && cp ferrix.example.yaml "${DIR_NAME}/" || true
+          [ -f ferrix.yaml ] && cp ferrix.yaml "${DIR_NAME}/" || true
           cp -r frontend/dist/* "${DIR_NAME}/ui/"
           7z a "${ARCHIVE_NAME}.zip" "${DIR_NAME}"
           certutil -hashfile "${ARCHIVE_NAME}.zip" SHA256 | grep -v "hash" | tr -d ' \r\n' > "${ARCHIVE_NAME}.zip.sha256"

@@ -51,7 +51,7 @@
    - **Redirects and rewrites**: native 301, 302, 307 and 308 support.
 
 5. **Zero-downtime hot-reload**:
-   - Changes made in the web UI or via the REST API are applied instantly in memory using atomic pointers (`ArcSwap`) and persisted to `ferrix.json`, without closing sockets or dropping active connections.
+   - Changes made in the web UI or via the REST API are applied instantly in memory using atomic pointers (`ArcSwap`) and persisted to `ferrix.yaml`, without closing sockets or dropping active connections.
 
 6. **HTTPS, compression and layer 4**:
    - Several certificates per port chosen by **SNI**, and automatic **Let's Encrypt** certificates (ACME HTTP-01).
@@ -60,7 +60,7 @@
    - **TCP/UDP stream proxying** (nginx `stream {}`), `consistent_hash` balancing, per-route CORS, custom error pages and `X-Request-Id`.
 
 7. **Optional React web dashboard and telemetry API**:
-   - Metrics are **opt-in** (`"metrics": { "enabled": true }`), like nginx's `stub_status`. When they're off, the proxy does no per-request bookkeeping. When they're on, Prometheus `/metrics` and the dashboard light up.
+   - Metrics are **opt-in** (`metrics: { enabled: true }` in `ferrix.yaml`), like nginx's `stub_status`. When they're off, the proxy does no per-request bookkeeping. When they're on, Prometheus `/metrics` and the dashboard light up.
    - Metrics panel with RPS, average latency, p95, p99 and HTTP status distribution (2xx, 3xx, 4xx, 5xx).
    - Live request inspection table via **SSE**, with full details for each request.
    - Visual manager for virtual hosts, routes and upstream pools.
@@ -92,7 +92,7 @@ ferrix/
 │
 ├── static_demo/           # Demo folder of static files served by the core
 ├── docs/                  # Detailed documentation (Portuguese): overview, configuration, API...
-├── ferrix.json            # Local config (generated on first run, not tracked by git)
+├── ferrix.yaml            # Local config (generated on first run, not tracked by git)
 └── test_backends.js       # Mock servers for load-balancing tests
 ```
 
@@ -110,7 +110,7 @@ ferrix/
 ```bash
 # 1. Start the Rust core (proxy on :8000, control plane on :8081):
 cargo build --release --workspace
-./target/release/ferrix --config ferrix.json
+./target/release/ferrix --config ferrix.yaml
 
 # 2. Start the Node.js backend (API and dashboard on :8080):
 cd backend
@@ -125,7 +125,7 @@ node test_backends.js
 Then:
 
 1. Open **`http://localhost:8080`** in your browser to access the dashboard.
-2. Enter the admin token. On first run, Ferrix creates `ferrix.json` with a random token (the `token` field); use that value.
+2. Enter the admin token. On first run, Ferrix creates `ferrix.yaml` with a random token (the `token` field); use that value.
 3. Send requests to `http://localhost:8000/api` and watch the balanced traffic live on the dashboard!
 
 ### 🐳 3. Running with Docker (GitHub Packages)
@@ -139,7 +139,7 @@ docker run -d \
   --name ferrix \
   -p 8000:8000 \
   -p 8081:8081 \
-  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   ghcr.io/arthurlunkes/ferrix:latest
 ```
 
@@ -151,7 +151,7 @@ docker run -d \
   -p 8000:8000 \
   -p 8081:8081 \
   -p 8080:8080 \
-  -v $(pwd)/ferrix.json:/etc/ferrix/ferrix.json \
+  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   ghcr.io/arthurlunkes/ferrix:full
 ```
 
@@ -191,6 +191,8 @@ sudo ./core/scripts/install.sh
 | `GET`    | `/api/logs/stream`     | Live request stream via Server-Sent Events (SSE)  |
 | `GET`    | `/api/config`          | Active JSON configuration                         |
 | `POST`   | `/api/config`          | Updates the global config with atomic hot-reload  |
+| `GET`    | `/api/config/yaml`     | Active configuration as `ferrix.yaml` text        |
+| `POST`   | `/api/config/yaml`     | Applies YAML text (validated, saved, hot-reloaded) |
 | `GET`    | `/api/vhosts`          | List virtual hosts                                |
 | `POST`   | `/api/vhosts`          | Create or update a virtual host                   |
 | `DELETE` | `/api/vhosts/:id`      | Delete a virtual host                             |

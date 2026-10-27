@@ -38,7 +38,7 @@ FROM node:22-alpine AS full
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=rust-builder /src/target/release/ferrix /usr/local/bin/ferrix
-COPY ferrix.example.json /etc/ferrix/ferrix.example.json
+COPY ferrix.example.yaml /etc/ferrix/ferrix.example.yaml
 COPY docker/entrypoint-full.sh /usr/local/bin/entrypoint-full.sh
 RUN chmod +x /usr/local/bin/entrypoint-full.sh
 
@@ -50,7 +50,7 @@ VOLUME ["/etc/ferrix"]
 
 ENV PORT=8080 \
     FERRIX_CORE_URL=http://127.0.0.1:8081 \
-    FERRIX_CONFIG=/etc/ferrix/ferrix.json
+    FERRIX_CONFIG=/etc/ferrix/ferrix.yaml
 
 EXPOSE 8000 8081 8080
 
@@ -69,7 +69,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     chown -R ferrix:ferrix /etc/ferrix
 
 COPY --from=rust-builder /src/target/release/ferrix /usr/local/bin/ferrix
-COPY ferrix.example.json /etc/ferrix/ferrix.example.json
+COPY ferrix.example.yaml /etc/ferrix/ferrix.example.yaml
 
 USER ferrix:ferrix
 WORKDIR /etc/ferrix
@@ -79,4 +79,4 @@ VOLUME ["/etc/ferrix"]
 EXPOSE 8000 8081
 
 ENTRYPOINT ["/usr/local/bin/ferrix"]
-CMD ["--config", "/etc/ferrix/ferrix.json"]
+CMD ["--config", "/etc/ferrix/ferrix.yaml"]
