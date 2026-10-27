@@ -34,6 +34,8 @@ pub struct Args {
     pub http_listen: Option<String>,
     pub test: bool,
     pub signal: Option<String>,
+    /// Internal: set by the supervisor on the server process it starts.
+    pub worker_process: bool,
 }
 
 /// What the process should do instead of running a command.
@@ -83,6 +85,7 @@ impl Args {
             http_listen: None,
             test: false,
             signal: None,
+            worker_process: false,
         };
         let mut positional: Vec<String> = Vec::new();
         let mut import_from = None;
@@ -109,6 +112,7 @@ impl Args {
                 "--admin-listen" => args.admin_listen = Some(value("--admin-listen")?),
                 "--http-listen" => args.http_listen = Some(value("--http-listen")?),
                 "-t" | "--test" => args.test = true,
+                "--worker-process" => args.worker_process = true,
                 "-s" | "--signal" => args.signal = Some(value("--signal")?),
                 "--from" => import_from = Some(PathBuf::from(value("--from")?)),
                 "--out" => import_out = Some(PathBuf::from(value("--out")?)),

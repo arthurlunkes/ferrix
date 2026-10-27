@@ -147,6 +147,19 @@ Test syntax without applying:
 
 ---
 
+### Master process (automatic restarts)
+
+Like nginx, `ferrix run` keeps a small **master process** that starts the actual server
+as a child and restarts it within ~100 ms if it ever dies (with a growing delay if it
+keeps failing). `ferrix reload` and `ferrix stop` signal the master, which forwards
+them. Configuration errors are not retried: the server exits and so does the master.
+
+Release builds use `panic = "abort"`: a bug that panics ends the server process instead
+of unwinding, which saves ~1 MB of resident code; the master brings it back.
+
+Under a service manager that already restarts Ferrix (systemd `Restart=`, Docker
+`restart:`), you can run the server directly with `FERRIX_SUPERVISOR=0`.
+
 ## 🧪 Testing with Mock Backends
 
 To experiment with load balancing, you can run the provided `test_backends.js` script:

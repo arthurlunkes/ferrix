@@ -18,6 +18,10 @@ readme = "README.md"
 lto = "fat"
 codegen-units = 1
 strip = true
+# No unwinding tables (~1 MB less resident code). A panic ends the server process and
+# the supervisor (`ferrix run`'s master process) restarts it, like nginx's master
+# restarting a crashed worker.
+panic = "abort"
 
 # Code that only runs at startup, on config changes or in the admin API is compiled for
 # size: it stays mapped in every running server, but speed doesn't matter there. The

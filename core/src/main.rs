@@ -2,6 +2,8 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod cli;
+#[cfg(unix)]
+mod supervisor;
 
 use cli::{Args, Command as Commands, DEFAULT_CONFIG};
 #[cfg(feature = "admin")]
@@ -318,10 +320,23 @@ async fn async_main() -> ExitCode {
         Some(Commands::Run) | None => {
             ferrix::log::init("ferrix=info");
 
+            #[cfg(unix)]
+            if !args.worker_process && supervisor::enabled() {
+                let pid_file = pid_file_path(&args.config);
+                return supervisor::run(&args, &pid_file).await;
+            }
+
+            let worker_process = args.worker_process;
             match run_server(args).await {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(message) => {
                     error!("{}", message);
+                    // Tell the supervisor this won't get better by restarting.
+                    #[cfg(unix)]
+                    if worker_process {
+                        return ExitCode::from(supervisor::EXIT_FATAL);
+                    }
+                    let _ = worker_process;
                     ExitCode::FAILURE
                 }
             }
@@ -860,9 +875,11 @@ async fn run_server(args: Args) -> Result<(), String> {
         ferrix::stream::spawn(proxy_engine.clone(), stream);
     }
 
+    // Under the supervisor, the parent owns the PID file (signals go to it).
     let pid_file = pid_file_path(&args.config);
-    let pid = std::process::id();
-    let _ = std::fs::write(&pid_file, pid.to_string());
+    if !args.worker_process {
+        let _ = std::fs::write(&pid_file, std::process::id().to_string());
+    }
 
     println!("\n┌──────────────────────────────────────────────────────────────────┐");
     println!("│  ⚡ Ferrix v{:<52}│", env!("CARGO_PKG_VERSION"));
@@ -930,7 +947,9 @@ async fn run_server(args: Args) -> Result<(), String> {
         }
     }
 
-    let _ = std::fs::remove_file(&pid_file);
+    if !args.worker_process {
+        let _ = std::fs::remove_file(&pid_file);
+    }
     admin_handle.abort();
 
     Ok(())
