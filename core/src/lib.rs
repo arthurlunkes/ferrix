@@ -2,6 +2,7 @@
 pub mod admin;
 pub mod config;
 pub mod event;
+pub mod fasthash;
 pub mod health;
 pub mod http;
 pub mod log;

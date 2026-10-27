@@ -253,6 +253,9 @@ pub(super) fn prepare_forwarded_headers(
     is_tls: bool,
 ) {
     let scheme = scheme_str(is_tls);
+    // Room for the X-Real-IP / X-Forwarded-* entries up front, so adding them never
+    // rehashes the map.
+    headers.reserve(3 + route.proxy_set_headers.len());
     let host = headers.remove(header::HOST);
     strip_hop_by_hop(headers);
 

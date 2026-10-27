@@ -173,7 +173,9 @@ fn main() -> ExitCode {
     // Return freed memory to the OS right away instead of after 10 ms. Under load that
     // keeps ~2 MB less resident with no measurable throughput cost, like nginx giving
     // request pools back as soon as a request ends.
-    unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+    if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
+        unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+    }
 
     // The master process only waits for its child and forwards signals, so it runs
     // before (and without) the server's async runtime.

@@ -1,6 +1,5 @@
 use axum::http::{HeaderName, HeaderValue};
 use regex_lite::Regex;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{
@@ -184,9 +183,9 @@ pub struct CompiledConfig {
     pub config: Arc<FerrixConfig>,
     pub real_ip: RealIpResolver,
     vhosts: Vec<CompiledVHost>,
-    rings: HashMap<String, HashRing>,
+    rings: crate::fasthash::FastMap<String, HashRing>,
     // `X-Ferrix-Upstream` value for each target, by upstream name and target index.
-    target_headers: HashMap<String, Vec<Option<HeaderValue>>>,
+    target_headers: crate::fasthash::FastMap<String, Vec<Option<HeaderValue>>>,
     /// `Server` response header, per `http.server_tokens`.
     pub server_header: HeaderValue,
 }

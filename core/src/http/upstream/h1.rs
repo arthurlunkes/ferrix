@@ -15,7 +15,7 @@ use bytes::{Buf, BytesMut};
 use futures_util::FutureExt;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::fasthash::FastMap;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -112,7 +112,7 @@ struct Idle {
 thread_local! {
     // [0] plain and verified TLS, [1] TLS with certificate verification disabled, so a
     // connection opened without verification is never handed to a pool that requires it.
-    static POOL: RefCell<[HashMap<Box<str>, Vec<Idle>>; 2]> = RefCell::new([HashMap::new(), HashMap::new()]);
+    static POOL: RefCell<[FastMap<Box<str>, Vec<Idle>>; 2]> = RefCell::new([FastMap::default(), FastMap::default()]);
 }
 
 fn take_idle(key: &str, insecure: bool) -> Option<Conn> {
@@ -492,7 +492,8 @@ fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1E
         return Err(H1Error::Protocol("unexpected protocol upgrade"));
     }
 
-    let mut map = HeaderMap::with_capacity(count);
+    // Spare room for the headers the proxy adds (Server, Date, X-Ferrix-Upstream...).
+    let mut map = HeaderMap::with_capacity(count + 4);
     let mut content_length: Option<u64> = None;
     let mut chunked = false;
     let mut conn_close = minor == 0;
