@@ -125,7 +125,14 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
         validate_vhost_routes(cfg, vhost, &base, &mut report);
 
         if let Some(tls) = &vhost.tls {
-            if tls.acme {
+            if tls.acme && !cfg!(feature = "acme") {
+                report.error(
+                    format!("{}.tls.acme", base),
+                    "este binário foi compilado sem a feature `acme`; use cert_path/key_path \
+                     ou compile com `--features acme`"
+                        .to_string(),
+                );
+            } else if tls.acme {
                 if crate::tls::acme::domains_for(vhost).is_empty() {
                     report.error(
                         format!("{}.tls.acme", base),

@@ -18,3 +18,27 @@ readme = "README.md"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Code that only runs at startup, on config changes or in the admin API is compiled for
+# size: it stays mapped in every running server, but speed doesn't matter there. The
+# request path (tokio, hyper, rustls, ring, Ferrix itself) keeps the default opt-level.
+[profile.release.package.serde-saphyr]
+opt-level = "z"
+[profile.release.package.granit-parser]
+opt-level = "z"
+[profile.release.package.annotate-snippets]
+opt-level = "z"
+[profile.release.package.serde_json]
+opt-level = "z"
+[profile.release.package.serde_path_to_error]
+opt-level = "z"
+[profile.release.package.axum]
+opt-level = "z"
+[profile.release.package.instant-acme]
+opt-level = "z"
+[profile.release.package.x509-parser]
+opt-level = "z"
+[profile.release.package.tracing-subscriber]
+opt-level = "z"
+[profile.release.package.regex-syntax]
+opt-level = "z"

@@ -6,15 +6,20 @@
 //! stored under `acme.storage_dir` and renewed in the background; the TLS listener picks
 //! new ones up without a restart.
 
+#[cfg(feature = "acme")]
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
     NewOrder, OrderStatus, RetryPolicy,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+#[cfg(feature = "acme")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+#[cfg(feature = "acme")]
 use std::time::Duration;
+#[cfg(feature = "acme")]
 use tracing::{error, info, warn};
 
 use crate::config::store::ConfigStore;
@@ -25,7 +30,9 @@ pub const CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 /// Bumped whenever a certificate is written, so TLS listeners reload their tables.
 pub static CERT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "acme")]
 const CHECK_EVERY: Duration = Duration::from_secs(12 * 3600);
+#[cfg(feature = "acme")]
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(3600);
 
 #[derive(Default)]
@@ -36,12 +43,14 @@ impl AcmeChallenges {
         self.0.read().ok()?.get(token).cloned()
     }
 
+    #[cfg(any(feature = "acme", test))]
     fn insert(&self, token: String, key_auth: String) {
         if let Ok(mut m) = self.0.write() {
             m.insert(token, key_auth);
         }
     }
 
+    #[cfg(any(feature = "acme", test))]
     fn remove(&self, token: &str) {
         if let Ok(mut m) = self.0.write() {
             m.remove(token);
@@ -85,6 +94,7 @@ pub fn cert_paths(cfg: &AcmeConfig, vhost_id: &str) -> (PathBuf, PathBuf) {
     (dir.join("fullchain.pem"), dir.join("privkey.pem"))
 }
 
+#[cfg(feature = "acme")]
 /// Seconds until the first certificate in `pem` expires, or `None` if unreadable.
 fn seconds_left(pem: &[u8]) -> Option<i64> {
     let (_, parsed) = x509_parser::pem::parse_x509_pem(pem).ok()?;
@@ -93,6 +103,7 @@ fn seconds_left(pem: &[u8]) -> Option<i64> {
     Some(not_after - chrono::Utc::now().timestamp())
 }
 
+#[cfg(feature = "acme")]
 fn needs_certificate(cert: &Path, key: &Path, renew_before_days: u32) -> bool {
     if !key.is_file() {
         return true;
@@ -103,6 +114,7 @@ fn needs_certificate(cert: &Path, key: &Path, renew_before_days: u32) -> bool {
     }
 }
 
+#[cfg(feature = "acme")]
 fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -117,11 +129,13 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+#[cfg(feature = "acme")]
 pub struct AcmeManager {
     store: Arc<ConfigStore>,
     challenges: Arc<AcmeChallenges>,
 }
 
+#[cfg(feature = "acme")]
 impl AcmeManager {
     pub fn new(store: Arc<ConfigStore>, challenges: Arc<AcmeChallenges>) -> Arc<Self> {
         Arc::new(Self { store, challenges })
@@ -293,6 +307,20 @@ impl AcmeManager {
     }
 }
 
+/// Stand-in when Ferrix is built without the `acme` feature: config validation
+/// already rejects `tls.acme`, so there is nothing to issue.
+#[cfg(not(feature = "acme"))]
+pub struct AcmeManager;
+
+#[cfg(not(feature = "acme"))]
+impl AcmeManager {
+    pub fn new(_store: Arc<ConfigStore>, _challenges: Arc<AcmeChallenges>) -> Arc<Self> {
+        Arc::new(Self)
+    }
+
+    pub fn start(self: Arc<Self>) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +365,7 @@ mod tests {
         assert!(key.ends_with("site_1/privkey.pem"));
     }
 
+    #[cfg(feature = "acme")]
     #[test]
     fn missing_certificate_needs_issuing() {
         let dir = std::env::temp_dir().join("ferrix-acme-none");

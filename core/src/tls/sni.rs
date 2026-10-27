@@ -199,7 +199,11 @@ pub fn tls_acceptor(resolver: Arc<SniResolver>) -> Result<TlsAcceptor, String> {
     let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config.alpn_protocols = if cfg!(feature = "http2") {
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    } else {
+        vec![b"http/1.1".to_vec()]
+    };
     // Session tickets let returning clients resume without a full handshake.
     if let Ok(ticketer) = rustls::crypto::ring::Ticketer::new() {
         config.ticketer = ticketer;

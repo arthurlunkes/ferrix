@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
 
 use crate::config::store::ConfigStore;
+use crate::http::upstream::{OutgoingBody, UpstreamClient};
+use axum::http::{HeaderMap, Method};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetHealthStatus {
@@ -27,9 +29,6 @@ pub struct HealthChecker {
     // case) the per-request checks skip the shared map entirely.
     troubled: Arc<AtomicUsize>,
 
-    http_client: reqwest::Client,
-
-    http_client_insecure: reqwest::Client,
 }
 
 fn recount(map: &HashMap<String, TargetHealthStatus>, troubled: &AtomicUsize) {
@@ -48,18 +47,9 @@ impl Default for HealthChecker {
 
 impl HealthChecker {
     pub fn new() -> Self {
-        let build = |insecure: bool| {
-            reqwest::Client::builder()
-                .danger_accept_invalid_certs(insecure)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new())
-        };
-
         Self {
             statuses: Arc::new(RwLock::new(HashMap::new())),
             troubled: Arc::new(AtomicUsize::new(0)),
-            http_client: build(false),
-            http_client_insecure: build(true),
         }
     }
 
@@ -176,25 +166,31 @@ impl HealthChecker {
                             }
                             last_check.insert(target.url.clone(), now);
 
-                            let client = if upstream_cfg.verify_tls {
-                                self.http_client.clone()
-                            } else {
-                                self.http_client_insecure.clone()
-                            };
+                            // Same HTTP client (and connection handling) as proxied traffic.
+                            let client = UpstreamClient::new(
+                                Duration::from_secs(hc.timeout_secs.max(1)),
+                                Duration::from_secs(hc.timeout_secs.max(1)),
+                                upstream_cfg.verify_tls,
+                            );
                             let upstream_name = upstream_name.clone();
                             let target_url = target.url.clone();
                             let check_path = hc.path.clone();
                             let expected = hc.expected_status;
-                            let timeout = Duration::from_secs(hc.timeout_secs.max(1));
                             let max_fails = target.max_fails;
                             let statuses = self.statuses.clone();
                             let troubled = self.troubled.clone();
 
                             tokio::spawn(async move {
-                                let full_url =
-                                    format!("{}{}", target_url.trim_end_matches('/'), check_path);
                                 let start = Instant::now();
-                                let result = client.get(&full_url).timeout(timeout).send().await;
+                                let result = client
+                                    .send(
+                                        &Method::GET,
+                                        &target_url,
+                                        &check_path,
+                                        &HeaderMap::new(),
+                                        OutgoingBody::Empty,
+                                    )
+                                    .await;
                                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
                                 let mut is_ok = false;

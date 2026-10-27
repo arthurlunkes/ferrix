@@ -1,6 +1,10 @@
 //! Response compression (gzip, brotli, zstd), negotiated from `Accept-Encoding`.
 
-use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZstdEncoder};
+#[cfg(feature = "brotli")]
+use async_compression::tokio::bufread::BrotliEncoder;
+use async_compression::tokio::bufread::GzipEncoder;
+#[cfg(feature = "zstd")]
+use async_compression::tokio::bufread::ZstdEncoder;
 use async_compression::Level;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
@@ -41,7 +45,17 @@ pub fn negotiate(headers: &HeaderMap, cfg: &CompressionConfig) -> Option<Compres
     cfg.algorithms
         .iter()
         .copied()
+        .filter(|a| available(*a))
         .find(|a| q_of(token(*a)).is_some_and(|q| q > 0.0))
+}
+
+/// Whether this build includes the encoder (brotli and zstd are optional features).
+pub fn available(algo: CompressionAlgorithm) -> bool {
+    match algo {
+        CompressionAlgorithm::Gzip => true,
+        CompressionAlgorithm::Br => cfg!(feature = "brotli"),
+        CompressionAlgorithm::Zstd => cfg!(feature = "zstd"),
+    }
 }
 
 pub fn token(algo: CompressionAlgorithm) -> &'static str {
@@ -142,16 +156,17 @@ pub fn compress(
 
     let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     let lvl = level(algo, lvl);
+    // `negotiate` never picks an algorithm this build lacks, so `_` is gzip.
     let body = match algo {
-        CompressionAlgorithm::Gzip => {
-            Body::from_stream(ReaderStream::new(GzipEncoder::with_quality(reader, lvl)))
-        }
+        #[cfg(feature = "brotli")]
         CompressionAlgorithm::Br => {
             Body::from_stream(ReaderStream::new(BrotliEncoder::with_quality(reader, lvl)))
         }
+        #[cfg(feature = "zstd")]
         CompressionAlgorithm::Zstd => {
             Body::from_stream(ReaderStream::new(ZstdEncoder::with_quality(reader, lvl)))
         }
+        _ => Body::from_stream(ReaderStream::new(GzipEncoder::with_quality(reader, lvl))),
     };
     Response::from_parts(parts, body)
 }
@@ -168,18 +183,20 @@ pub async fn compress_bytes(
     let reader = tokio::io::BufReader::new(reader);
     let mut out = Vec::new();
     match algo {
-        CompressionAlgorithm::Gzip => {
-            GzipEncoder::with_quality(reader, lvl)
-                .read_to_end(&mut out)
-                .await?
-        }
+        #[cfg(feature = "brotli")]
         CompressionAlgorithm::Br => {
             BrotliEncoder::with_quality(reader, lvl)
                 .read_to_end(&mut out)
                 .await?
         }
+        #[cfg(feature = "zstd")]
         CompressionAlgorithm::Zstd => {
             ZstdEncoder::with_quality(reader, lvl)
+                .read_to_end(&mut out)
+                .await?
+        }
+        _ => {
+            GzipEncoder::with_quality(reader, lvl)
                 .read_to_end(&mut out)
                 .await?
         }
@@ -200,6 +217,18 @@ mod tests {
         h
     }
 
+    #[test]
+    fn encoders_left_out_of_the_build_are_never_negotiated() {
+        let cfg = CompressionConfig::default();
+        let expected = if cfg!(feature = "brotli") {
+            CompressionAlgorithm::Br
+        } else {
+            CompressionAlgorithm::Gzip
+        };
+        assert_eq!(negotiate(&headers("br, gzip"), &cfg), Some(expected));
+    }
+
+    #[cfg(all(feature = "brotli", feature = "zstd"))]
     #[test]
     fn negotiation_follows_server_preference_and_q_values() {
         let cfg = CompressionConfig::default();

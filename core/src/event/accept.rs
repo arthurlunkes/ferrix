@@ -8,8 +8,31 @@
 use axum::body::Body;
 use hyper::body::Incoming;
 use hyper::Request;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
+use hyper_util::rt::TokioIo;
+#[cfg(feature = "http2")]
+use hyper_util::{rt::TokioExecutor, server::conn::auto};
+
+/// Serves one connection with hyper: HTTP/1.1 or HTTP/2 when the `http2` feature is
+/// built in, HTTP/1.1 only otherwise. Errors are only logged, so both become strings.
+#[cfg(feature = "http2")]
+macro_rules! serve_io {
+    ($builder:expr, $io:expr, $service:expr) => {
+        $builder
+            .serve_connection_with_upgrades(TokioIo::new($io), $service)
+            .await
+            .map_err(|e| e.to_string())
+    };
+}
+#[cfg(not(feature = "http2"))]
+macro_rules! serve_io {
+    ($builder:expr, $io:expr, $service:expr) => {
+        $builder
+            .serve_connection(TokioIo::new($io), $service)
+            .with_upgrades()
+            .await
+            .map_err(|e| e.to_string())
+    };
+}
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -41,20 +64,31 @@ pub async fn serve(
     tls: Option<TlsAcceptor>,
 ) {
     let http = engine.store.config().http.clone();
-    let mut builder = auto::Builder::new(TokioExecutor::new());
     // Coarse timers and a once-per-second Date header keep clock syscalls out of the
     // request path (see crate::event::clock).
-    builder
-        .http1()
-        .timer(crate::event::clock::CoarseTimer)
-        .auto_date_header(false)
-        .keep_alive(http.keepalive_timeout_ms > 0)
-        .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
-    builder
-        .http2()
-        .timer(crate::event::clock::CoarseTimer)
-        .auto_date_header(false)
-        .keep_alive_interval(None);
+    #[cfg(feature = "http2")]
+    let builder = {
+        let mut b = auto::Builder::new(TokioExecutor::new());
+        b.http1()
+            .timer(crate::event::clock::CoarseTimer)
+            .auto_date_header(false)
+            .keep_alive(http.keepalive_timeout_ms > 0)
+            .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
+        b.http2()
+            .timer(crate::event::clock::CoarseTimer)
+            .auto_date_header(false)
+            .keep_alive_interval(None);
+        b
+    };
+    #[cfg(not(feature = "http2"))]
+    let builder = {
+        let mut b = hyper::server::conn::http1::Builder::new();
+        b.timer(crate::event::clock::CoarseTimer)
+            .auto_date_header(false)
+            .keep_alive(http.keepalive_timeout_ms > 0)
+            .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
+        b
+    };
     let builder = Arc::new(builder);
     let is_tls = tls.is_some();
     let fast = Arc::new(crate::http::server::Settings {
@@ -130,23 +164,14 @@ pub async fn serve(
             });
 
             // Boxed: hyper's connection state is only needed for handed-off connections.
-            // Boxed: hyper's connection state is only needed for handed-off connections.
             let result = Box::pin(async move {
                 match conn {
                     Conn::Plain(tcp, prefix) => {
                         let io = crate::http::server::Rewind::new(tcp, prefix);
-                        Some(
-                            builder
-                                .serve_connection_with_upgrades(TokioIo::new(io), service)
-                                .await,
-                        )
+                        Some(serve_io!(builder, io, service))
                     }
                     Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
-                        Ok(stream) => Some(
-                            builder
-                                .serve_connection_with_upgrades(TokioIo::new(stream), service)
-                                .await,
-                        ),
+                        Ok(stream) => Some(serve_io!(builder, stream, service)),
                         Err(e) => {
                             debug!(%addr, error = %e, "TLS handshake failed");
                             None

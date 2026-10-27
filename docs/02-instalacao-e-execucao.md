@@ -51,6 +51,32 @@ Optimized binary location: `target/release/ferrix`.
 
 ---
 
+### Optional modules (smaller builds)
+
+Like nginx's `--with-*` build options, some modules can be left out at compile time.
+All of them are built by default:
+
+| Feature | What it adds |
+| --- | --- |
+| `http2` | HTTP/2 for clients (over TLS via ALPN, and h2c) |
+| `brotli` | Brotli response compression (gzip is always available) |
+| `zstd` | zstd response compression |
+| `acme` | Automatic Let's Encrypt certificates (`tls.acme`) |
+
+```bash
+# Everything (default)
+cargo build --release
+# Minimal: HTTP/1.1, gzip, certificates from files. ~2.3 MB less code and ~1.3 MB less
+# memory per running server.
+cargo build --release --no-default-features
+# Pick and choose
+cargo build --release --no-default-features --features "http2,brotli"
+```
+
+A configuration that needs a missing module (for example `tls.acme: true` without
+`acme`) is rejected by `ferrix -t` with an explanation; a client asking for an encoding
+that isn't built in simply gets one that is.
+
 ## 🚀 Execution
 
 ### 1. Basic Startup
