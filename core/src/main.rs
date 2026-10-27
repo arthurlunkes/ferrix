@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use tracing::{error, info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use admin::create_admin_router;
 use admin::handlers::AdminState;
@@ -315,13 +314,7 @@ async fn async_main() -> ExitCode {
             }
         },
         Some(Commands::Run) | None => {
-            tracing_subscriber::registry()
-                .with(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| "ferrix=info,tower_http=info".into()),
-                )
-                .with(tracing_subscriber::fmt::layer())
-                .init();
+            ferrix::log::init("ferrix=info");
 
             match run_server(args).await {
                 Ok(()) => ExitCode::SUCCESS,

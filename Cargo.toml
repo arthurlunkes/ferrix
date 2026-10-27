@@ -38,7 +38,3 @@ opt-level = "z"
 opt-level = "z"
 [profile.release.package.x509-parser]
 opt-level = "z"
-[profile.release.package.tracing-subscriber]
-opt-level = "z"
-[profile.release.package.regex-syntax]
-opt-level = "z"

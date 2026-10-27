@@ -3,6 +3,7 @@ pub mod config;
 pub mod event;
 pub mod health;
 pub mod http;
+pub mod log;
 pub mod metrics;
 pub mod net;
 pub mod nginx;

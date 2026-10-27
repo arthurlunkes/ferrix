@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex_lite::Regex;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
