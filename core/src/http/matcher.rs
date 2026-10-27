@@ -138,6 +138,9 @@ struct CompiledRoute {
     denied_ips: IpMatcher,
 
     response_headers: Vec<(HeaderName, HeaderValue)>,
+    /// A proxy route with nothing between the client and the upstream (see
+    /// `plain_proxy`); filled in once the whole config is known.
+    plain_proxy: bool,
 }
 
 impl CompiledRoute {
@@ -154,6 +157,7 @@ impl CompiledRoute {
             allowed_ips: IpMatcher::compile(&route.allowed_ips).0,
             denied_ips: IpMatcher::compile(&route.denied_ips).0,
             response_headers: compile_response_headers(vhost, route),
+            plain_proxy: false,
         }
     }
 
@@ -167,6 +171,36 @@ impl CompiledRoute {
             _ => false,
         }
     }
+}
+
+/// A proxy route where no access control, limit, cache, compression, CORS, header
+/// rewriting or request id applies: the request can go straight to the upstream.
+fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule) -> bool {
+    let http = &config.http;
+    route.target_type == crate::config::RouteTargetType::ProxyUpstream
+        && route
+            .upstream_name
+            .as_ref()
+            .and_then(|n| config.upstreams.get(n))
+            .is_some_and(|u| u.algorithm != LoadBalanceAlgorithm::ConsistentHash)
+        && vhost.allowed_ips.is_empty()
+        && vhost.denied_ips.is_empty()
+        && vhost.basic_auth.is_none()
+        && vhost.limit_conn.is_none()
+        && vhost.rate_limit.is_none()
+        && vhost.headers.is_empty()
+        && vhost.error_pages.is_empty()
+        && route.allowed_ips.is_empty()
+        && route.denied_ips.is_empty()
+        && route.basic_auth.is_none()
+        && route.limit_conn.is_none()
+        && route.rate_limit.is_none()
+        && route.add_headers.is_empty()
+        && route.proxy_set_headers.is_empty()
+        && route.cache.is_none()
+        && route.cors.is_none()
+        && !route.compression.unwrap_or(http.compression.enabled)
+        && !http.request_id
 }
 
 #[derive(Debug)]
@@ -192,7 +226,7 @@ pub struct CompiledConfig {
 
 impl CompiledConfig {
     pub fn build(config: Arc<FerrixConfig>) -> Self {
-        let vhosts = config
+        let vhosts: Vec<CompiledVHost> = config
             .vhosts
             .iter()
             .map(|v: &VirtualHost| CompiledVHost {
@@ -211,6 +245,13 @@ impl CompiledConfig {
                 denied_ips: IpMatcher::compile(&v.denied_ips).0,
             })
             .collect();
+
+        let mut vhosts = vhosts;
+        for (cv, v) in vhosts.iter_mut().zip(&config.vhosts) {
+            for (cr, r) in cv.routes.iter_mut().zip(&v.routes) {
+                cr.plain_proxy = is_plain_proxy(&config, v, r);
+            }
+        }
 
         let real_ip = RealIpResolver::new(&config.real_ip);
         let rings = config
@@ -244,6 +285,14 @@ impl CompiledConfig {
             target_headers,
             server_header,
         }
+    }
+
+    /// Whether the route can skip the generic request pipeline (see `is_plain_proxy`).
+    pub fn plain_proxy(&self, vhost_index: usize, route_index: usize) -> bool {
+        self.vhosts
+            .get(vhost_index)
+            .and_then(|v| v.routes.get(route_index))
+            .is_some_and(|r| r.plain_proxy)
     }
 
     pub fn target_header(&self, upstream: &str, index: usize) -> Option<&HeaderValue> {

@@ -7,6 +7,7 @@
 //! connection is only ever reused by the thread (and reactor) that opened it, with no
 //! locks involved.
 
+use crate::fasthash::FastMap;
 use axum::body::Bytes;
 use axum::http::{
     header, HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode, Version,
@@ -15,7 +16,6 @@ use bytes::{Buf, BytesMut};
 use futures_util::FutureExt;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::cell::RefCell;
-use crate::fasthash::FastMap;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -378,6 +378,195 @@ pub async fn exchange(
         body.finish();
     }
     Ok(Response::from_parts(parts, body))
+}
+
+/// What `exchange_raw` learned from the upstream's response head.
+pub struct RawResponse {
+    pub status: u16,
+    /// The upstream sent its own `Date` header (copied to the client as is).
+    pub has_date: bool,
+    pub body: H1Body,
+}
+
+/// Raw-proxy variant of `exchange`: `request` is the complete, already encoded request
+/// head, and the response head is not turned into a `HeaderMap` but re-encoded straight
+/// into `client_head` (status line plus end-to-end headers; no framing, `Server`, or
+/// final CRLF, which the caller adds).
+pub async fn exchange_raw(
+    mut conn: Conn,
+    request: &[u8],
+    method: &Method,
+    client_head: &mut Vec<u8>,
+) -> Result<RawResponse, H1Error> {
+    use tokio::io::AsyncReadExt;
+    conn.stream
+        .write_all(request)
+        .await
+        .map_err(H1Error::Stale)?;
+    conn.stream.flush().await.map_err(H1Error::Io)?;
+
+    let mut buf = BytesMut::with_capacity(HEAD_CHUNK);
+    let mut received_any = false;
+    let (status, state, keep_alive, has_date) = loop {
+        if !buf.is_empty() {
+            if let Some(parsed) = parse_head_raw(&mut buf, method, client_head)? {
+                match parsed {
+                    Some(head) => break head,
+                    None => continue, // 1xx: wait for the final response
+                }
+            }
+        }
+        if buf.len() >= MAX_HEAD_BYTES {
+            return Err(H1Error::Protocol("response head too large"));
+        }
+        buf.reserve(HEAD_CHUNK);
+        let n = conn.stream.read_buf(&mut buf).await;
+        let n = match n {
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "upstream closed the connection",
+            )),
+            other => other,
+        }
+        .map_err(|e| {
+            if received_any {
+                H1Error::Io(e)
+            } else {
+                H1Error::Stale(e)
+            }
+        })?;
+        received_any |= n > 0;
+    };
+
+    let mut body = H1Body {
+        conn: Some(conn),
+        buf,
+        state,
+        keep_alive,
+    };
+    if body.state.is_done() {
+        body.finish();
+    }
+    Ok(RawResponse {
+        status,
+        has_date,
+        body,
+    })
+}
+
+/// Response headers the proxy never passes on: hop-by-hop ones, the framing (re-done for
+/// the client) and `Server` (Ferrix answers with its own, like nginx).
+fn dropped_response_header(name: &[u8]) -> bool {
+    const DROPPED: [&[u8]; 11] = [
+        b"connection",
+        b"keep-alive",
+        b"proxy-authenticate",
+        b"proxy-authorization",
+        b"te",
+        b"trailer",
+        b"trailers",
+        b"transfer-encoding",
+        b"upgrade",
+        b"content-length",
+        b"server",
+    ];
+    DROPPED.iter().any(|d| d.eq_ignore_ascii_case(name))
+}
+
+/// `Ok(None)`: incomplete head. `Ok(Some(None))`: a 1xx response was skipped.
+#[allow(clippy::type_complexity)]
+fn parse_head_raw(
+    buf: &mut BytesMut,
+    method: &Method,
+    out: &mut Vec<u8>,
+) -> Result<Option<Option<(u16, BodyState, bool, bool)>>, H1Error> {
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut res = httparse::Response::new(&mut headers);
+    let len = match res.parse(buf) {
+        Ok(httparse::Status::Complete(n)) => n,
+        Ok(httparse::Status::Partial) => return Ok(None),
+        Err(httparse::Error::TooManyHeaders) => {
+            return Err(H1Error::Protocol("too many response headers"))
+        }
+        Err(_) => return Err(H1Error::Protocol("malformed response head")),
+    };
+    let code = res.code.unwrap_or(0);
+    let minor = res.version.unwrap_or(1);
+    if (100..200).contains(&code) && code != 101 {
+        buf.advance(len);
+        return Ok(Some(None));
+    }
+    if code == 101 {
+        return Err(H1Error::Protocol("unexpected protocol upgrade"));
+    }
+    let status = StatusCode::from_u16(code).map_err(|_| H1Error::Protocol("invalid status"))?;
+
+    out.extend_from_slice(b"HTTP/1.1 ");
+    out.extend_from_slice(status.as_str().as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(status.canonical_reason().unwrap_or("").as_bytes());
+    out.extend_from_slice(b"\r\n");
+
+    let mut content_length: Option<u64> = None;
+    let mut chunked = false;
+    let mut conn_close = minor == 0;
+    let mut has_date = false;
+    for h in res.headers.iter() {
+        let name = h.name.as_bytes();
+        if name.eq_ignore_ascii_case(b"content-length") {
+            let parsed = std::str::from_utf8(h.value)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .ok_or(H1Error::Protocol("invalid content-length"))?;
+            if content_length.is_some_and(|c| c != parsed) {
+                return Err(H1Error::Protocol("conflicting content-length"));
+            }
+            content_length = Some(parsed);
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+            chunked = std::str::from_utf8(h.value)
+                .ok()
+                .and_then(|v| v.rsplit(',').next())
+                .is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
+        } else if name.eq_ignore_ascii_case(b"connection") {
+            for token in std::str::from_utf8(h.value).unwrap_or("").split(',') {
+                let token = token.trim();
+                if token.eq_ignore_ascii_case("close") {
+                    conn_close = true;
+                } else if token.eq_ignore_ascii_case("keep-alive") && minor == 0 {
+                    conn_close = false;
+                }
+            }
+        } else if name.eq_ignore_ascii_case(b"date") {
+            has_date = true;
+        }
+        if dropped_response_header(name) {
+            continue;
+        }
+        out.extend_from_slice(name);
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(h.value);
+        out.extend_from_slice(b"\r\n");
+    }
+    buf.advance(len);
+
+    let no_body = *method == Method::HEAD
+        || status == StatusCode::NO_CONTENT
+        || status == StatusCode::NOT_MODIFIED;
+    let state = if no_body {
+        BodyState::Done
+    } else if chunked {
+        BodyState::Chunked(Chunk::Size)
+    } else if let Some(len) = content_length {
+        if len == 0 {
+            BodyState::Done
+        } else {
+            BodyState::Length(len)
+        }
+    } else {
+        conn_close = true;
+        BodyState::UntilClose
+    };
+    Ok(Some(Some((code, state, !conn_close, has_date))))
 }
 
 async fn write_streaming(
@@ -893,6 +1082,43 @@ mod tests {
             .unwrap()
             .to_bytes()
             .to_vec()
+    }
+
+    #[test]
+    fn raw_response_head_drops_hop_by_hop_and_framing() {
+        let mut buf = BytesMut::from(
+            &b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nServer: up\r\nConnection: keep-alive\r\n\
+               Content-Length: 5\r\nX-A: 1\r\nDate: d\r\n\r\nhello"[..],
+        );
+        let mut out = Vec::new();
+        assert!(matches!(
+            parse_head_raw(&mut buf, &Method::GET, &mut out),
+            Ok(Some(None))
+        ));
+        let (code, state, keep_alive, has_date) = parse_head_raw(&mut buf, &Method::GET, &mut out)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(code, 200);
+        assert!(matches!(state, BodyState::Length(5)));
+        assert!(keep_alive && has_date);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "HTTP/1.1 200 OK\r\nX-A: 1\r\nDate: d\r\n"
+        );
+        assert_eq!(&buf[..], b"hello");
+    }
+
+    #[test]
+    fn raw_response_without_length_reads_until_close() {
+        let mut buf = BytesMut::from(&b"HTTP/1.1 200 OK\r\n\r\n"[..]);
+        let mut out = Vec::new();
+        let (_, state, keep_alive, _) = parse_head_raw(&mut buf, &Method::GET, &mut out)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(state, BodyState::UntilClose));
+        assert!(!keep_alive);
     }
 
     #[tokio::test]

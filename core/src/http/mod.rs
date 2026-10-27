@@ -6,6 +6,7 @@ pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
 mod proxy;
+mod raw_proxy;
 pub mod realip;
 pub mod server;
 pub mod static_files;
@@ -103,6 +104,21 @@ impl ProxyEngine {
     ) -> Response {
         let compiled = self.store.compiled();
         let metrics_on = compiled.config.metrics.enabled;
+
+        let req = if metrics_on {
+            req
+        } else {
+            match self
+                .plain_proxy(&compiled, listen_port, is_tls, client_addr, req)
+                .await
+            {
+                Ok(mut response) => {
+                    filters::headers::server(&compiled, response.headers_mut());
+                    return response;
+                }
+                Err(req) => req,
+            }
+        };
         // A precise clock read only when someone will look at the latency.
         let start_time = if metrics_on {
             Instant::now()
@@ -132,6 +148,62 @@ impl ProxyEngine {
         let mut response = response;
         filters::headers::server(&compiled, response.headers_mut());
         response
+    }
+
+    /// Fast path for the most common case, a proxy route with nothing else configured
+    /// on it (`CompiledConfig::plain_proxy`): straight to the upstream, skipping access
+    /// control, limits, filters and error pages. Anything else is handed back.
+    // The request goes back unboxed on purpose: this runs for every request.
+    #[allow(clippy::result_large_err)]
+    async fn plain_proxy(
+        &self,
+        compiled: &CompiledConfig,
+        listen_port: u16,
+        is_tls: bool,
+        client_addr: SocketAddr,
+        req: Request,
+    ) -> Result<Response, Request> {
+        let headers = req.headers();
+        if headers.contains_key(header::UPGRADE)
+            || req
+                .uri()
+                .path()
+                .starts_with(crate::tls::acme::CHALLENGE_PREFIX)
+        {
+            return Err(req);
+        }
+        let host = headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        let host = host.split(':').next().unwrap_or("");
+        let Some(vm) = compiled.find_vhost(host, listen_port) else {
+            return Err(req);
+        };
+        let Some(rm) = compiled.match_route(vm.vhost_index, req.uri().path()) else {
+            return Err(req);
+        };
+        if !compiled.plain_proxy(vm.vhost_index, rm.route_index) {
+            return Err(req);
+        }
+        let route = &compiled.config.vhosts[vm.vhost_index].routes[rm.route_index];
+        let Some((name, upstream)) = route
+            .upstream_name
+            .as_ref()
+            .and_then(|n| compiled.config.upstreams.get_key_value(n))
+        else {
+            return Err(req);
+        };
+        let client_ip = compiled.real_ip.resolve(client_addr.ip(), headers);
+        let targets = self.pool_manager.select_targets(upstream, client_ip);
+        if targets.is_empty() {
+            return Err(req);
+        }
+        Ok(self
+            .proxy_http_request(
+                compiled, route, name, upstream, targets, is_tls, client_ip, req,
+            )
+            .await)
     }
 
     #[allow(clippy::too_many_arguments)]

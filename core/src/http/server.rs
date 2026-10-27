@@ -85,7 +85,7 @@ pub async fn serve(
         } else {
             settings.header_timeout
         };
-        let head = match read_head(&mut tcp, &mut buf, wait).await {
+        let head = match read_head(&mut tcp, &mut buf, wait, engine, port).await {
             Ok(Some(h)) => h,
             Ok(None) => return Outcome::Done,
             Err(HeadError::Bad(status)) => {
@@ -107,6 +107,32 @@ pub async fn serve(
         let keep_alive = head.keep_alive;
         let is_head = head.method == Method::HEAD;
         let http10 = head.version == Version::HTTP_10;
+
+        if let Some(route) = head.raw_route {
+            let path = head
+                .uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/");
+            let kept = Box::pin(engine.raw_proxy(
+                route,
+                &head.raw,
+                &head.method,
+                path,
+                addr,
+                &mut tcp,
+                &mut out,
+                keep_alive,
+                http10,
+            ))
+            .await;
+            if !matches!(kept, Ok(true)) {
+                let _ = tcp.shutdown().await;
+                return Outcome::Done;
+            }
+            continue;
+        }
+
         let mut req = Request::new(Body::empty());
         *req.method_mut() = head.method;
         *req.uri_mut() = head.uri;
@@ -135,6 +161,8 @@ struct Head {
     keep_alive: bool,
     needs_hyper: bool,
     raw: Bytes,
+    /// Set when the request goes down the raw proxy path; `headers` is then left empty.
+    raw_route: Option<crate::http::raw_proxy::RawRoute>,
 }
 
 enum HeadError {
@@ -146,6 +174,8 @@ async fn read_head(
     tcp: &mut TcpStream,
     buf: &mut BytesMut,
     wait: Duration,
+    engine: &ProxyEngine,
+    port: u16,
 ) -> Result<Option<Head>, HeadError> {
     let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
     loop {
@@ -157,7 +187,8 @@ async fn read_head(
                 if buf.len() >= 14 {
                     return Err(HeadError::Handoff);
                 }
-            } else if let Some(head) = parse(buf)? {
+            } else if let Some(head) = parse(buf, |host, path| engine.raw_route(port, host, path))?
+            {
                 return Ok(Some(head));
             }
         }
@@ -175,7 +206,10 @@ async fn read_head(
     }
 }
 
-fn parse(buf: &mut BytesMut) -> Result<Option<Head>, HeadError> {
+fn parse(
+    buf: &mut BytesMut,
+    raw_route: impl FnOnce(&str, &str) -> Option<crate::http::raw_proxy::RawRoute>,
+) -> Result<Option<Head>, HeadError> {
     let mut spans = [(0usize, 0usize, 0usize, 0usize); MAX_HEADERS];
     let (len, method, path, minor, count) = {
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
@@ -213,25 +247,29 @@ fn parse(buf: &mut BytesMut) -> Result<Option<Head>, HeadError> {
     let uri = Uri::from_maybe_shared(raw.slice(path.0..path.1))
         .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
 
-    let mut headers = HeaderMap::with_capacity(count);
+    // A first pass over the raw bytes finds what decides how the request is handled;
+    // the header map is only built for requests that need one.
     let mut keep_alive = minor == 1;
     let mut needs_hyper = false;
+    let mut host: &[u8] = b"";
     for &(ns, ne, vs, ve) in &spans[..count] {
-        let name = HeaderName::from_bytes(&raw[ns..ne])
-            .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
-        let value = HeaderValue::from_maybe_shared(raw.slice(vs..ve))
-            .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
-        if name == header::CONTENT_LENGTH {
-            if value.as_bytes() != b"0" {
+        let name = &raw[ns..ne];
+        let value = &raw[vs..ve];
+        if name.eq_ignore_ascii_case(b"content-length") {
+            if value != b"0" {
                 needs_hyper = true;
             }
-        } else if name == header::TRANSFER_ENCODING
-            || name == header::UPGRADE
-            || name == header::EXPECT
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding")
+            || name.eq_ignore_ascii_case(b"upgrade")
+            || name.eq_ignore_ascii_case(b"expect")
         {
             needs_hyper = true;
-        } else if name == header::CONNECTION {
-            for token in value.to_str().unwrap_or("").split(',').map(str::trim) {
+        } else if name.eq_ignore_ascii_case(b"connection") {
+            for token in std::str::from_utf8(value)
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+            {
                 if token.eq_ignore_ascii_case("close") {
                     keep_alive = false;
                 } else if token.eq_ignore_ascii_case("keep-alive") {
@@ -240,8 +278,27 @@ fn parse(buf: &mut BytesMut) -> Result<Option<Head>, HeadError> {
                     needs_hyper = true;
                 }
             }
+        } else if name.eq_ignore_ascii_case(b"host") {
+            host = value;
         }
-        headers.append(name, value);
+    }
+
+    let raw_route = if needs_hyper || method == Method::HEAD {
+        None
+    } else {
+        raw_route(std::str::from_utf8(host).unwrap_or(""), uri.path())
+    };
+
+    let mut headers = HeaderMap::new();
+    if raw_route.is_none() {
+        headers.reserve(count);
+        for &(ns, ne, vs, ve) in &spans[..count] {
+            let name = HeaderName::from_bytes(&raw[ns..ne])
+                .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
+            let value = HeaderValue::from_maybe_shared(raw.slice(vs..ve))
+                .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
+            headers.append(name, value);
+        }
     }
 
     Ok(Some(Head {
@@ -256,6 +313,7 @@ fn parse(buf: &mut BytesMut) -> Result<Option<Head>, HeadError> {
         keep_alive,
         needs_hyper,
         raw,
+        raw_route,
     }))
 }
 
@@ -275,7 +333,7 @@ fn push_u64(out: &mut Vec<u8>, n: u64) {
 }
 
 #[derive(Clone, Copy)]
-enum Framing {
+pub(super) enum Framing {
     Length(u64),
     Chunked,
     /// No length header at all: bodiless statuses, HEAD of an unknown-size response, or
@@ -312,6 +370,11 @@ fn encode_head(
         out.extend_from_slice(crate::event::clock::http_date().as_bytes());
         out.extend_from_slice(b"\r\n");
     }
+    finish_head(out, framing, keep_alive);
+}
+
+/// Ends a response head: framing, `Connection: close` when needed, and the blank line.
+pub(super) fn finish_head(out: &mut Vec<u8>, framing: Framing, keep_alive: bool) {
     match framing {
         Framing::Length(n) => {
             out.extend_from_slice(b"content-length: ");
@@ -327,13 +390,62 @@ fn encode_head(
     out.extend_from_slice(b"\r\n");
 }
 
+/// Writes the head already in `out` followed by `body`, framed as `framing` says. Small
+/// fixed-length bodies are appended to the head so both leave in one write.
+pub(super) async fn write_body<B>(
+    tcp: &mut TcpStream,
+    out: &mut Vec<u8>,
+    mut body: B,
+    framing: Framing,
+) -> io::Result<()>
+where
+    B: http_body::Body<Data = Bytes> + Unpin,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    match framing {
+        Framing::Length(len) if len as usize <= COALESCE_LIMIT => {
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame.map_err(io::Error::other)?.into_data() {
+                    out.extend_from_slice(&data);
+                }
+            }
+            tcp.write_all(out).await
+        }
+        Framing::Chunked => {
+            tcp.write_all(out).await?;
+            while let Some(frame) = body.frame().await {
+                let Ok(data) = frame.map_err(io::Error::other)?.into_data() else {
+                    continue;
+                };
+                if data.is_empty() {
+                    continue;
+                }
+                let size = format!("{:x}\r\n", data.len());
+                tcp.write_all(size.as_bytes()).await?;
+                tcp.write_all(&data).await?;
+                tcp.write_all(b"\r\n").await?;
+            }
+            tcp.write_all(b"0\r\n\r\n").await
+        }
+        Framing::Length(_) | Framing::None => {
+            tcp.write_all(out).await?;
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame.map_err(io::Error::other)?.into_data() {
+                    tcp.write_all(&data).await?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn bodiless(status: StatusCode) -> bool {
     status.is_informational()
         || status == StatusCode::NO_CONTENT
         || status == StatusCode::NOT_MODIFIED
 }
 
-async fn write_response(
+pub(super) async fn write_response(
     tcp: &mut TcpStream,
     out: &mut Vec<u8>,
     resp: axum::response::Response,
@@ -578,7 +690,7 @@ mod tests {
 
     fn parse_str(s: &str) -> Result<Option<Head>, HeadError> {
         let mut buf = BytesMut::from(s.as_bytes());
-        parse(&mut buf)
+        parse(&mut buf, |_, _| None)
     }
 
     #[test]

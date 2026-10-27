@@ -167,9 +167,72 @@ impl UpstreamClient {
     }
 }
 
+impl UpstreamClient {
+    /// `send` for the raw proxy path: `encode` writes the full request head given the
+    /// target's authority, and the response head comes back re-encoded in `client_head`.
+    /// The body enforces the read timeout like `send`'s.
+    pub async fn send_raw(
+        &self,
+        method: &Method,
+        base: &str,
+        encode: impl Fn(&str, &mut Vec<u8>),
+        client_head: &mut Vec<u8>,
+    ) -> Result<(h1::RawResponse, Duration), UpstreamError> {
+        let base = base.trim_end_matches('/');
+        let target = Target::parse(base)
+            .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
+        let insecure = target.tls && !self.verify_tls;
+        let deadline_ms = crate::event::clock::mono_ms() + self.read_timeout.as_millis() as u64;
+        let mut request = Vec::with_capacity(512);
+        encode(target.authority, &mut request);
+
+        let attempt = async {
+            let mut reuse = true;
+            loop {
+                let pooled = if reuse {
+                    h1::pooled(base, insecure)
+                } else {
+                    None
+                };
+                let reused = pooled.is_some();
+                let conn = match pooled {
+                    Some(c) => c,
+                    None => {
+                        let tls = target.tls.then_some((self.tls(), insecure));
+                        Box::pin(h1::connect(&target, base, self.connect_timeout, tls)).await?
+                    }
+                };
+                let mark = client_head.len();
+                match h1::exchange_raw(conn, &request, method, client_head).await {
+                    Err(H1Error::Stale(_)) if reused => {
+                        client_head.truncate(mark);
+                        reuse = false;
+                        continue;
+                    }
+                    other => return other,
+                }
+            }
+        };
+
+        match crate::event::clock::timeout_at_ms(deadline_ms, attempt).await {
+            Ok(Ok(r)) => Ok((r, self.read_timeout)),
+            Ok(Err(H1Error::ConnectTimeout)) => Err(UpstreamError::Timeout(
+                "Error communicating with upstream: connect timed out".to_string(),
+            )),
+            Ok(Err(e)) => Err(UpstreamError::Other(format!(
+                "Error communicating with upstream: {}",
+                e
+            ))),
+            Err(_) => Err(UpstreamError::Timeout(
+                "Upstream response timed out".to_string(),
+            )),
+        }
+    }
+}
+
 // Fails the body when the upstream sends nothing for `dur`. The timer is only armed if
 // a read actually has to wait, so bodies that arrive with the head cost nothing.
-struct ReadTimeoutBody<B> {
+pub(crate) struct ReadTimeoutBody<B> {
     inner: B,
     sleep: Option<CoarseSleep>,
     dur: Duration,
@@ -177,7 +240,7 @@ struct ReadTimeoutBody<B> {
 }
 
 impl<B> ReadTimeoutBody<B> {
-    fn new(inner: B, dur: Duration) -> Self {
+    pub(crate) fn new(inner: B, dur: Duration) -> Self {
         Self {
             inner,
             sleep: None,

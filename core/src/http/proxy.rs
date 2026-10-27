@@ -194,15 +194,19 @@ impl ProxyEngine {
         }
 
         let err_msg = last_error.unwrap_or_else(|| "all upstream targets failed".to_string());
-        Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .header(header::CONTENT_TYPE, "text/plain")
-            .body(Body::from(format!(
-                "502 Bad Gateway - Ferrix Proxy Error: {}",
-                err_msg
-            )))
-            .unwrap()
+        bad_gateway(&err_msg)
     }
+}
+
+pub(super) fn bad_gateway(msg: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(format!(
+            "502 Bad Gateway - Ferrix Proxy Error: {}",
+            msg
+        )))
+        .unwrap()
 }
 
 pub(super) const HOP_BY_HOP: [HeaderName; 9] = [
@@ -332,7 +336,7 @@ async fn read_request_body(
     Ok(RequestBody::Buffered(Bytes::from(flat)))
 }
 
-fn should_retry_status(conditions: &[NextUpstreamCondition], status: u16) -> bool {
+pub(super) fn should_retry_status(conditions: &[NextUpstreamCondition], status: u16) -> bool {
     conditions.iter().any(|c| match c {
         NextUpstreamCondition::Http500 => status == 500,
         NextUpstreamCondition::Http502 => status == 502,
@@ -344,7 +348,10 @@ fn should_retry_status(conditions: &[NextUpstreamCondition], status: u16) -> boo
     })
 }
 
-fn should_retry_error(conditions: &[NextUpstreamCondition], err: &UpstreamError) -> bool {
+pub(super) fn should_retry_error(
+    conditions: &[NextUpstreamCondition],
+    err: &UpstreamError,
+) -> bool {
     if err.is_timeout() {
         return conditions.contains(&NextUpstreamCondition::Timeout)
             || conditions.contains(&NextUpstreamCondition::Error);

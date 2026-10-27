@@ -221,12 +221,12 @@ For meaningful numbers, close other heavy programs (browsers, IDEs, other contai
 
 | Server | 1.4 KB file req/s | p99 | 133 KB file req/s | p99 | Proxy req/s | p99 | Memory (PSS) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Ferrix** | **182.0k** | **1.7 ms** | **47.8k** | 6.0 ms | 77.8k | 3.9 ms | 12.9 MB |
-| nginx 1.27 | 102.1k | 2.9 ms | 46.4k | **6.0 ms** | **80.4k** | **3.8 ms** | **10.8 MB** |
-| Pingora 0.9 | – | – | – | – | 43.7k | 10.6 ms | 32.6 MB |
-| Pingap 0.16.1 | 21.5k | 16.8 ms | 2.5k | 122 ms | 31.6k | 14.4 ms | 67.1 MB |
-| Ferron 2.8.1 | 38.6k | 18.2 ms | 17.2k | 26.2 ms | 31.4k | 14.4 ms | 65.3 MB |
-| Traefik 3.5.6 | – | – | – | – | 23.8k | 26.2 ms | 165.5 MB |
+| **Ferrix** | **182.9k** | **1.9 ms** | **49.3k** | 6.6 ms | **98.5k** | **3.5 ms** | 13.3 MB |
+| nginx 1.27 | 105.9k | 2.9 ms | 48.5k | **6.5 ms** | 78.8k | 5.4 ms | **10.9 MB** |
+| Pingora 0.9 | – | – | – | – | 42.0k | 11.5 ms | 31.3 MB |
+| Pingap 0.16.1 | 21.0k | 17.7 ms | 2.4k | 132 ms | 31.5k | 15.2 ms | 67.1 MB |
+| Ferron 2.8.1 | 39.5k | 14.3 ms | 17.4k | 45.8 ms | 30.3k | 15.5 ms | 65.8 MB |
+| Traefik 3.5.6 | – | – | – | – | 22.7k | 27.6 ms | 167.4 MB |
 
 "–": Traefik and Pingora are proxies only and don't serve files. The other servers run with the minimal configs in [`benchmarks/conf/`](benchmarks/conf/) (4 workers/threads each, no extra tuning), so they may do better with tuning their own docs recommend; contributions that improve those configs are welcome. Pingora is measured through the minimal proxy in [`benchmarks/pingora/`](benchmarks/pingora/).
 
@@ -245,7 +245,7 @@ Before the memory work, Ferrix's RSS was 25 MB idle and 56–68 MB under these l
 
 With `metrics.enabled` the cost is about 4–9%.
 
-**Where we stand:** Ferrix serves small static files ~1.8× faster than nginx, is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`) and within a few percent on proxying (the two trade places between runs). Among the Rust and Go alternatives it is the fastest in every scenario and uses the least memory under load. On memory it now uses less than nginx idle and with small files (8.3 / 9.7 MB vs. ~10.5 MB PSS), and ~1.2–1.3× nginx when proxying or sending large files.
+**Where we stand:** Ferrix serves small static files ~1.7× faster than nginx, proxies ~25% more requests per second with a lower p99, and is level with it on large files (zero-copy `sendfile` + `TCP_CORK`, like nginx's `tcp_nopush`). Among the Rust and Go alternatives it is the fastest in every scenario and uses the least memory under load. On memory it uses less than nginx idle and with small files (8.3 / 9.7 MB vs. ~10.5 MB PSS), and ~1.2–1.3× nginx when proxying or sending large files.
 
 **What made it faster** (proxy went from 18.8k to 80k req/s, small files from 14.7k to 176k):
 
@@ -255,6 +255,7 @@ With `metrics.enabled` the cost is about 4–9%.
 - **Built-in HTTP/1.1 upstream client with a per-thread connection pool** (like Pingora): no channels or extra tasks per request, no locks, and response headers parsed without copying values.
 - **No shared hot spots:** metrics counters, rate-limit buckets and request IDs are sharded per thread, and per-route headers are compiled when the config loads.
 - **LTO + mimalloc** release builds, with mimalloc committing memory on demand and returning freed memory immediately; `panic = "abort"` (a master process, or systemd/Docker, restarts a crashed server, like nginx's master).
+- **Raw proxy path:** on a proxy route with nothing else configured (no auth, limits, cache, compression, CORS or header rules, and metrics off), plain HTTP/1.1 requests are re-encoded byte for byte to the upstream and back, without building request/response objects in between. It turns on by itself; adding any of those features to the route simply uses the full pipeline.
 - **Less resident code:** no web framework router in the admin API, no `reqwest`, `clap`, full `regex` engine or `tracing-subscriber`; optional modules (`http2`, `brotli`, `zstd`, `acme`, `admin`, `nginx-import`) can be left out at build time like nginx's `--with-*` options.
 - **No helper threads on the request path:** static files are read and checked inline like nginx does (they're small and in the page cache), so a cold start doesn't spawn blocking threads that each keep an allocator heap; rare, large request paths (TLS handshakes, static files, cache fills, WebSocket upgrades) are boxed so an in-flight proxied request holds ~5 KB instead of ~12 KB.
 - **Small idle footprint:** an idle keep-alive connection holds ~2 KB (request state is boxed only while a request runs), read buffers start at 2 KB and are released when a connection goes idle (like nginx's keep-alive handling), metrics storage is only allocated when metrics are on, and file checks are plain `stat` calls instead of a growing blocking-thread pool.
