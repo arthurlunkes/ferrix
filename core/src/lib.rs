@@ -1,3 +1,4 @@
+#[cfg(feature = "admin")]
 pub mod admin;
 pub mod config;
 pub mod event;
@@ -6,6 +7,7 @@ pub mod http;
 pub mod log;
 pub mod metrics;
 pub mod net;
+#[cfg(feature = "nginx-import")]
 pub mod nginx;
 pub mod os;
 pub mod stream;

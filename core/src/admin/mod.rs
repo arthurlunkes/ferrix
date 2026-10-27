@@ -153,10 +153,17 @@ async fn api(state: &AdminState, req: Request<Body>, path: &str) -> Response {
             Ok(body) => h::route_test(state, body).await.into_response(),
             Err(r) => *r,
         },
+        #[cfg(feature = "nginx-import")]
         (Method::POST, ["import", "nginx"]) => match json_body(req).await {
             Ok(body) => h::import_nginx(body).await.into_response(),
             Err(r) => *r,
         },
+        #[cfg(not(feature = "nginx-import"))]
+        (Method::POST, ["import", "nginx"]) => (
+            StatusCode::NOT_FOUND,
+            "this Ferrix was built without the nginx-import feature",
+        )
+            .into_response(),
         (Method::GET, ["vhosts"]) => h::get_vhosts(state).await.into_response(),
         (Method::POST, ["vhosts"]) => match json_body(req).await {
             Ok(vhost) => h::save_vhost(state, vhost).await.into_response(),

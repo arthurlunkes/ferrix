@@ -401,6 +401,7 @@ fn not_found(message: String) -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
+#[cfg(feature = "nginx-import")]
 #[derive(Debug, Deserialize)]
 pub struct ImportNginxRequest {
     pub source: String,
@@ -409,6 +410,7 @@ pub struct ImportNginxRequest {
     pub file_name: Option<String>,
 }
 
+#[cfg(feature = "nginx-import")]
 pub async fn import_nginx(req: ImportNginxRequest) -> impl IntoResponse {
     let file_name = req.file_name.unwrap_or_else(|| "nginx.conf".to_string());
 

@@ -62,12 +62,14 @@ All of them are built by default:
 | `brotli` | Brotli response compression (gzip is always available) |
 | `zstd` | zstd response compression |
 | `acme` | Automatic Let's Encrypt certificates (`tls.acme`) |
+| `admin` | Admin REST API, live request stream and the web dashboard (`admin:`) |
+| `nginx-import` | `ferrix import` and the dashboard's "Import nginx" page |
 
 ```bash
 # Everything (default)
 cargo build --release
-# Minimal: HTTP/1.1, gzip, certificates from files. ~2.3 MB less code and ~1.3 MB less
-# memory per running server.
+# Minimal: HTTP/1.1, gzip, certificates from files, configured only through
+# ferrix.yaml + `ferrix reload` (no admin API).
 cargo build --release --no-default-features
 # Pick and choose
 cargo build --release --no-default-features --features "http2,brotli"

@@ -4,7 +4,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod cli;
 
 use cli::{Args, Command as Commands, DEFAULT_CONFIG};
-use ferrix::{admin, config, health, http as proxy, metrics, tls as tls_plan};
+#[cfg(feature = "admin")]
+use ferrix::admin;
+use ferrix::{config, health, http as proxy, metrics, tls as tls_plan};
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -12,6 +14,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "admin")]
 use admin::handlers::AdminState;
 use config::store::ConfigStore;
 use config::validate::validate;
@@ -422,6 +425,16 @@ fn run_test(config_path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(feature = "nginx-import"))]
+fn run_import(
+    _from: &Path,
+    _out: Option<&Path>,
+    _report_path: Option<&Path>,
+) -> Result<(), String> {
+    Err("ferrix: this build doesn't include the nginx importer (feature `nginx-import`)".into())
+}
+
+#[cfg(feature = "nginx-import")]
 fn run_import(from: &Path, out: Option<&Path>, report_path: Option<&Path>) -> Result<(), String> {
     let result = ferrix::nginx::convert::import_file(from)
         .map_err(|e| format!("ferrix: failed to import {}:\n  {}", from.display(), e))?;
@@ -785,20 +798,30 @@ async fn run_server(args: Args) -> Result<(), String> {
     ferrix::tls::acme::AcmeManager::new(store.clone(), proxy_engine.acme_challenges.clone())
         .start();
 
-    let admin_state = AdminState {
-        store: store.clone(),
-        metrics: metrics.clone(),
-        health_checker: health_checker.clone(),
-    };
     let admin_enabled = store.config().admin.enabled;
-    let admin_listen_clone = admin_listen.clone();
-    let admin_handle = tokio::spawn(async move {
-        if !admin_enabled {
-            info!("Control Plane API disabled (admin.enabled = false)");
-            return;
+    #[cfg(feature = "admin")]
+    let admin_handle = {
+        let admin_state = AdminState {
+            store: store.clone(),
+            metrics: metrics.clone(),
+            health_checker: health_checker.clone(),
+        };
+        let admin_listen_clone = admin_listen.clone();
+        tokio::spawn(async move {
+            if !admin_enabled {
+                info!("Control Plane API disabled (admin.enabled = false)");
+                return;
+            }
+            admin::serve(admin_listen_clone, admin_state).await;
+        })
+    };
+    #[cfg(not(feature = "admin"))]
+    let admin_handle = {
+        if admin_enabled {
+            warn!("admin.enabled is set, but this build has no admin API (feature `admin`)");
         }
-        admin::serve(admin_listen_clone, admin_state).await;
-    });
+        tokio::spawn(async {})
+    };
 
     let proxy_workers = store.config().http.worker_threads;
     let mut proxy_ports_summary = Vec::with_capacity(port_plan.len());

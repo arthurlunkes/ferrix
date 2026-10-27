@@ -1,3 +1,4 @@
+#![cfg(feature = "nginx-import")]
 use std::path::Path;
 
 use ferrix::config::validate::validate;

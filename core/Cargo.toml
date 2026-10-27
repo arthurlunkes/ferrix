@@ -52,7 +52,7 @@ x509-parser = { version = "0.18", optional = true }
 # minimal build (`cargo build --release --no-default-features`) leaves them out and
 # keeps less code resident in every running server.
 [features]
-default = ["http2", "brotli", "zstd", "acme"]
+default = ["http2", "brotli", "zstd", "acme", "admin", "nginx-import"]
 # HTTP/2 for clients (h2c and over TLS via ALPN).
 http2 = ["hyper/http2", "hyper-util/http2", "hyper-util/server-auto"]
 # Brotli and zstd response compression (gzip is always available).
@@ -60,4 +60,8 @@ brotli = ["async-compression/brotli"]
 zstd = ["async-compression/zstd"]
 # Automatic Let's Encrypt certificates (`tls.acme`).
 acme = ["dep:instant-acme", "dep:x509-parser"]
+# Control-plane REST API, live log stream and the web dashboard (`admin:`).
+admin = []
+# `ferrix import` and the dashboard's "Import nginx" page.
+nginx-import = []
 
