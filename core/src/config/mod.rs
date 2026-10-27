@@ -128,6 +128,11 @@ pub struct AdminConfig {
     /// Serve the Prometheus `/metrics` endpoint without admin authentication.
     #[serde(default)]
     pub metrics_public: bool,
+
+    /// Directory with the built web dashboard (`frontend/dist`). When set, the admin
+    /// server also serves the dashboard at `/`, so no separate web server is needed.
+    #[serde(default)]
+    pub dashboard_dir: Option<String>,
 }
 
 fn default_admin_listen() -> String {
@@ -142,6 +147,7 @@ impl Default for AdminConfig {
             auth: AdminAuthConfig::default(),
             cors_origins: Vec::new(),
             metrics_public: false,
+            dashboard_dir: None,
         }
     }
 }

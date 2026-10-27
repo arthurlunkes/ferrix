@@ -17,7 +17,7 @@
 
 > **Where does the name come from?** _Ferrix_ combines **ferr-**, from _ferrum_ (Latin for iron) — because iron, over time, turns into **rust**, the language it is written in — with the trailing **-x** of **nginx**, the server that inspired it. In other words: an nginx made of rust. 🦀
 
-> **🌱 Ferrix is open source (Apache-2.0) and looking for contributors!** Whether you know Rust, React, Node.js, or just want to improve the docs or test it against your nginx configs, your help is welcome. Jump to [How you can help](#-how-you-can-help).
+> **🌱 Ferrix is open source (Apache-2.0) and looking for contributors!** Whether you know Rust, React, or just want to improve the docs or test it against your nginx configs, your help is welcome. Jump to [How you can help](#-how-you-can-help).
 
 ---
 
@@ -80,15 +80,10 @@ ferrix/
 │   ├── tests/             # Unit and integration tests
 │   └── scripts/           # Install scripts: install.sh (Linux/systemd), install.ps1 (Windows)
 │
-├── backend/               # 🟢 Management backend in Node.js + Express (TypeScript)
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── src/server.ts      # REST API, proxy to the core, SSE stream and dashboard server
-│
 ├── frontend/              # ⚛️ Web dashboard in React + Vite + Tailwind CSS
 │   ├── package.json
 │   ├── src/               # Components, metrics screens and auth modal
-│   └── dist/              # Built assets served by the Node.js backend
+│   └── dist/              # Built assets, served by the core itself (admin.dashboard_dir)
 │
 ├── static_demo/           # Demo folder of static files served by the core
 ├── docs/                  # Detailed documentation (Portuguese): overview, configuration, API...
@@ -103,20 +98,18 @@ ferrix/
 ### 1. Requirements
 
 - **Rust & Cargo** (1.75+)
-- **Node.js** (v18+) & **npm**
+- **Node.js** (v18+) & **npm**, only to build the web dashboard
 
 ### 2. Running in development
 
 ```bash
-# 1. Start the Rust core (proxy on :8000, control plane on :8081):
-cargo build --release --workspace
-./target/release/ferrix --config ferrix.yaml
+# 1. Build the web dashboard (optional, only needed for the UI):
+(cd frontend && npm install && npm run build)
 
-# 2. Start the Node.js backend (API and dashboard on :8080):
-cd backend
-npm install
-npm run build
-npm start
+# 2. Start Ferrix (proxy on :8000, admin API on :8081). The first run creates
+#    ferrix.yaml with a random admin token:
+cargo build --release --workspace
+./target/release/ferrix run --config ferrix.yaml
 
 # 3. (Optional) Start the mock servers to try out load balancing:
 node test_backends.js
@@ -124,8 +117,8 @@ node test_backends.js
 
 Then:
 
-1. Open **`http://localhost:8080`** in your browser to access the dashboard.
-2. Enter the admin token. On first run, Ferrix creates `ferrix.yaml` with a random token (the `token` field); use that value.
+1. To serve the dashboard, set `admin.dashboard_dir: frontend/dist` and `metrics: { enabled: true }` in `ferrix.yaml`, run `ferrix reload` (or restart), and open **`http://localhost:8081`**. There is no separate web server: Ferrix serves the dashboard and its API itself.
+2. Enter the admin token (the `admin.auth.token` field Ferrix generated in `ferrix.yaml`).
 3. Send requests to `http://localhost:8000/api` and watch the balanced traffic live on the dashboard!
 
 ### 🐳 3. Running with Docker (GitHub Packages)
@@ -143,16 +136,18 @@ docker run -d \
   ghcr.io/arthurlunkes/ferrix:latest
 ```
 
-#### Option B: Full All-in-One (Core + React Web Dashboard on :8080)
+#### Option B: Full, with the web dashboard on :8080
+
+One Ferrix process serves the proxy and the dashboard (no Node.js in the image). The first start creates `ferrix.yaml` in the mounted directory with a random admin token, printed in the container log:
 
 ```bash
 docker run -d \
   --name ferrix-full \
   -p 8000:8000 \
-  -p 8081:8081 \
   -p 8080:8080 \
-  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
+  -v $(pwd)/ferrix-data:/etc/ferrix \
   ghcr.io/arthurlunkes/ferrix:full
+docker logs ferrix-full   # shows the admin token
 ```
 
 Or using Docker Compose:

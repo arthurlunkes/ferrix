@@ -5,7 +5,7 @@
 **/*.rs.bk
 *.pdb
 
-# Node — frontend and backend
+# Node — frontend
 node_modules/
 dist/
 .npm

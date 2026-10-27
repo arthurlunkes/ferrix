@@ -1,6 +1,6 @@
 # 05. REST API Reference
 
-Ferrix exposes a modern REST API on its administrative port (default `8080` / `8081`) for telemetry metrics, historical request audits, real-time logs, and dynamic zero-downtime configuration management.
+Ferrix exposes a modern REST API on its administrative port (`admin.listen`, default `127.0.0.1:8081`; `8080` in the Docker "full" image) for telemetry metrics, historical request audits, real-time logs, and dynamic zero-downtime configuration management.
 
 ---
 
@@ -91,7 +91,7 @@ Query the recent ring-buffer of processed requests.
 **Example Request:**
 
 ```bash
-curl "http://localhost:8080/api/logs?limit=10&status=400&q=api"
+curl "http://localhost:8081/api/logs?limit=10&status=400&q=api"
 ```
 
 **Example Response:**
@@ -123,7 +123,7 @@ Real-time push channel streaming `request` events whenever a proxy transaction f
 **JavaScript EventSource Example:**
 
 ```javascript
-const es = new EventSource("http://localhost:8080/api/logs/stream");
+const es = new EventSource("http://localhost:8081/api/logs/stream");
 es.addEventListener("request", (event) => {
   const log = JSON.parse(event.data);
   console.log(
@@ -158,7 +158,7 @@ Overwrites global configuration, persists to disk, and executes atomic hot-reloa
 **curl Example:**
 
 ```bash
-curl -X POST http://localhost:8080/api/config \
+curl -X POST http://localhost:8081/api/config \
   -H "Content-Type: application/json" \
   -d @new_config.json
 ```
@@ -172,7 +172,7 @@ curl -X POST http://localhost:8080/api/config \
 Creates or updates a Virtual Host. If `id` already exists, it is updated in place; otherwise, a new host is appended.
 
 ```bash
-curl -X POST http://localhost:8080/api/vhosts \
+curl -X POST http://localhost:8081/api/vhosts \
   -H "Content-Type: application/json" \
   -d '{
     "id": "new-vhost",
@@ -204,5 +204,5 @@ curl -X POST http://localhost:8080/api/vhosts \
 Deletes a Virtual Host and reloads routing tables.
 
 ```bash
-curl -X DELETE http://localhost:8080/api/vhosts/new-vhost
+curl -X DELETE http://localhost:8081/api/vhosts/new-vhost
 ```

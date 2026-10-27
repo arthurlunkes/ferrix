@@ -9,13 +9,12 @@ Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Security problems go th
 ```bash
 git clone https://github.com/<your-user>/ferrix.git && cd ferrix
 cargo build --workspace                       # Rust core
-(cd backend && npm install && npm run build)  # Node.js backend
 (cd frontend && npm install && npm run dev)   # React dashboard with hot reload
 ./target/debug/ferrix --config ferrix.yaml    # creates ferrix.yaml on first run
 node test_backends.js                         # optional mock upstreams
 ```
 
-Where things live: `core/` (Rust proxy engine; its `src/` mirrors nginx's layout, see [the architecture doc](docs/03-arquitetura.md#-source-code-organization)), `backend/` (Node.js API + dashboard server), `frontend/` (React UI), `docs/` (mdBook docs), `benchmarks/` (nginx comparison).
+Where things live: `core/` (Rust proxy engine; its `src/` mirrors nginx's layout, see [the architecture doc](docs/03-arquitetura.md#-source-code-organization)), `frontend/` (React UI), `docs/` (mdBook docs), `benchmarks/` (nginx comparison).
 
 ## Reporting issues
 

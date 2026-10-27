@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Ferrix — Instalação em Linux via systemd (Core + Gateway do painel)
+# Ferrix — Instalação em Linux via systemd
 #
-# Instala os dois processos que compõem o Ferrix:
-#   - ferrix.service          o motor do proxy em Rust (tráfego + API interna)
-#   - ferrix-backend.service  o gateway em Node.js que serve o painel e fala
-#                             com o Core por trás
+# Instala o ferrix.service (proxy + API de administração) e, se o Node.js estiver
+# disponível para compilar, os arquivos do painel web em /usr/share/ferrix/dashboard,
+# servidos pelo próprio Ferrix (admin.dashboard_dir) — sem nenhum processo extra.
 #
 # Uso:
-#   ./install.sh              build + instala os dois serviços
+#   ./install.sh              build + instala o Core e o painel
 #   ./install.sh --core-only  build + instala só o Core (sem painel web)
 # ==============================================================================
 
@@ -18,13 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd "${CORE_DIR}/.." && pwd)"
 FRONTEND_DIR="${PROJECT_ROOT}/frontend"
-BACKEND_DIR="${PROJECT_ROOT}/backend"
+DASHBOARD_DIR="/usr/share/ferrix/dashboard"
 
 BIN_NAME="ferrix"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/ferrix"
 CORE_SERVICE_FILE="/etc/systemd/system/ferrix.service"
-GATEWAY_SERVICE_FILE="/etc/systemd/system/ferrix-backend.service"
 
 CORE_ONLY=false
 for arg in "$@"; do
@@ -34,9 +32,7 @@ for arg in "$@"; do
 done
 
 # Dono dos serviços: o usuário que chamou o script (mesmo executado com sudo),
-# nunca root — o Core só precisa escrever em ${CONFIG_DIR} e o gateway não
-# precisa de privilégio nenhum. Rodar os dois como root seria mais acesso do
-# que qualquer um deles usa.
+# nunca root — o Core só precisa escrever em ${CONFIG_DIR}.
 RUN_USER="${SUDO_USER:-$(id -un)}"
 
 as_root() {
@@ -131,64 +127,35 @@ if [ "${CORE_ONLY}" = true ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Painel web (frontend React) + Gateway (Node.js)
+# 2. Painel web (frontend React), servido pelo próprio Ferrix
 # ------------------------------------------------------------------------------
-if ! command -v node >/dev/null 2>&1; then
-    echo "⚠️  Node.js não encontrado — pulando a instalação do painel web." >&2
+if ! command -v npm >/dev/null 2>&1; then
+    echo "⚠️  npm não encontrado — pulando o painel web." >&2
     echo "    O Core acima já foi instalado e funciona sozinho (sem painel)." >&2
-    echo "    Instale o Node.js e rode este script de novo para adicionar o painel." >&2
+    echo "    Instale o Node.js (só para compilar) e rode este script de novo." >&2
     exit 0
 fi
 
 echo "==> Compilando o painel web (frontend/)..."
 ( cd "${FRONTEND_DIR}" && npm install && npm run build )
 
-echo "==> Compilando o gateway do painel (backend/)..."
-( cd "${BACKEND_DIR}" && npm install && npm run build )
-
-NODE_BIN="$(command -v node)"
-
-if command -v systemctl >/dev/null 2>&1; then
-    echo "==> Configurando ${GATEWAY_SERVICE_FILE}..."
-    TMP_SERVICE=$(mktemp)
-    cat <<EOF > "${TMP_SERVICE}"
-[Unit]
-Description=Ferrix Backend - Painel Web & Gateway da API (Node.js)
-After=network.target ferrix.service
-Wants=ferrix.service
-
-[Service]
-Type=simple
-User=${RUN_USER}
-WorkingDirectory=${BACKEND_DIR}
-Environment=PORT=8080
-Environment=FERRIX_CORE_URL=http://127.0.0.1:8081
-ExecStart=${NODE_BIN} dist/server.js
-Restart=on-failure
-RestartSec=3s
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    as_root mv "${TMP_SERVICE}" "${GATEWAY_SERVICE_FILE}"
-    as_root systemctl daemon-reload
-    echo "✅ ferrix-backend.service configurado."
-fi
+echo "==> Instalando o painel em ${DASHBOARD_DIR}..."
+as_root mkdir -p "${DASHBOARD_DIR}"
+as_root cp -r "${FRONTEND_DIR}/dist/." "${DASHBOARD_DIR}/"
 
 echo ""
 echo "🎉 Ferrix instalado com sucesso (Core + Painel)!"
 echo ""
-echo "   Para iniciar os dois agora:"
-echo "     sudo systemctl start ferrix ferrix-backend"
-echo "   Para habilitar no boot:"
-echo "     sudo systemctl enable ferrix ferrix-backend"
-echo "   Para ver os logs:"
-echo "     journalctl -u ferrix -u ferrix-backend -f"
+echo "   Para iniciar agora:   sudo systemctl start ferrix"
+echo "   Para habilitar no boot: sudo systemctl enable ferrix"
+echo "   Para ver os logs:     journalctl -u ferrix -f"
 echo ""
-echo "   Painel:        http://localhost:8080"
-echo "   Tráfego proxy: porta configurada em ${CONFIG_DIR}/ferrix.yaml (http.listen)"
+echo "   Para ligar o painel, adicione em ${CONFIG_DIR}/ferrix.yaml:"
+echo "     admin:"
+echo "       dashboard_dir: ${DASHBOARD_DIR}"
+echo "   e acesse http://<admin.listen> (por padrão http://127.0.0.1:8081)."
+echo "   O painel precisa das métricas ligadas (metrics: {enabled: true})."
 echo ""
 echo "   Na primeira vez que o Core rodar, ele gera um token de administração e"
 echo "   grava em ${CONFIG_DIR}/ferrix.yaml — veja com:"
-echo "     journalctl -u ferrix | grep 'Token de administração'"
+echo "     journalctl -u ferrix | grep -i token"

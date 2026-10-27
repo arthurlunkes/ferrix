@@ -1,27 +1,20 @@
 #!/bin/sh
+# Ferrix "full" image: one process serves the proxy (:8000) and the admin API plus the
+# web dashboard (:8080). On first start a config with a random admin token is created.
 set -e
 
 CONFIG_PATH="${FERRIX_CONFIG:-/etc/ferrix/ferrix.yaml}"
 
-if [ ! -f "$CONFIG_PATH" ] && [ -f /etc/ferrix/ferrix.example.yaml ]; then
-    echo "[Ferrix Full] Initializing default configuration at $CONFIG_PATH..."
+if [ ! -f "$CONFIG_PATH" ]; then
     mkdir -p "$(dirname "$CONFIG_PATH")"
-    cp /etc/ferrix/ferrix.example.yaml "$CONFIG_PATH"
+    TOKEN=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    # Write to a temp file first so a failure never leaves an empty config behind.
+    sed "s/@ADMIN_TOKEN@/$TOKEN/" /usr/share/ferrix/ferrix.full.yaml > "$CONFIG_PATH.tmp"
+    mv "$CONFIG_PATH.tmp" "$CONFIG_PATH"
+    echo "================================================================"
+    echo " Created $CONFIG_PATH"
+    echo " Dashboard: http://<host>:8080   admin token: $TOKEN"
+    echo "================================================================"
 fi
 
-echo "================================================================"
-echo "🚀 Starting Ferrix Core (Rust Engine)..."
-echo "================================================================"
-/usr/local/bin/ferrix --config "$CONFIG_PATH" &
-CORE_PID=$!
-
-trap 'echo "[Ferrix Full] Stopping services..."; kill $CORE_PID; exit 0' SIGTERM SIGINT
-
-echo "================================================================"
-echo "🌐 Starting Ferrix Web Dashboard & Gateway (Node.js)..."
-echo "   Dashboard Web: http://0.0.0.0:8080"
-echo "   Proxy Traffic: http://0.0.0.0:8000"
-echo "   Core Admin:    http://127.0.0.1:8081"
-echo "================================================================"
-cd /app/backend && exec node dist/server.js
-
+exec /usr/local/bin/ferrix run --config "$CONFIG_PATH"

@@ -14,8 +14,10 @@ services:
       - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
 
   # ----------------------------------------------------------------------------
-  # Option 2: Full All-in-One with React Web Dashboard
+  # Option 2: Full, with the web dashboard (served by the same Ferrix process)
   # Usage: docker compose up ferrix-full
+  # The first start creates ferrix.yaml in ./ferrix-data with a random admin token
+  # (shown in `docker compose logs ferrix-full`).
   # ----------------------------------------------------------------------------
   ferrix-full:
     image: ghcr.io/arthurlunkes/ferrix:full
@@ -23,8 +25,7 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"   # Reverse Proxy traffic
-      - "8081:8081"   # Control Plane / Admin REST API
-      - "8080:8080"   # React Web Dashboard & Gateway
+      - "8080:8080"   # Admin REST API and web dashboard
     volumes:
-      - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
+      - ./ferrix-data:/etc/ferrix
 

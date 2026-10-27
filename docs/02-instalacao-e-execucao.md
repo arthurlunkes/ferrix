@@ -187,18 +187,18 @@ docker run -d \
   ghcr.io/arthurlunkes/ferrix:latest
 ```
 
-### Option B: Full All-in-One (Core + React Dashboard on :8080)
+### Option B: Full, with the web dashboard on :8080
 
-Includes the Ferrix Core and the interactive React Web Dashboard:
+One Ferrix process serves the proxy (:8000) and the admin API plus dashboard (:8080); the image has no Node.js. The first start writes `ferrix.yaml` into the mounted directory with a random admin token, shown in the log:
 
 ```bash
 docker run -d \
   --name ferrix-full \
   -p 8000:8000 \
-  -p 8081:8081 \
   -p 8080:8080 \
-  -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
+  -v $(pwd)/ferrix-data:/etc/ferrix \
   ghcr.io/arthurlunkes/ferrix:full
+docker logs ferrix-full
 ```
 
 ### Using Docker Compose

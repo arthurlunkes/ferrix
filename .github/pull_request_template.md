@@ -9,5 +9,5 @@
 ## Checklist
 
 - [ ] `cargo fmt --all`, `cargo clippy --workspace` and `cargo test --workspace` pass
-- [ ] Frontend/backend build (if touched)
+- [ ] Frontend build (if touched)
 - [ ] Docs / `CHANGELOG.md` updated (if user-facing)

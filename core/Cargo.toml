@@ -12,9 +12,8 @@ description = "High-performance standalone Nginx clone in Rust (Proxy Engine & C
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["ws", "macros"] }
-tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "cors", "trace", "set-header"] }
+# Only axum's core types and its WebSocket upgrade are used (no Router/extractors).
+axum = { version = "0.8", default-features = false, features = ["ws", "tokio", "http1"] }
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"

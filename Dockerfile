@@ -13,7 +13,7 @@ COPY core ./core
 RUN cargo build --release --workspace
 
 # ==============================================================================
-# Stage 2: Web Builder (builds Frontend UI & Backend Gateway for Full variant)
+# Stage 2: Web Builder (builds the React dashboard for the full variant)
 # ==============================================================================
 FROM node:22-alpine AS web-builder
 WORKDIR /src
@@ -24,35 +24,25 @@ RUN cd frontend && npm ci
 COPY frontend ./frontend
 RUN cd frontend && npm run build
 
-COPY backend/package*.json ./backend/
-RUN cd backend && npm ci
-
-COPY backend ./backend
-RUN cd backend && npm run build && npm prune --production
-
 # ==============================================================================
-# Target: full (All-in-one with React Web Dashboard & Node.js API Gateway)
+# Target: full (proxy + web dashboard, served by the same Ferrix process)
 # ==============================================================================
-FROM node:22-alpine AS full
+FROM alpine:3.21 AS full
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata && mkdir -p /etc/ferrix
 
 COPY --from=rust-builder /src/target/release/ferrix /usr/local/bin/ferrix
-COPY ferrix.example.yaml /etc/ferrix/ferrix.example.yaml
+COPY --from=web-builder /src/frontend/dist /usr/share/ferrix/dashboard
+COPY docker/ferrix.full.yaml /usr/share/ferrix/ferrix.full.yaml
 COPY docker/entrypoint-full.sh /usr/local/bin/entrypoint-full.sh
 RUN chmod +x /usr/local/bin/entrypoint-full.sh
 
-WORKDIR /app
-COPY --from=web-builder /src/backend /app/backend
-COPY --from=web-builder /src/frontend/dist /app/frontend/dist
-
 VOLUME ["/etc/ferrix"]
 
-ENV PORT=8080 \
-    FERRIX_CORE_URL=http://127.0.0.1:8081 \
-    FERRIX_CONFIG=/etc/ferrix/ferrix.yaml
+ENV FERRIX_CONFIG=/etc/ferrix/ferrix.yaml
 
-EXPOSE 8000 8081 8080
+# 8000: proxy traffic · 8080: admin API and web dashboard
+EXPOSE 8000 8080
 
 ENTRYPOINT ["/usr/local/bin/entrypoint-full.sh"]
 

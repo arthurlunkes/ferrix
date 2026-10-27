@@ -12,7 +12,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use admin::create_admin_router;
 use admin::handlers::AdminState;
 use config::store::ConfigStore;
 use config::validate::validate;
@@ -786,12 +785,11 @@ async fn run_server(args: Args) -> Result<(), String> {
     ferrix::tls::acme::AcmeManager::new(store.clone(), proxy_engine.acme_challenges.clone())
         .start();
 
-    let admin_router = create_admin_router(AdminState {
+    let admin_state = AdminState {
         store: store.clone(),
         metrics: metrics.clone(),
         health_checker: health_checker.clone(),
-    });
-
+    };
     let admin_enabled = store.config().admin.enabled;
     let admin_listen_clone = admin_listen.clone();
     let admin_handle = tokio::spawn(async move {
@@ -799,21 +797,7 @@ async fn run_server(args: Args) -> Result<(), String> {
             info!("Control Plane API disabled (admin.enabled = false)");
             return;
         }
-        match tokio::net::TcpListener::bind(&admin_listen_clone).await {
-            Ok(listener) => {
-                info!(
-                    "Control Plane API listening on http://{}",
-                    admin_listen_clone
-                );
-                if let Err(e) = axum::serve(listener, admin_router).await {
-                    error!("Admin server encountered an error: {}", e);
-                }
-            }
-            Err(e) => error!(
-                "Failed to bind Admin listener to {}: {}",
-                admin_listen_clone, e
-            ),
-        }
+        admin::serve(admin_listen_clone, admin_state).await;
     });
 
     let proxy_workers = store.config().http.worker_threads;

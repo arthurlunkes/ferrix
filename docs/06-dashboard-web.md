@@ -2,10 +2,19 @@
 
 **Ferrix** comes equipped with a comprehensive graphical dashboard built with **React 19**, **Vite**, and styled with **Tailwind CSS** in a modern dark theme.
 
-The frontend is compiled and directly embedded inside the single Rust binary executable, meaning you do not need Node.js installed in production environments to run the web UI.
+The dashboard is a static React build served by Ferrix itself from `admin.dashboard_dir`, on the admin port, so production needs no Node.js or separate web server environments to run the web UI.
 
 Access the dashboard by navigating to:
-👉 **[http://localhost:8080](http://localhost:8080)**
+👉 **http://localhost:8081** (the `admin.listen` address; `8080` in the Docker "full" image)
+
+Enable it with:
+
+```yaml
+metrics:
+  enabled: true
+admin:
+  dashboard_dir: /usr/share/ferrix/dashboard   # or frontend/dist in a checkout
+```
 
 ---
 

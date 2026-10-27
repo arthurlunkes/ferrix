@@ -1,7 +1,6 @@
-use axum::extract::{Path, Query, State};
+use super::Json;
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::info;
@@ -40,7 +39,7 @@ pub struct LogsQuery {
     pub q: Option<String>,
 }
 
-pub async fn get_status(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_status(state: &AdminState) -> impl IntoResponse {
     let cfg = state.store.config();
     let metrics = state.metrics.get_metrics_snapshot();
 
@@ -57,16 +56,13 @@ pub async fn get_status(State(state): State<AdminState>) -> impl IntoResponse {
     })
 }
 
-pub async fn get_metrics(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_metrics(state: &AdminState) -> impl IntoResponse {
     let mut snap = state.metrics.get_metrics_snapshot();
     snap.enabled = state.store.config().metrics.enabled;
     Json(snap)
 }
 
-pub async fn get_logs(
-    State(state): State<AdminState>,
-    Query(params): Query<LogsQuery>,
-) -> impl IntoResponse {
+pub async fn get_logs(state: &AdminState, params: LogsQuery) -> impl IntoResponse {
     if !state.store.config().metrics.enabled {
         return Json(Vec::new());
     }
@@ -77,14 +73,11 @@ pub async fn get_logs(
     Json(logs)
 }
 
-pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_config(state: &AdminState) -> impl IntoResponse {
     Json((*state.store.config()).clone())
 }
 
-pub async fn validate_config(
-    State(_state): State<AdminState>,
-    Json(candidate): Json<FerrixConfig>,
-) -> impl IntoResponse {
+pub async fn validate_config(candidate: FerrixConfig) -> impl IntoResponse {
     Json(report_payload(&validate(&candidate)))
 }
 
@@ -104,8 +97,8 @@ pub async fn validate_config_yaml(body: String) -> axum::response::Response {
 }
 
 pub async fn update_config(
-    State(state): State<AdminState>,
-    Json(new_config): Json<FerrixConfig>,
+    state: &AdminState,
+    new_config: FerrixConfig,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let report = validate(&new_config);
     if !report.is_valid() {
@@ -137,7 +130,7 @@ pub async fn update_config(
 
 /// The active configuration as YAML, exactly as it would be written to `ferrix.yaml`
 /// (the dashboard's config editor works on this text).
-pub async fn get_config_yaml(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_config_yaml(state: &AdminState) -> impl IntoResponse {
     match state.store.config().render(ConfigFormat::Yaml) {
         Ok(yaml) => (
             StatusCode::OK,
@@ -152,7 +145,7 @@ pub async fn get_config_yaml(State(state): State<AdminState>) -> impl IntoRespon
 /// Replaces the configuration from YAML text: parsed, validated, persisted and
 /// hot-reloaded, with the same JSON result as `POST /api/config`.
 pub async fn update_config_yaml(
-    state: State<AdminState>,
+    state: &AdminState,
     body: String,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let new_config = FerrixConfig::parse(&body, ConfigFormat::Yaml).map_err(|e| {
@@ -164,7 +157,7 @@ pub async fn update_config_yaml(
             })),
         )
     })?;
-    update_config(state, Json(new_config)).await
+    update_config(state, new_config).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,10 +183,7 @@ pub struct RouteTestResponse {
     pub explanation: String,
 }
 
-pub async fn route_test(
-    State(state): State<AdminState>,
-    Json(req): Json<RouteTestRequest>,
-) -> impl IntoResponse {
+pub async fn route_test(state: &AdminState, req: RouteTestRequest) -> impl IntoResponse {
     use crate::config::RouteTargetType;
 
     let compiled = state.store.compiled();
@@ -278,13 +268,13 @@ pub async fn route_test(
     })
 }
 
-pub async fn get_vhosts(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_vhosts(state: &AdminState) -> impl IntoResponse {
     Json(state.store.config().vhosts.clone())
 }
 
 pub async fn save_vhost(
-    State(state): State<AdminState>,
-    Json(vhost): Json<VirtualHost>,
+    state: &AdminState,
+    vhost: VirtualHost,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut cfg = (*state.store.config()).clone();
 
@@ -293,12 +283,12 @@ pub async fn save_vhost(
         None => cfg.vhosts.push(vhost),
     }
 
-    apply_validated(&state, cfg, "Virtual host saved and configuration reloaded")
+    apply_validated(state, cfg, "Virtual host saved and configuration reloaded")
 }
 
 pub async fn delete_vhost(
-    State(state): State<AdminState>,
-    Path(id): Path<String>,
+    state: &AdminState,
+    id: String,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut cfg = (*state.store.config()).clone();
     let before = cfg.vhosts.len();
@@ -309,13 +299,13 @@ pub async fn delete_vhost(
     }
 
     apply_validated(
-        &state,
+        state,
         cfg,
         "Virtual host deleted and configuration reloaded",
     )
 }
 
-pub async fn get_upstreams(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_upstreams(state: &AdminState) -> impl IntoResponse {
     let cfg = state.store.config();
     let health_statuses = state.health_checker.get_all_statuses();
 
@@ -344,25 +334,25 @@ pub async fn get_upstreams(State(state): State<AdminState>) -> impl IntoResponse
 }
 
 pub async fn save_upstream(
-    State(state): State<AdminState>,
-    Json(upstream): Json<UpstreamConfig>,
+    state: &AdminState,
+    upstream: UpstreamConfig,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut cfg = (*state.store.config()).clone();
     cfg.upstreams.insert(upstream.name.clone(), upstream);
 
-    apply_validated(&state, cfg, "Upstream saved and configuration reloaded")
+    apply_validated(state, cfg, "Upstream saved and configuration reloaded")
 }
 
 pub async fn delete_upstream(
-    State(state): State<AdminState>,
-    Path(name): Path<String>,
+    state: &AdminState,
+    name: String,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut cfg = (*state.store.config()).clone();
     if cfg.upstreams.remove(&name).is_none() {
         return Err(not_found(format!("Upstream '{}' not found", name)));
     }
 
-    apply_validated(&state, cfg, "Upstream deleted and configuration reloaded")
+    apply_validated(state, cfg, "Upstream deleted and configuration reloaded")
 }
 
 fn apply_validated(
@@ -419,7 +409,7 @@ pub struct ImportNginxRequest {
     pub file_name: Option<String>,
 }
 
-pub async fn import_nginx(Json(req): Json<ImportNginxRequest>) -> impl IntoResponse {
+pub async fn import_nginx(req: ImportNginxRequest) -> impl IntoResponse {
     let file_name = req.file_name.unwrap_or_else(|| "nginx.conf".to_string());
 
     match crate::nginx::convert::import_str(&req.source, &file_name) {

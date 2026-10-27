@@ -1,0 +1,25 @@
+# Ferrix configuration for the Docker "full" image (proxy + web dashboard).
+# Installed as /usr/share/ferrix/ferrix.full.yaml. On first start the entrypoint copies
+# it to /etc/ferrix/ferrix.yaml and replaces the token placeholder with a random one (printed in the container log).
+
+# The dashboard's charts and live requests need metrics.
+metrics:
+  enabled: true
+
+admin:
+  # The admin API and the dashboard share this port.
+  listen: 0.0.0.0:8080
+  auth:
+    mode: token
+    token: "@ADMIN_TOKEN@"
+  dashboard_dir: /usr/share/ferrix/dashboard
+
+http:
+  listen: 0.0.0.0:8000
+
+vhosts:
+  - id: default-site
+    name: Default site
+    server_names: ["*"]
+    listen_port: 8000
+    routes: []

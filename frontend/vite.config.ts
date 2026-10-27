@@ -8,7 +8,8 @@ export default defineConfig({
     port: 3000,
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        // The Ferrix core's admin API (admin.listen).
+        target: "http://localhost:8081",
         changeOrigin: true,
       },
     },
