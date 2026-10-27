@@ -428,6 +428,7 @@ impl ProxyEngine {
                 let static_req = StaticRequest {
                     headers: &parts.headers,
                     encoding: info.encoding.map(|a| (a, compression)),
+                    cache: &compiled.config.http.static_cache,
                 };
                 // Boxed (like the cache and error-page paths) so a proxied request's
                 // state machine doesn't carry the size of the paths it doesn't take.

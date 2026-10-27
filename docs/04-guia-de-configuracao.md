@@ -214,6 +214,17 @@ The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. 
 
 ## 📁 Static files: caching and ranges
 
+Small files are kept in memory so they're served without touching the disk; larger ones
+are sent with `sendfile` straight from the kernel's page cache. Both limits are
+configurable:
+
+```yaml
+http:
+  static_cache:
+    max_file_bytes: 1048576      # files up to 1 MB are cached (0 disables the cache)
+    max_total_bytes: 67108864    # the cache uses at most 64 MB
+```
+
 Static responses carry `ETag` and `Last-Modified`. `If-None-Match` and `If-Modified-Since` are answered with `304 Not Modified`, and single `Range` requests are answered with `206 Partial Content` (or `416`).
 
 ## 🌍 CORS

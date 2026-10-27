@@ -232,10 +232,41 @@ pub struct HttpConfig {
     #[serde(default)]
     pub compression: CompressionConfig,
 
+    #[serde(default)]
+    pub static_cache: StaticCacheConfig,
+
     /// Add an `X-Request-Id` (kept when the client already sent one) to the upstream
     /// request and to the response.
     #[serde(default)]
     pub request_id: bool,
+}
+
+/// In-memory cache for small static files (served without touching the disk).
+/// Larger files are always sent with `sendfile` straight from the kernel's page cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticCacheConfig {
+    /// Files up to this size are kept in memory; `0` disables the cache.
+    #[serde(default = "default_static_cache_file")]
+    pub max_file_bytes: u64,
+    /// Total memory the cache may use.
+    #[serde(default = "default_static_cache_total")]
+    pub max_total_bytes: u64,
+}
+
+fn default_static_cache_file() -> u64 {
+    1024 * 1024
+}
+fn default_static_cache_total() -> u64 {
+    64 * 1024 * 1024
+}
+
+impl Default for StaticCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: default_static_cache_file(),
+            max_total_bytes: default_static_cache_total(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -408,6 +439,7 @@ impl Default for HttpConfig {
             client_max_body_size: default_client_max_body_size(),
             proxy_request_buffer_size: default_proxy_request_buffer_size(),
             compression: CompressionConfig::default(),
+            static_cache: StaticCacheConfig::default(),
             request_id: false,
         }
     }

@@ -140,9 +140,9 @@ impl Args {
                 })
             }
             Some("import") => Some(Command::Import {
-                from: import_from
-                    .take()
-                    .ok_or("usage: ferrix import --from <nginx.conf> [--out <file>] [--report <file>]")?,
+                from: import_from.take().ok_or(
+                    "usage: ferrix import --from <nginx.conf> [--out <file>] [--report <file>]",
+                )?,
                 out: import_out.take(),
                 report: import_report.take(),
             }),
@@ -180,8 +180,14 @@ mod tests {
         assert!(a.test && a.command.is_none());
         assert_eq!(a.config, PathBuf::from("x.yaml"));
 
-        assert_eq!(parse("-s reload").unwrap().signal.as_deref(), Some("reload"));
-        assert_eq!(parse("status").unwrap().config, PathBuf::from(DEFAULT_CONFIG));
+        assert_eq!(
+            parse("-s reload").unwrap().signal.as_deref(),
+            Some("reload")
+        );
+        assert_eq!(
+            parse("status").unwrap().config,
+            PathBuf::from(DEFAULT_CONFIG)
+        );
     }
 
     #[test]

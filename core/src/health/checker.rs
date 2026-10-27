@@ -28,7 +28,6 @@ pub struct HealthChecker {
     // Targets that are unhealthy or have recent failures. While it is zero (the normal
     // case) the per-request checks skip the shared map entirely.
     troubled: Arc<AtomicUsize>,
-
 }
 
 fn recount(map: &HashMap<String, TargetHealthStatus>, troubled: &AtomicUsize) {

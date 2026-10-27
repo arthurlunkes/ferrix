@@ -10,12 +10,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::OnceCell;
 use tracing::warn;
 
-use crate::config::{CompressionAlgorithm, CompressionConfig};
+use crate::config::{CompressionAlgorithm, CompressionConfig, StaticCacheConfig};
 use crate::http::filters::compress;
-
-const MAX_CACHED_FILE_BYTES: u64 = 1024 * 1024;
-
-const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 const REVALIDATE_AFTER: Duration = Duration::from_secs(1);
 
@@ -99,6 +95,8 @@ pub struct StaticRequest<'a> {
     pub headers: &'a HeaderMap,
     /// Encoding negotiated for this request when compression is enabled on the route.
     pub encoding: Option<(CompressionAlgorithm, &'a CompressionConfig)>,
+    /// `http.static_cache` limits.
+    pub cache: &'a StaticCacheConfig,
 }
 
 pub struct StaticFileServer;
@@ -131,13 +129,13 @@ impl StaticFileServer {
         // in the kernel's page cache, so this takes microseconds. Going through the
         // blocking pool instead spawned extra threads on a cold start (every connection
         // missing the cache at once), each keeping its own allocator heap alive.
-        let loaded = load_file(root_dir, path, try_files)?;
+        let loaded = load_file(root_dir, path, try_files, req.cache.max_file_bytes)?;
 
         match loaded {
             Loaded::Cacheable(entry) => {
                 let entry: Arc<CachedFile> = Arc::from(entry);
                 if let Ok(mut c) = CACHE.write() {
-                    if c.total_bytes + entry.meta.len <= MAX_CACHE_BYTES {
+                    if c.total_bytes + entry.meta.len <= req.cache.max_total_bytes {
                         c.total_bytes += entry.meta.len;
                         if let Some(old) = c.entries.insert(key, entry.clone()) {
                             c.total_bytes -= old.meta.len;
@@ -441,7 +439,12 @@ fn resolve_path(base_root: &Path, clean_path: &str, try_files: Option<&str>) -> 
     None
 }
 
-fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Loaded, StatusCode> {
+fn load_file(
+    root_dir: &str,
+    path: &str,
+    try_files: Option<&str>,
+    max_cached_file: u64,
+) -> Result<Loaded, StatusCode> {
     let clean_path = path.trim_start_matches('/');
     let base_root = PathBuf::from(root_dir);
 
@@ -457,7 +460,7 @@ fn load_file(root_dir: &str, path: &str, try_files: Option<&str>) -> Result<Load
     let metadata = std::fs::metadata(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let meta = FileMeta::new(&file_path, &metadata);
 
-    if meta.len > MAX_CACHED_FILE_BYTES {
+    if meta.len > max_cached_file {
         return Ok(Loaded::Large(file_path, meta));
     }
 
@@ -510,6 +513,7 @@ mod tests {
         let req = StaticRequest {
             headers: &headers,
             encoding: None,
+            cache: &StaticCacheConfig::default(),
         };
         StaticFileServer::serve_file(root, path, None, &req)
             .await
@@ -527,6 +531,27 @@ mod tests {
         h.insert(header::IF_NONE_MATCH, etag);
         let second = get(d.root(), "/a.txt", h).await;
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn files_above_max_file_bytes_are_not_cached() {
+        let d = dir_with("big.txt", &"x".repeat(4096));
+        let headers = HeaderMap::new();
+        let limits = StaticCacheConfig {
+            max_file_bytes: 1024,
+            ..Default::default()
+        };
+        let req = StaticRequest {
+            headers: &headers,
+            encoding: None,
+            cache: &limits,
+        };
+        let r = StaticFileServer::serve_file(d.root(), "/big.txt", None, &req)
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let key = format!("{}\0/big.txt\0", d.root());
+        assert!(!CACHE.read().unwrap().entries.contains_key(&key));
     }
 
     #[tokio::test]
@@ -562,6 +587,7 @@ mod tests {
         let req = StaticRequest {
             headers: &headers,
             encoding: Some((CompressionAlgorithm::Gzip, &cfg)),
+            cache: &StaticCacheConfig::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/c.txt", None, &req)
             .await
