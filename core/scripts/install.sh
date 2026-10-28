@@ -100,6 +100,8 @@ Type=simple
 User=${RUN_USER}
 WorkingDirectory=${CONFIG_DIR}
 ExecStart=${INSTALL_DIR}/${BIN_NAME} --config ${CONFIG_DIR}/ferrix.yaml
+# `systemctl reload ferrix`: re-read the configuration without dropping connections.
+ExecReload=/bin/kill -HUP \$MAINPID
 # O systemd já reinicia o Ferrix se ele cair; dispensa o processo master dele e
 # economiza a memória de um segundo processo.
 Environment=FERRIX_SUPERVISOR=0
