@@ -47,14 +47,20 @@ webpki-roots = "1"
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen"], optional = true }
 x509-parser = { version = "0.18", optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"], optional = true }
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
 
 # Optional modules, like nginx's `--with-*` build options. All are on by default; a
 # minimal build (`cargo build --release --no-default-features`) leaves them out and
 # keeps less code resident in every running server.
 [features]
-default = ["http2", "brotli", "zstd", "acme", "admin", "nginx-import"]
+default = ["http2", "http3", "brotli", "zstd", "acme", "admin", "nginx-import"]
 # HTTP/2 for clients (h2c and over TLS via ALPN).
 http2 = ["hyper/http2", "hyper-util/http2", "hyper-util/server-auto"]
+# HTTP/3 (QUIC) for clients on TLS ports; still only served when `http.protocols`
+# lists `http3`.
+http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn"]
 # Brotli and zstd response compression (gzip is always available).
 brotli = ["async-compression/brotli"]
 zstd = ["async-compression/zstd"]

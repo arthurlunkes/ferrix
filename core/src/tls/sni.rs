@@ -195,15 +195,31 @@ pub fn load_certified_key(cert_path: &str, key_path: &str) -> Result<CertifiedKe
     Ok(CertifiedKey::new(certs, signing))
 }
 
+/// TLS 1.3 configuration for QUIC (HTTP/3), sharing the TCP listener's certificates.
+#[cfg(feature = "http3")]
+pub fn quic_server_config(resolver: Arc<SniResolver>) -> Result<rustls::ServerConfig, String> {
+    let mut config =
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_no_client_auth()
+            .with_cert_resolver(resolver);
+    config.alpn_protocols = vec![b"h3".to_vec()];
+    config.max_early_data_size = 0;
+    Ok(config)
+}
+
 pub fn tls_acceptor(resolver: Arc<SniResolver>) -> Result<TlsAcceptor, String> {
+    use crate::config::HttpProtocol;
+    let http = resolver.store.config().http.clone();
     let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);
-    config.alpn_protocols = if cfg!(feature = "http2") {
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-    } else {
-        vec![b"http/1.1".to_vec()]
-    };
+    // Offer exactly the TCP protocols `http.protocols` allows, HTTP/2 first.
+    if cfg!(feature = "http2") && http.serves(HttpProtocol::Http2) {
+        config.alpn_protocols.push(b"h2".to_vec());
+    }
+    if http.serves(HttpProtocol::Http1) {
+        config.alpn_protocols.push(b"http/1.1".to_vec());
+    }
     // Session tickets let returning clients resume without a full handshake.
     if let Ok(ticketer) = rustls::crypto::ring::Ticketer::new() {
         config.ticketer = ticketer;

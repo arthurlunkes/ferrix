@@ -66,6 +66,8 @@ pub async fn serve(
     let http = engine.store.config().http.clone();
     // Coarse timers and a once-per-second Date header keep clock syscalls out of the
     // request path (see crate::event::clock).
+    use crate::config::HttpProtocol;
+    let http1 = http.serves(HttpProtocol::Http1);
     #[cfg(feature = "http2")]
     let builder = {
         let mut b = auto::Builder::new(TokioExecutor::new());
@@ -78,6 +80,12 @@ pub async fn serve(
             .timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
             .keep_alive_interval(None);
+        // `http.protocols` without one of them: refuse it on this connection too.
+        if !http.serves(HttpProtocol::Http2) {
+            b = b.http1_only();
+        } else if !http1 {
+            b = b.http2_only();
+        }
         b
     };
     #[cfg(not(feature = "http2"))]
@@ -91,6 +99,10 @@ pub async fn serve(
     };
     let builder = Arc::new(builder);
     let is_tls = tls.is_some();
+    // HTTP/3 is served over QUIC on the same port; TLS responses tell clients so.
+    let alt_svc = (is_tls && http.serves(HttpProtocol::Http3) && cfg!(feature = "http3"))
+        .then(|| hyper::header::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)).ok())
+        .flatten();
     let fast = Arc::new(crate::http::server::Settings {
         header_timeout: Duration::from_millis(http.client_header_timeout_ms.max(1)),
         keepalive_timeout: Duration::from_millis(http.keepalive_timeout_ms.max(1)),
@@ -133,11 +145,14 @@ pub async fn serve(
         let builder = builder.clone();
         let tls = tls.clone();
         let fast = fast.clone();
+        let alt_svc = alt_svc.clone();
         tokio::spawn(async move {
             let _slot = slot;
             // Plain HTTP/1.1 goes through Ferrix's own fast path first; it hands the
             // connection to hyper for anything it doesn't handle itself.
             let conn = match tls {
+                // Without HTTP/1 there's nothing for the fast path to do.
+                None if !http1 => Conn::Plain(tcp, axum::body::Bytes::new()),
                 None => {
                     match Box::pin(crate::http::server::serve(tcp, addr, &engine, port, &fast))
                         .await
@@ -152,6 +167,7 @@ pub async fn serve(
             };
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let engine = engine.clone();
+                let alt_svc = alt_svc.clone();
                 async move {
                     let mut resp = engine
                         .handle_request(port, is_tls, addr, req.map(Body::new))
@@ -159,6 +175,9 @@ pub async fn serve(
                     resp.headers_mut()
                         .entry(hyper::header::DATE)
                         .or_insert_with(crate::event::clock::http_date);
+                    if let Some(v) = alt_svc {
+                        resp.headers_mut().insert(hyper::header::ALT_SVC, v);
+                    }
                     Ok::<_, Infallible>(resp)
                 }
             });

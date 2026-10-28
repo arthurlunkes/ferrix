@@ -76,11 +76,42 @@ impl ValidationReport {
     }
 }
 
+fn validate_protocols(cfg: &FerrixConfig, report: &mut ValidationReport) {
+    use super::HttpProtocol::*;
+    let http = &cfg.http;
+    if !http.serves(Http1) && !http.serves(Http2) {
+        report.error(
+            "http.protocols",
+            "habilite http1 ou http2 (o http3 é anunciado por uma conexão TCP com um deles)",
+        );
+    }
+    if http.serves(Http2) && !cfg!(feature = "http2") {
+        report.error(
+            "http.protocols",
+            "este binário foi compilado sem a feature `http2`",
+        );
+    }
+    if http.serves(Http3) {
+        if !cfg!(feature = "http3") {
+            report.error(
+                "http.protocols",
+                "este binário foi compilado sem a feature `http3`",
+            );
+        } else if cfg.vhosts.iter().all(|v| v.tls.is_none()) {
+            report.warn(
+                "http.protocols",
+                "http3 só funciona em portas com TLS, e nenhum virtual host tem TLS",
+            );
+        }
+    }
+}
+
 pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     validate_listeners(cfg, &mut report);
     validate_workers(cfg, &mut report);
+    validate_protocols(cfg, &mut report);
     validate_admin_auth(cfg, &mut report);
     validate_real_ip(cfg, &mut report);
     validate_upstreams(cfg, &mut report);
@@ -541,6 +572,45 @@ mod tests {
     fn default_config_has_no_errors() {
         let report = validate(&base_config());
         assert!(report.is_valid(), "{}", report.summary());
+    }
+
+    #[test]
+    fn protocols_default_to_http1_and_http2() {
+        let cfg = base_config();
+        assert!(cfg.http.serves(HttpProtocol::Http1));
+        assert_eq!(
+            cfg.http.serves(HttpProtocol::Http2),
+            cfg!(feature = "http2")
+        );
+        assert!(!cfg.http.serves(HttpProtocol::Http3));
+    }
+
+    #[test]
+    fn protocols_parse_from_yaml() {
+        let cfg: HttpConfig = serde_saphyr::from_str("protocols: [http2, http3]").unwrap();
+        assert_eq!(
+            cfg.protocols,
+            vec![HttpProtocol::Http2, HttpProtocol::Http3]
+        );
+    }
+
+    #[test]
+    fn http3_alone_is_rejected() {
+        let mut cfg = base_config();
+        cfg.http.protocols = vec![HttpProtocol::Http3];
+        let report = validate(&cfg);
+        assert!(!report.is_valid());
+        assert!(report.summary().contains("http.protocols"));
+    }
+
+    #[cfg(feature = "http3")]
+    #[test]
+    fn http3_without_tls_hosts_is_a_warning() {
+        let mut cfg = base_config();
+        cfg.http.protocols = vec![HttpProtocol::Http1, HttpProtocol::Http3];
+        let report = validate(&cfg);
+        assert!(report.is_valid(), "{}", report.summary());
+        assert!(report.summary().contains("TLS"));
     }
 
     #[test]

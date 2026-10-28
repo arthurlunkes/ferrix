@@ -259,6 +259,28 @@ error_pages:
 
 `http: { request_id: true }` adds an `X-Request-Id` to the upstream request and to the response. An ID already sent by the client is kept.
 
+## 🌐 HTTP versions: HTTP/1.1, HTTP/2 and HTTP/3
+
+```yaml
+http:
+  protocols: [http1, http2, http3]   # default: [http1, http2]
+```
+
+`protocols` lists the HTTP versions Ferrix serves to clients; leave one out and it is refused:
+
+| Value | Where it runs |
+| --- | --- |
+| `http1` | HTTP/1.0 and 1.1, on plain and TLS ports |
+| `http2` | Over TLS (negotiated with ALPN) and, on plain ports, for clients that start with it (h2c) |
+| `http3` | Over QUIC (UDP) on the **same port number as every TLS port**, with the same certificates. TCP responses carry `Alt-Svc: h3=":443"` so browsers switch to it |
+
+Notes:
+- `http3` needs at least one TLS virtual host, and either `http1` or `http2` must stay on: clients discover HTTP/3 through a first TCP connection.
+- Open the UDP port in your firewall (and publish it in Docker: `-p 443:443/udp`).
+- Requests are routed, filtered and proxied the same way whatever the version; upstreams are always reached over HTTP/1.1, like nginx.
+- Changing `protocols` needs a restart (`ferrix restart`), since it changes the listeners.
+- HTTP/3 is built in by default (feature `http3`) but only runs when listed here. It adds about 1 MB to the binary, and ~5 MB of memory once in use.
+
 ## 🔐 HTTPS: several certificates per port (SNI) and Let's Encrypt
 
 Any number of virtual hosts can share a TLS port. The certificate is chosen per connection from the SNI name: exact `server_names` first, then wildcards (`*.example.com`), then the first TLS host on the port. Certificates are re-read when the configuration changes, so a renewal only needs `ferrix reload`.

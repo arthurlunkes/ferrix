@@ -11,6 +11,8 @@ admin:
 http:
   listen: 0.0.0.0:8000
   worker_threads: 4
+  # HTTP versions served to clients; add http3 to also serve QUIC on TLS ports.
+  protocols: [http1, http2]
 
 upstreams:
   default_backend:

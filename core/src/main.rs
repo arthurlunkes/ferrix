@@ -144,7 +144,9 @@ fn spawn_tls_listener(
     source: tls_plan::TlsSource,
     workers: usize,
 ) -> Result<(), String> {
-    let resolver = ferrix::tls::sni::SniResolver::new(engine.store.clone(), addr.port())
+    let sni = ferrix::tls::sni::SniResolver::new(engine.store.clone(), addr.port());
+    let resolver = sni
+        .clone()
         .and_then(ferrix::tls::sni::tls_acceptor)
         .map_err(|e| {
             format!(
@@ -160,6 +162,19 @@ fn spawn_tls_listener(
         "Reverse Proxy Traffic listening on https://{} (SNI certificates, {} workers)",
         addr, workers
     );
+    #[cfg(feature = "http3")]
+    if engine
+        .store
+        .config()
+        .http
+        .serves(config::HttpProtocol::Http3)
+    {
+        if let Ok(sni) = sni {
+            if let Err(e) = ferrix::http::h3::spawn(addr, engine.clone(), sni) {
+                error!("{}", e);
+            }
+        }
+    }
     spawn_workers(addr, workers, engine, Some(resolver));
     Ok(())
 }

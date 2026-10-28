@@ -27,6 +27,7 @@
    - Transparent, asynchronous full-duplex tunneling for `Upgrade: websocket` connections.
    - Proxy header forwarding (`Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`, custom headers).
    - Streaming and Server-Sent Events support without buffering whole responses in memory.
+   - **HTTP/1.1, HTTP/2 and HTTP/3 (QUIC)**, each switched on or off in `http.protocols`.
 
 2. **Load balancing and high availability**:
    - **Supported algorithms**:
@@ -256,7 +257,7 @@ With `metrics.enabled` the cost is about 4–9%.
 - **No shared hot spots:** metrics counters, rate-limit buckets and request IDs are sharded per thread, and per-route headers are compiled when the config loads.
 - **LTO + mimalloc** release builds, with mimalloc committing memory on demand and returning freed memory immediately; `panic = "abort"` (a master process, or systemd/Docker, restarts a crashed server, like nginx's master).
 - **Raw proxy path:** on a proxy route with nothing else configured (no auth, limits, cache, compression, CORS or header rules, and metrics off), plain HTTP/1.1 requests are re-encoded byte for byte to the upstream and back, without building request/response objects in between. It turns on by itself; adding any of those features to the route simply uses the full pipeline.
-- **Less resident code:** no web framework router in the admin API, no `reqwest`, `clap`, full `regex` engine or `tracing-subscriber`; optional modules (`http2`, `brotli`, `zstd`, `acme`, `admin`, `nginx-import`) can be left out at build time like nginx's `--with-*` options.
+- **Less resident code:** no web framework router in the admin API, no `reqwest`, `clap`, full `regex` engine or `tracing-subscriber`; optional modules (`http2`, `http3`, `brotli`, `zstd`, `acme`, `admin`, `nginx-import`) can be left out at build time like nginx's `--with-*` options.
 - **No helper threads on the request path:** static files are read and checked inline like nginx does (they're small and in the page cache), so a cold start doesn't spawn blocking threads that each keep an allocator heap; rare, large request paths (TLS handshakes, static files, cache fills, WebSocket upgrades) are boxed so an in-flight proxied request holds ~5 KB instead of ~12 KB.
 - **Small idle footprint:** an idle keep-alive connection holds ~2 KB (request state is boxed only while a request runs), read buffers start at 2 KB and are released when a connection goes idle (like nginx's keep-alive handling), metrics storage is only allocated when metrics are on, and file checks are plain `stat` calls instead of a growing blocking-thread pool.
 - **In-memory static file cache** (files up to 1 MB, revalidated against the disk every second) and a **cached clock** updated every millisecond, like nginx's `ngx_time_update`.

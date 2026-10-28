@@ -59,6 +59,7 @@ All of them are built by default:
 | Feature | What it adds |
 | --- | --- |
 | `http2` | HTTP/2 for clients (over TLS via ALPN, and h2c) |
+| `http3` | HTTP/3 over QUIC on TLS ports (served when `http.protocols` lists `http3`) |
 | `brotli` | Brotli response compression (gzip is always available) |
 | `zstd` | zstd response compression |
 | `acme` | Automatic Let's Encrypt certificates (`tls.acme`) |

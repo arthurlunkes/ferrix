@@ -245,6 +245,36 @@ pub struct HttpConfig {
     /// request and to the response.
     #[serde(default)]
     pub request_id: bool,
+
+    /// HTTP versions served to clients: any of `http1`, `http2`, `http3` (default
+    /// `[http1, http2]`). HTTP/2 is offered through TLS (ALPN) and, on plain ports, to
+    /// clients that start with it (h2c prior knowledge). HTTP/3 runs over QUIC (UDP) on
+    /// every TLS port and is announced with `Alt-Svc`; it needs the `http3` feature.
+    #[serde(default = "default_protocols")]
+    pub protocols: Vec<HttpProtocol>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpProtocol {
+    Http1,
+    Http2,
+    Http3,
+}
+
+/// HTTP/1.1 plus HTTP/2 when the binary has it.
+fn default_protocols() -> Vec<HttpProtocol> {
+    if cfg!(feature = "http2") {
+        vec![HttpProtocol::Http1, HttpProtocol::Http2]
+    } else {
+        vec![HttpProtocol::Http1]
+    }
+}
+
+impl HttpConfig {
+    pub fn serves(&self, protocol: HttpProtocol) -> bool {
+        self.protocols.contains(&protocol)
+    }
 }
 
 /// In-memory cache for small static files (served without touching the disk).
@@ -447,6 +477,7 @@ impl Default for HttpConfig {
             compression: CompressionConfig::default(),
             static_cache: StaticCacheConfig::default(),
             request_id: false,
+            protocols: default_protocols(),
         }
     }
 }

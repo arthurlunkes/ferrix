@@ -2,6 +2,8 @@ pub mod access;
 pub mod cache;
 pub mod default_page;
 pub mod filters;
+#[cfg(feature = "http3")]
+pub mod h3;
 pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
