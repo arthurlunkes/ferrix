@@ -25,31 +25,20 @@ use health::HealthChecker;
 use metrics::MetricsCollector;
 use proxy::ProxyEngine;
 
-const LEGACY_CONFIG: &str = "ferrix.json";
-/// Where the installer and the packages put the configuration.
-const SYSTEM_CONFIG: &str = "/etc/ferrix/ferrix.yaml";
-
-/// Older versions created `ferrix.json`. When no `-c` was given and only that file
-/// exists, keep using it (JSON is still read and written) rather than silently
-/// starting from a fresh default config.
+/// Older versions created `ferrix.json` next to `ferrix.yaml`. When only that file
+/// exists, keep using it (JSON is still read and written) rather than silently starting
+/// from a fresh default config.
 fn resolve_config_path(args: &mut Args) {
-    if args.config == Path::new(DEFAULT_CONFIG)
-        && !args.config.exists()
-        && Path::new(LEGACY_CONFIG).exists()
-    {
+    let legacy = args.config.with_extension("json");
+    if args.config == Path::new(DEFAULT_CONFIG) && !args.config.exists() && legacy.exists() {
         eprintln!(
             "ferrix: using {} (JSON). YAML is now the config format; convert it with \
              `ferrix convert-config {} {}` and remove the old file.",
-            LEGACY_CONFIG, LEGACY_CONFIG, DEFAULT_CONFIG
+            legacy.display(),
+            legacy.display(),
+            DEFAULT_CONFIG
         );
-        args.config = PathBuf::from(LEGACY_CONFIG);
-    } else if args.config == Path::new(DEFAULT_CONFIG)
-        && !args.config.exists()
-        && Path::new(SYSTEM_CONFIG).exists()
-    {
-        // Like nginx's built-in conf path: an installed Ferrix is found from any
-        // directory, so `ferrix reload`/`stop`/`status`/`test` just work.
-        args.config = PathBuf::from(SYSTEM_CONFIG);
+        args.config = legacy;
     }
 }
 

@@ -1110,8 +1110,22 @@ impl FerrixConfig {
         let default_cfg = if ConfigFormat::of(p) == ConfigFormat::Yaml {
             // The documented template, so every option is there to uncomment.
             let text = DEFAULT_CONFIG_TEMPLATE.replace("@ADMIN_TOKEN@", &admin_token);
-            std::fs::write(p, &text)
-                .map_err(|e| format!("Failed to write config file {}: {}", p.display(), e))?;
+            if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            std::fs::write(p, &text).map_err(|e| {
+                format!(
+                    "Failed to create config file {}: {}. Create it once with \
+                     `sudo mkdir -p {dir} && sudo chown $USER {dir}`, or pass \
+                     `--config <file>` to use another one.",
+                    p.display(),
+                    e,
+                    dir = p
+                        .parent()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default()
+                )
+            })?;
             Self::parse(&text, ConfigFormat::Yaml)?
         } else {
             let mut cfg = Self::default();

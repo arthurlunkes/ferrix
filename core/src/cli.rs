@@ -4,6 +4,11 @@
 
 use std::path::PathBuf;
 
+/// The configuration is always read from here unless `-c` names another file, like
+/// nginx's built-in `/etc/nginx/nginx.conf`, so every command finds the running server.
+#[cfg(unix)]
+pub const DEFAULT_CONFIG: &str = "/etc/ferrix/ferrix.yaml";
+#[cfg(not(unix))]
 pub const DEFAULT_CONFIG: &str = "ferrix.yaml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +68,7 @@ Commands:
                               Convert an nginx configuration
 
 Options:
-  -c, --config <FILE>         Configuration file [default: ferrix.yaml]
+  -c, --config <FILE>         Configuration file [default: /etc/ferrix/ferrix.yaml]
       --admin-listen <ADDR>   Override admin.listen
       --http-listen <ADDR>    Override http.listen
   -t, --test                  Check the configuration file and exit

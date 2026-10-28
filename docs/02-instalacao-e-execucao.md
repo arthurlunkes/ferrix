@@ -128,7 +128,7 @@ An existing `/etc/ferrix/ferrix.yaml` is never overwritten. To start from the ne
 ```
 
 By default:
-- If `ferrix.yaml` does not exist, Ferrix automatically generates a default initial configuration with a secure random token.
+- The configuration is always `/etc/ferrix/ferrix.yaml` (like nginx's `/etc/nginx/nginx.conf`), whatever directory you run `ferrix` from; `--config <file>` uses another one. If the file does not exist, Ferrix writes the documented default there, with a random admin token. Every command (`run`, `reload`, `stop`, `status`, `test`) uses the same file, so they always find the running server.
 - The control plane API and web dashboard listen at: `http://127.0.0.1:8081`.
 - The proxy listens on `http://0.0.0.0:80` (and on 443 for hosts with `tls:`), like nginx. Ports below 1024 need root or `CAP_NET_BIND_SERVICE`; the systemd unit and the packages grant it. To run by hand as a normal user, either allow the binary once (`sudo setcap cap_net_bind_service=+ep $(which ferrix)`) or use another port: `ferrix run --http-listen 0.0.0.0:8080`.
 - Open `http://localhost/` and you should see the **Ferrix is running** page.
@@ -154,7 +154,7 @@ Main commands:
   import    Import and convert existing nginx.conf configurations
 
 Global options:
-  -c, --config <FILE>      Configuration file path [default: ferrix.yaml]
+  -c, --config <FILE>      Configuration file path [default: /etc/ferrix/ferrix.yaml]
   -t, --test               Test configuration file syntax and exit
   -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
   -h, --help               Display all detailed help options
