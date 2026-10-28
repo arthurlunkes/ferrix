@@ -41,7 +41,7 @@ Returns process metadata, configuration summary, and active uptime.
   "uptime_seconds": 1245,
   "start_time_utc": "2026-09-08T16:38:54.332504764Z",
   "admin_listen": "127.0.0.1:8081",
-  "proxy_listen": "0.0.0.0:8000",
+  "proxy_listen": "0.0.0.0:80",
   "total_vhosts": 2,
   "total_upstreams": 1
 }
@@ -178,7 +178,7 @@ curl -X POST http://localhost:8081/api/vhosts \
     "id": "new-vhost",
     "name": "Auth Gateway Service",
     "server_names": ["auth.mydomain.com"],
-    "listen_port": 8000,
+    "listen_port": 80,
     "headers": {
       "X-Service": "Auth-Gateway"
     },

@@ -424,7 +424,7 @@ fn default_worker_connections() -> u32 {
 }
 
 fn default_http_listen() -> String {
-    "0.0.0.0:8000".to_string()
+    "0.0.0.0:80".to_string()
 }
 fn default_worker_threads() -> usize {
     std::thread::available_parallelism()
@@ -595,6 +595,7 @@ pub struct VirtualHost {
     pub name: String,
     #[serde(default)]
     pub server_names: Vec<String>,
+    /// Port this host answers on. Left out (or 0): 443 when the host has `tls`, else 80.
     #[serde(default = "default_vhost_port")]
     pub listen_port: u16,
     #[serde(default)]
@@ -624,8 +625,9 @@ pub struct VirtualHost {
     pub error_pages: HashMap<String, String>,
 }
 
+/// "Not set": `FerrixConfig::resolve_ports` turns it into 80 or 443.
 fn default_vhost_port() -> u16 {
-    8000
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -979,7 +981,7 @@ impl Default for FerrixConfig {
                 "127.0.0.1".to_string(),
                 "*".to_string(),
             ],
-            listen_port: 8000,
+            listen_port: 80,
             headers: {
                 let mut h = HashMap::new();
                 h.insert("X-Powered-By".to_string(), "Ferrix/0.1.0".to_string());
@@ -1053,15 +1055,30 @@ impl ConfigFormat {
     }
 }
 
+/// `ferrix.example.yaml`: written as `ferrix.yaml` on first start, with
+/// `@ADMIN_TOKEN@` replaced by a random token.
+pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../../../ferrix.example.yaml");
+
 const YAML_HEADER: &str = "# Ferrix configuration. Every option is described in\n\
 # https://arthurlunkes.github.io/ferrix (04. Configuration Guide).\n\
 # Apply changes without a restart: `ferrix reload` (or SIGHUP).\n\n";
 
 impl FerrixConfig {
     pub fn parse(data: &str, format: ConfigFormat) -> Result<Self, String> {
-        match format {
-            ConfigFormat::Yaml => serde_saphyr::from_str(data).map_err(|e| e.to_string()),
-            ConfigFormat::Json => serde_json::from_str(data).map_err(|e| e.to_string()),
+        let mut cfg: Self = match format {
+            ConfigFormat::Yaml => serde_saphyr::from_str(data).map_err(|e| e.to_string())?,
+            ConfigFormat::Json => serde_json::from_str(data).map_err(|e| e.to_string())?,
+        };
+        cfg.resolve_ports();
+        Ok(cfg)
+    }
+
+    /// Hosts without a `listen_port` get nginx's defaults: 443 with TLS, 80 without.
+    pub fn resolve_ports(&mut self) {
+        for vhost in &mut self.vhosts {
+            if vhost.listen_port == 0 {
+                vhost.listen_port = if vhost.tls.is_some() { 443 } else { 80 };
+            }
         }
     }
 
@@ -1089,15 +1106,24 @@ impl FerrixConfig {
             return Self::load(p).map(ConfigLoad::Loaded);
         }
 
-        let mut default_cfg = Self::default();
         let admin_token = uuid::Uuid::new_v4().simple().to_string();
-        default_cfg.admin.auth = AdminAuthConfig {
-            mode: AdminAuthMode::Token,
-            token: Some(admin_token.clone()),
-            username: None,
-            password: None,
+        let default_cfg = if ConfigFormat::of(p) == ConfigFormat::Yaml {
+            // The documented template, so every option is there to uncomment.
+            let text = DEFAULT_CONFIG_TEMPLATE.replace("@ADMIN_TOKEN@", &admin_token);
+            std::fs::write(p, &text)
+                .map_err(|e| format!("Failed to write config file {}: {}", p.display(), e))?;
+            Self::parse(&text, ConfigFormat::Yaml)?
+        } else {
+            let mut cfg = Self::default();
+            cfg.admin.auth = AdminAuthConfig {
+                mode: AdminAuthMode::Token,
+                token: Some(admin_token.clone()),
+                username: None,
+                password: None,
+            };
+            cfg.save_to_file(p)?;
+            cfg
         };
-        default_cfg.save_to_file(p)?;
 
         Ok(ConfigLoad::Created {
             config: default_cfg,
@@ -1230,5 +1256,35 @@ mod tests {
         let cfg = FerrixConfig::default();
         assert_eq!(cfg.admin.listen, "127.0.0.1:8081");
         assert!(crate::net::cidr::listen_addr_is_loopback(&cfg.admin.listen));
+    }
+
+    #[test]
+    fn default_template_is_valid_as_is_and_fully_uncommented() {
+        let as_is = FerrixConfig::parse(DEFAULT_CONFIG_TEMPLATE, ConfigFormat::Yaml).unwrap();
+        assert!(validate::validate(&as_is).is_valid());
+        assert_eq!(as_is.http.listen, "0.0.0.0:80");
+        assert_eq!(as_is.vhosts[0].listen_port, 80);
+
+        // `# option` lines become live; `##` text stays a comment.
+        let uncommented: String = DEFAULT_CONFIG_TEMPLATE
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                if t.starts_with("# ") && !t.starts_with("##") {
+                    let indent = l.len() - t.len();
+                    format!("{}{}", &l[..indent], &t[2..])
+                } else {
+                    l.to_string()
+                }
+            })
+            .filter(|l| !l.trim_start().starts_with("protocols: [http1, http2]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let all = FerrixConfig::parse(&uncommented, ConfigFormat::Yaml)
+            .unwrap_or_else(|e| panic!("{}\n{}", e, uncommented));
+        assert_eq!(all.vhosts[0].routes.len(), 3);
+        assert_eq!(all.vhosts[0].listen_port, 80);
+        assert!(all.http.compression.enabled);
+        assert_eq!(all.streams.len(), 1);
     }
 }

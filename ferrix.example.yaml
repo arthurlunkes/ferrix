@@ -1,34 +1,262 @@
-# Ferrix example configuration (used by the Docker "full" image on first start).
-# Every option is described in https://arthurlunkes.github.io/ferrix (04. Configuration Guide).
+## =============================================================================
+## Ferrix configuration
+##
+## Every option Ferrix understands is listed below. Lines starting with `##` explain;
+## lines starting with a single `#` are options you can switch on by removing the `#`.
+## Values shown in commented options are the defaults unless the text says otherwise.
+##
+## Check the file:   ferrix test
+## Apply changes:    ferrix reload   (or SIGHUP; listener/port changes need `ferrix restart`)
+## Full guide:       https://arthurlunkes.github.io/ferrix (04. Configuration Guide)
+## =============================================================================
 
-# The dashboard needs metrics; they are off by default to keep Ferrix light.
-metrics:
-  enabled: true
-
-admin:
-  listen: 127.0.0.1:8081
-
+## -----------------------------------------------------------------------------
+## http: the proxy/web server itself
+## -----------------------------------------------------------------------------
 http:
-  listen: 0.0.0.0:8000
-  worker_threads: 4
-  # HTTP versions served to clients; add http3 to also serve QUIC on TLS ports.
-  protocols: [http1, http2]
+  ## Address and port for plain HTTP. Ports below 1024 need root or
+  ## CAP_NET_BIND_SERVICE (the systemd unit and the packages grant it).
+  listen: 0.0.0.0:80
 
+  ## HTTP versions served to clients: http1, http2, http3.
+  ## http3 runs over QUIC (UDP) on every TLS port; open that UDP port too.
+  protocols: [http1, http2]
+  # protocols: [http1, http2, http3]
+
+  ## Worker threads (nginx `worker_processes`). Default: one per CPU core.
+  # worker_threads: 4
+  ## Pin workers to cores: off, auto, or a list of core ids such as [0, 2, 4, 6].
+  # worker_cpu_affinity: "off"
+  ## Maximum client connections per worker (nginx `worker_connections`).
+  # worker_connections: 4096
+  ## Raise the open-files limit at startup (nginx `worker_rlimit_nofile`).
+  # worker_rlimit_nofile: 65535
+
+  ## `Server: ferrix/<version>` (true) or just `Server: ferrix` (false).
+  # server_tokens: true
+  ## "Welcome to Ferrix" page for requests no virtual host handles.
+  # default_page: true
+  ## Add X-Request-Id to the upstream request and to the response.
+  # request_id: false
+
+  ## Timeouts, in milliseconds.
+  # client_header_timeout_ms: 60000
+  # client_body_timeout_ms: 60000
+  # keepalive_timeout_ms: 75000
+  # proxy_connect_timeout_ms: 60000
+  # proxy_read_timeout_ms: 60000
+  # proxy_send_timeout_ms: 60000
+
+  ## Largest request body accepted, in bytes (nginx `client_max_body_size`).
+  # client_max_body_size: 1073741824
+  ## Request bodies up to this size are buffered so a failed upstream can be retried.
+  # proxy_request_buffer_size: 1048576
+
+  ## Response compression (gzip always; br and zstd when built in).
+  # compression:
+  #   enabled: true
+  #   level: default              ## fastest, default or best
+  #   min_length: 1024            ## smaller responses are sent as-is
+  #   algorithms: [zstd, br, gzip]
+  #   types: [text/*, application/json, application/javascript, application/xml, image/svg+xml]
+
+  ## In-memory cache for small static files.
+  # static_cache:
+  #   max_file_bytes: 1048576     ## 0 turns the cache off
+  #   max_total_bytes: 67108864
+
+## -----------------------------------------------------------------------------
+## admin: REST API and web dashboard
+## -----------------------------------------------------------------------------
+admin:
+  # enabled: true
+  listen: 127.0.0.1:8081
+  auth:
+    ## none (only allowed on 127.0.0.1), token or basic.
+    mode: token
+    token: "@ADMIN_TOKEN@"
+    ## For mode: basic
+    # username: admin
+    # password: change-me
+  ## Browser origins allowed to call the API.
+  # cors_origins: [http://localhost:5173]
+  ## Serve Prometheus /metrics without authentication.
+  # metrics_public: false
+  ## Folder with the built dashboard; served at the admin address.
+  # dashboard_dir: /usr/share/ferrix/dashboard
+
+## Request metrics and the live request log (dashboard, /metrics). Off by default
+## because it costs a little per request.
+# metrics:
+#   enabled: true
+
+## Real client address when Ferrix runs behind another proxy or load balancer.
+# real_ip:
+#   trusted_proxies: [10.0.0.0/8, 192.168.0.0/16]
+#   header: x_forwarded_for     ## none, x_forwarded_for or x_real_ip
+#   recursive: true
+
+## Let's Encrypt account used by hosts with `tls: { acme: true }`.
+# acme:
+#   email: you@example.com
+#   directory_url: https://acme-v02.api.letsencrypt.org/directory
+#   storage_dir: ./acme
+#   renew_before_days: 30
+
+## -----------------------------------------------------------------------------
+## upstreams: groups of backend servers the routes proxy to
+## -----------------------------------------------------------------------------
 upstreams:
-  default_backend:
-    name: default_backend
+  backend:
+    name: backend
+    ## round_robin, weighted_round_robin, least_conn, ip_hash, random or consistent_hash
     algorithm: round_robin
     targets:
       - url: http://127.0.0.1:3000
-        weight: 1
+        # weight: 1
+        # max_fails: 3                ## failures before the server is taken out...
+        # fail_timeout_secs: 10       ## ...for this long
+        # backup: false               ## only used when every other server is down
+        # down: false                 ## take it out by hand
+        # max_conns: 100
+    ## Active health checks.
+    # health_check:
+    #   path: /health
+    #   interval_secs: 10
+    #   timeout_secs: 3
+    #   expected_status: 200
+    ## Check the certificate of https:// targets.
+    # verify_tls: true
+    ## Key for consistent_hash: $remote_addr, $request_uri, $uri, $host,
+    ## $http_<header>, $cookie_<name> or $arg_<name>.
+    # hash_key: $remote_addr
 
+## -----------------------------------------------------------------------------
+## vhosts: sites, like nginx `server {}` blocks
+## -----------------------------------------------------------------------------
 vhosts:
-  - id: default-site
-    name: Default Web Service
+  - id: default
+    name: Default site
+    ## Host names this site answers to; "*" catches everything; "*.example.com" works.
     server_names: ["*"]
-    listen_port: 8000
+    ## Default: 80, or 443 when `tls` is set.
+    # listen_port: 80
+
+    ## HTTPS: certificate files, or `acme: true` for automatic Let's Encrypt.
+    # tls:
+    #   cert_path: /etc/ferrix/certs/example.com.crt
+    #   key_path: /etc/ferrix/certs/example.com.key
+    #   acme: false
+
+    ## Headers added to every response of this site.
+    # headers:
+    #   X-Content-Type-Options: nosniff
+
+    ## Access control (CIDRs allowed) and password protection.
+    # allowed_ips: [192.168.0.0/16]
+    # denied_ips: [192.168.1.13]
+    # basic_auth:
+    #   username: admin
+    #   password: change-me
+    # satisfy: all                  ## all: IP and password; any: either is enough
+
+    ## Request rate and concurrent connections per client IP.
+    # rate_limit:
+    #   requests_per_second: 10
+    #   burst: 20
+    #   mode: no_delay              ## no_delay, queue or delay
+    #   delay: 5                    ## for mode: delay
+    #   status: 429
+    #   retry_after: 1
+    # limit_conn:
+    #   max_connections: 20
+    #   status: 429
+
+    ## Custom error pages for errors Ferrix itself generates.
+    # error_pages:
+    #   "404": /var/www/errors/404.html
+    #   5xx: /var/www/errors/50x.html
+
     routes:
-      - id: root-route
-        path_prefix: /
+      ## With no route for "/", Ferrix shows its welcome page there.
+      ## Reverse proxy: /api/users -> http://127.0.0.1:3000/users
+      - id: api
+        path_prefix: /api
         target_type: proxy_upstream
-        upstream_name: default_backend
+        upstream_name: backend
+        strip_prefix: true
+        ## prefix, prefix_literal, exact, prefix_priority, regex, regex_case_insensitive
+        # match_type: prefix
+        # websocket_enabled: true
+        # access_log: true
+
+        ## Headers sent to the upstream. Variables: $host, $remote_addr,
+        ## $proxy_add_x_forwarded_for, $scheme.
+        # proxy_set_headers:
+        #   X-Forwarded-Host: $host
+        ## Headers added to the response.
+        # add_headers:
+        #   Cache-Control: no-store
+
+        ## Per-route timeouts (override the http ones).
+        # proxy_connect_timeout_ms: 5000
+        # proxy_read_timeout_ms: 30000
+        # proxy_send_timeout_ms: 30000
+
+        ## When to try the next server (nginx `proxy_next_upstream`).
+        ## Conditions: error, timeout, http500, http502, http503, http504, http403, http404
+        # proxy_next_upstream:
+        #   conditions: [error, timeout, http502, http504]
+        #   tries: 3
+        #   timeout_ms: 10000
+
+        ## Cache upstream responses in memory.
+        # cache:
+        #   valid_secs: 60
+        #   bypass_headers: [Authorization]
+        #   bypass_cookies: [session]
+        #   bypass_query_params: [nocache]
+
+        ## Compress this route even when http.compression is off (or the other way round).
+        # compression: true
+
+        ## CORS for browsers calling this route from another origin.
+        # cors:
+        #   allow_origins: ["https://app.example.com"]
+        #   allow_methods: [GET, POST, PUT, DELETE]
+        #   allow_headers: [Content-Type, Authorization]
+        #   expose_headers: [X-Request-Id]
+        #   allow_credentials: false
+        #   max_age_secs: 600
+
+        ## Route-level access control and limits (same fields as the vhost ones).
+        # allowed_ips: [10.0.0.0/8]
+        # denied_ips: []
+        # rate_limit:
+        #   requests_per_second: 5
+        #   burst: 10
+
+      ## Static files: serve a folder (like nginx `root` + `try_files`).
+      # - id: site
+      #   path_prefix: /
+      #   target_type: static_files
+      #   static_root: /var/www/html
+      #   try_files: $uri $uri/ /index.html
+
+      ## Redirect: /old -> https://example.com/new
+      # - id: old
+      #   path_prefix: /old
+      #   target_type: redirect
+      #   redirect_url: https://example.com/new
+      #   redirect_code: 301
+
+## -----------------------------------------------------------------------------
+## streams: TCP/UDP proxying (nginx `stream {}`), e.g. databases or DNS
+## -----------------------------------------------------------------------------
+# streams:
+#   - id: postgres
+#     listen: 0.0.0.0:5432
+#     protocol: tcp               ## tcp or udp
+#     upstream: backend           ## an upstream whose targets are host:port
+#     connect_timeout_ms: 5000
+#     idle_timeout_ms: 600000

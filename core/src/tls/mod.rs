@@ -75,12 +75,12 @@ mod tests {
     #[test]
     fn single_vhost_matches_http_listen_yields_one_plain_port() {
         let cfg = FerrixConfig {
-            vhosts: vec![vhost(8000, None)],
+            vhosts: vec![vhost(80, None)],
             ..Default::default()
         };
         let plan = plan_ports(&cfg);
         assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].port, 8000);
+        assert_eq!(plan[0].port, 80);
         assert!(plan[0].tls.is_none());
     }
 

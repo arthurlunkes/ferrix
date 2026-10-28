@@ -10,7 +10,8 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
-    pub fn new(config: FerrixConfig, path: impl Into<String>) -> Self {
+    pub fn new(mut config: FerrixConfig, path: impl Into<String>) -> Self {
+        config.resolve_ports();
         let compiled = CompiledConfig::build(Arc::new(config));
         Self {
             compiled: ArcSwap::from_pointee(compiled),
@@ -30,7 +31,8 @@ impl ConfigStore {
         &self.path
     }
 
-    pub fn apply(&self, config: FerrixConfig) {
+    pub fn apply(&self, mut config: FerrixConfig) {
+        config.resolve_ports();
         let compiled = CompiledConfig::build(Arc::new(config));
         self.compiled.store(Arc::new(compiled));
     }

@@ -865,6 +865,34 @@ async fn run_server(args: Args) -> Result<(), String> {
         tokio::spawn(async {})
     };
 
+    // Bind every port once up front, so a port that can't be used stops the start with a
+    // clear message instead of leaving workers that silently serve nothing.
+    #[cfg(unix)]
+    for plan in &port_plan {
+        let addr: SocketAddr = format!("{}:{}", proxy_host, plan.port)
+            .parse()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], plan.port)));
+        if let Err(e) = bind_reuseport(addr) {
+            let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                format!(
+                    "\n  Ports below 1024 need privileges. Either run as root, allow the \
+                     binary once with `sudo setcap cap_net_bind_service=+ep {}`, or use a \
+                     higher port (http.listen / listen_port, e.g. 8080).",
+                    std::env::current_exe()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "$(which ferrix)".into())
+                )
+            } else if e.kind() == std::io::ErrorKind::AddrInUse {
+                "\n  Another program (nginx, Apache, another Ferrix?) is using it: \
+                 `sudo ss -ltnp 'sport = :PORT'` shows which."
+                    .replace("PORT", &plan.port.to_string())
+            } else {
+                String::new()
+            };
+            return Err(format!("cannot listen on {}: {}{}", addr, e, hint));
+        }
+    }
+
     let proxy_workers = store.config().http.worker_threads;
     let mut proxy_ports_summary = Vec::with_capacity(port_plan.len());
     for plan in &port_plan {

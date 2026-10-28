@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ferrix "full" image: one process serves the proxy (:8000) and the admin API plus the
+# Ferrix "full" image: one process serves the proxy (:80) and the admin API plus the
 # web dashboard (:8080). On first start a config with a random admin token is created.
 set -e
 

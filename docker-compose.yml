@@ -8,7 +8,7 @@ services:
     container_name: ferrix-core
     restart: unless-stopped
     ports:
-      - "8000:8000"   # Reverse Proxy traffic
+      - "80:80"       # Reverse Proxy traffic
       - "8081:8081"   # Control Plane / Admin REST API
     volumes:
       - ./ferrix.yaml:/etc/ferrix/ferrix.yaml
@@ -24,7 +24,7 @@ services:
     container_name: ferrix-full
     restart: unless-stopped
     ports:
-      - "8000:8000"   # Reverse Proxy traffic
+      - "80:80"       # Reverse Proxy traffic
       - "8080:8080"   # Admin REST API and web dashboard
     volumes:
       - ./ferrix-data:/etc/ferrix

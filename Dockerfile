@@ -44,8 +44,8 @@ VOLUME ["/etc/ferrix"]
 ENV FERRIX_CONFIG=/etc/ferrix/ferrix.yaml \
     FERRIX_SUPERVISOR=0
 
-# 8000: proxy traffic · 8080: admin API and web dashboard
-EXPOSE 8000 8080
+# 80: proxy traffic · 8080: admin API and web dashboard
+EXPOSE 80 8080
 
 ENTRYPOINT ["/usr/local/bin/entrypoint-full.sh"]
 
@@ -69,7 +69,7 @@ WORKDIR /etc/ferrix
 
 VOLUME ["/etc/ferrix"]
 
-EXPOSE 8000 8081
+EXPOSE 80 8081
 
 ENV FERRIX_SUPERVISOR=0
 

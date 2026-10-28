@@ -10,7 +10,7 @@
                           ┌────────────────────────────────────────────────────────┐
                           │                      FERRIX PROCESS                    │
                           │                                                        │
-Incoming HTTP / WS  ─────►│  Proxy Listener (Port 8000 / Configurable)             │
+Incoming HTTP / WS  ─────►│  Proxy Listener (Port 80/443, configurable)             │
                           │  ├── Client Address Extractor (ConnectInfo)            │
                           │  ├── Host Header Matcher (VirtualHost Finder)          │
                           │  ├── Middleware Pipeline (IP ACL, RateLimit, Auth)     │

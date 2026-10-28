@@ -107,8 +107,10 @@ ferrix/
 # 1. Build the web dashboard (optional, only needed for the UI):
 (cd frontend && npm install && npm run build)
 
-# 2. Start Ferrix (proxy on :8000, admin API on :8081). The first run creates
-#    ferrix.yaml with a random admin token:
+# 2. Start Ferrix (proxy on :80, admin API on :8081). The first run creates
+#    ferrix.yaml, with every option commented out and a random admin token.
+#    Port 80 needs privileges: run once `sudo setcap cap_net_bind_service=+ep
+#    target/release/ferrix`, or add `--http-listen 0.0.0.0:8080`.
 cargo build --release --workspace
 ./target/release/ferrix run --config ferrix.yaml
 
@@ -120,7 +122,7 @@ Then:
 
 1. To serve the dashboard, set `admin.dashboard_dir: frontend/dist` and `metrics: { enabled: true }` in `ferrix.yaml`, run `ferrix reload` (or restart), and open **`http://localhost:8081`**. There is no separate web server: Ferrix serves the dashboard and its API itself.
 2. Enter the admin token (the `admin.auth.token` field Ferrix generated in `ferrix.yaml`).
-3. Send requests to `http://localhost:8000/api` and watch the balanced traffic live on the dashboard!
+3. Send requests to `http://localhost/api` and watch the balanced traffic live on the dashboard!
 
 ### 🐳 3. Running with Docker (GitHub Packages)
 
@@ -131,7 +133,7 @@ You can choose between the **ultra-lean Core image** (~20 MB) and the **Full All
 ```bash
 docker run -d \
   --name ferrix \
-  -p 8000:8000 \
+  -p 80:80 \
   -p 8081:8081 \
   -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   --restart unless-stopped \
@@ -145,7 +147,7 @@ One Ferrix process serves the proxy and the dashboard (no Node.js in the image).
 ```bash
 docker run -d \
   --name ferrix-full \
-  -p 8000:8000 \
+  -p 80:80 \
   -p 8080:8080 \
   -v $(pwd)/ferrix-data:/etc/ferrix \
   --restart unless-stopped \

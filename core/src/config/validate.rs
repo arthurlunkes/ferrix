@@ -79,23 +79,23 @@ impl ValidationReport {
 fn validate_protocols(cfg: &FerrixConfig, report: &mut ValidationReport) {
     use super::HttpProtocol::*;
     let http = &cfg.http;
-    if !http.serves(Http1) && !http.serves(Http2) {
+    if !http.serves(Http1) && !(http.serves(Http2) && cfg!(feature = "http2")) {
         report.error(
             "http.protocols",
             "habilite http1 ou http2 (o http3 é anunciado por uma conexão TCP com um deles)",
         );
     }
     if http.serves(Http2) && !cfg!(feature = "http2") {
-        report.error(
+        report.warn(
             "http.protocols",
-            "este binário foi compilado sem a feature `http2`",
+            "este binário foi compilado sem a feature `http2`; o http2 será ignorado",
         );
     }
     if http.serves(Http3) {
         if !cfg!(feature = "http3") {
-            report.error(
+            report.warn(
                 "http.protocols",
-                "este binário foi compilado sem a feature `http3`",
+                "este binário foi compilado sem a feature `http3`; o http3 será ignorado",
             );
         } else if cfg.vhosts.iter().all(|v| v.tls.is_none()) {
             report.warn(

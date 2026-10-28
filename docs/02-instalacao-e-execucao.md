@@ -80,6 +80,45 @@ A configuration that needs a missing module (for example `tls.acme: true` withou
 `acme`) is rejected by `ferrix -t` with an explanation; a client asking for an encoding
 that isn't built in simply gets one that is.
 
+## 📦 Installing on a Linux machine (systemd)
+
+### From source
+
+```bash
+git clone https://github.com/arthurlunkes/ferrix && cd ferrix
+./core/scripts/install.sh            # or --core-only to skip the web dashboard
+sudo systemctl enable --now ferrix
+```
+
+The script builds Ferrix, installs `/usr/local/bin/ferrix`, writes `/etc/ferrix/ferrix.yaml` (every option listed, commented out) and the `ferrix.service` unit, which may bind ports 80 and 443 without running as root.
+
+### From a release binary
+
+```bash
+VERSION=v0.1.0                          # see github.com/arthurlunkes/ferrix/releases
+ARCH=x86_64                             # or aarch64
+wget https://github.com/arthurlunkes/ferrix/releases/download/$VERSION/ferrix-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+tar xzf ferrix-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+sudo install -m 755 ferrix-$VERSION-$ARCH-unknown-linux-gnu/ferrix /usr/local/bin/
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/ferrix   # allow ports 80/443
+ferrix run --config /etc/ferrix/ferrix.yaml
+```
+
+### Checking that it works
+
+```bash
+curl -I http://localhost/            # "Server: ferrix/..." and the welcome page
+systemctl status ferrix
+journalctl -u ferrix -f              # logs
+ferrix test                          # validate the configuration
+```
+
+### Updating an existing install
+
+An existing `/etc/ferrix/ferrix.yaml` is never overwritten. To start from the new documented template, move the old file away and restart: Ferrix writes a fresh one on start.
+
+---
+
 ## 🚀 Execution
 
 ### 1. Basic Startup
@@ -91,7 +130,9 @@ that isn't built in simply gets one that is.
 By default:
 - If `ferrix.yaml` does not exist, Ferrix automatically generates a default initial configuration with a secure random token.
 - The control plane API and web dashboard listen at: `http://127.0.0.1:8081`.
-- The HTTP reverse proxy traffic listener binds to: `http://0.0.0.0:8000`.
+- The proxy listens on `http://0.0.0.0:80` (and on 443 for hosts with `tls:`), like nginx. Ports below 1024 need root or `CAP_NET_BIND_SERVICE`; the systemd unit and the packages grant it. To run by hand as a normal user, either allow the binary once (`sudo setcap cap_net_bind_service=+ep $(which ferrix)`) or use another port: `ferrix run --http-listen 0.0.0.0:8080`.
+- Open `http://localhost/` and you should see the **Ferrix is running** page.
+- The generated `ferrix.yaml` lists every option, commented out: uncomment what you need.
 
 ### 2. CLI Commands & Options
 
@@ -182,7 +223,7 @@ In terminal 2, start Ferrix:
 ./target/release/ferrix run --config ferrix.yaml
 ```
 
-Send requests to `http://localhost:8000/api` and verify:
+Send requests to `http://localhost/api` and verify:
 1. Responses alternating between `Backend-1` and `Backend-2`.
 2. Live metrics and request logs appearing in real time on the web dashboard at `http://localhost:8081`.
 
@@ -199,7 +240,7 @@ Ideal for production, Kubernetes, and minimal resource footprints:
 ```bash
 docker run -d \
   --name ferrix \
-  -p 8000:8000 \
+  -p 80:80 \
   -p 8081:8081 \
   -v $(pwd)/ferrix.yaml:/etc/ferrix/ferrix.yaml \
   ghcr.io/arthurlunkes/ferrix:latest
@@ -207,12 +248,12 @@ docker run -d \
 
 ### Option B: Full, with the web dashboard on :8080
 
-One Ferrix process serves the proxy (:8000) and the admin API plus dashboard (:8080); the image has no Node.js. The first start writes `ferrix.yaml` into the mounted directory with a random admin token, shown in the log:
+One Ferrix process serves the proxy (:80) and the admin API plus dashboard (:8080); the image has no Node.js. The first start writes `ferrix.yaml` into the mounted directory with a random admin token, shown in the log:
 
 ```bash
 docker run -d \
   --name ferrix-full \
-  -p 8000:8000 \
+  -p 80:80 \
   -p 8080:8080 \
   -v $(pwd)/ferrix-data:/etc/ferrix \
   --restart unless-stopped \
@@ -227,7 +268,7 @@ services:
   ferrix-core:
     image: ghcr.io/arthurlunkes/ferrix:latest
     ports:
-      - "8000:8000"
+      - "80:80"
       - "8081:8081"
     volumes:
       - ./ferrix.yaml:/etc/ferrix/ferrix.yaml

@@ -10,7 +10,7 @@ Ferrix's configuration file is written in **YAML** (`ferrix.yaml` by default), e
 admin:
   listen: 127.0.0.1:8081
 http:
-  listen: 0.0.0.0:8000
+  listen: 0.0.0.0:80
   worker_threads: 4
 upstreams:
   # ... see "Upstreams and Load Balancing"
@@ -28,7 +28,7 @@ Each Virtual Host represents a server block (equivalent to an Nginx `server { ..
 id: main-vhost
 name: My Web Application
 server_names: [mydomain.com, www.mydomain.com, localhost]
-listen_port: 8000
+listen_port: 443        # default: 443 with tls, 80 without
 headers:
   X-Powered-By: Ferrix/0.1.0
   X-Frame-Options: SAMEORIGIN
