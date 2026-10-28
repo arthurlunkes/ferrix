@@ -993,34 +993,23 @@ impl Default for FerrixConfig {
             basic_auth: None,
             satisfy: Satisfy::All,
             tls: None,
-            routes: vec![
-                RouteRule {
-                    id: "route-api".to_string(),
-                    path_prefix: "/api".to_string(),
-                    upstream_name: Some("default_backend".to_string()),
-                    proxy_set_headers: {
-                        let mut p = HashMap::new();
-                        p.insert("Host".to_string(), "$host".to_string());
-                        p.insert("X-Real-IP".to_string(), "$remote_addr".to_string());
-                        p.insert(
-                            "X-Forwarded-For".to_string(),
-                            "$proxy_add_x_forwarded_for".to_string(),
-                        );
-                        p.insert("X-Forwarded-Proto".to_string(), "$scheme".to_string());
-                        p
-                    },
-                    ..Default::default()
+            routes: vec![RouteRule {
+                id: "route-api".to_string(),
+                path_prefix: "/api".to_string(),
+                upstream_name: Some("default_backend".to_string()),
+                proxy_set_headers: {
+                    let mut p = HashMap::new();
+                    p.insert("Host".to_string(), "$host".to_string());
+                    p.insert("X-Real-IP".to_string(), "$remote_addr".to_string());
+                    p.insert(
+                        "X-Forwarded-For".to_string(),
+                        "$proxy_add_x_forwarded_for".to_string(),
+                    );
+                    p.insert("X-Forwarded-Proto".to_string(), "$scheme".to_string());
+                    p
                 },
-                RouteRule {
-                    id: "route-static".to_string(),
-                    path_prefix: "/".to_string(),
-                    target_type: RouteTargetType::StaticFiles,
-                    static_root: Some("./static_demo".to_string()),
-                    try_files: Some("$uri $uri/ /index.html".to_string()),
-                    websocket_enabled: false,
-                    ..Default::default()
-                },
-            ],
+                ..Default::default()
+            }],
             error_pages: Default::default(),
         };
 

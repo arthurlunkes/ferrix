@@ -406,8 +406,9 @@ impl ProxyEngine {
         let req_path = req.uri().path().to_string();
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
-            // A host with no routes at all is a fresh setup: greet like nginx's default site.
-            if vhost.routes.is_empty() && compiled.config.http.default_page {
+            // A host with no routes, or nothing configured for `/`, is a fresh setup:
+            // greet like nginx's default site.
+            if (vhost.routes.is_empty() || req_path == "/") && compiled.config.http.default_page {
                 return default_page::render(compiled.config.http.server_tokens);
             }
             return (StatusCode::NOT_FOUND, "404 Not Found - No route matched").into_response();
