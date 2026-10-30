@@ -7,6 +7,7 @@ WORKDIR /src
 RUN apk add --no-cache musl-dev
 
 COPY Cargo.toml Cargo.lock ./
+COPY ferrix.example.yaml README.md ./
 COPY .cargo ./.cargo
 COPY core ./core
 
