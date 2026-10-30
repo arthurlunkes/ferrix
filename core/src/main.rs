@@ -195,7 +195,6 @@ fn main() -> ExitCode {
     #[cfg(unix)]
     if let Ok(Ok(mut args)) = Args::from_env() {
         let runs_server = matches!(args.command, Some(Commands::Run) | None)
-            && std::env::args().len() > 1
             && !args.test
             && args.signal.is_none()
             && !args.worker_process;
@@ -237,13 +236,6 @@ fn configured_worker_threads() -> usize {
 
 async fn async_main() -> ExitCode {
     let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let raw_args: Vec<String> = std::env::args().collect();
-
-    if raw_args.len() == 1 {
-        print_welcome_guide();
-        return ExitCode::SUCCESS;
-    }
 
     let mut args = match Args::from_env() {
         Ok(Ok(args)) => args,
@@ -369,38 +361,6 @@ async fn async_main() -> ExitCode {
     }
 }
 
-fn print_welcome_guide() {
-    println!(
-        r#"⚡ Ferrix v{} — High-Performance Standalone Reverse Proxy & Web Server
-
-Usage: ferrix [COMMAND] [OPTIONS]
-
-Main commands:
-  run       Start the server in foreground
-  start     Start the server in background (daemon)
-  stop      Stop the background server
-  restart   Restart the background server
-  reload    Reload configuration without dropping active connections
-  status    Check if the server is currently running
-  test      Test configuration file syntax (shortcut: ferrix -t)
-
-Global options:
-  -c, --config <FILE>      Configuration file path [default: ferrix.yaml]
-  -t, --test               Test configuration file syntax and exit
-  -s, --signal <SIGNAL>    Send signal to Ferrix (stop, reload, restart, status)
-  -h, --help               Display all detailed help options
-  -V, --version            Display installed Ferrix version
-
-💡 Quick tips:
-  • To see all available options:      ferrix --help
-  • To test your config syntax:       ferrix -t
-  • To start in foreground:           ferrix run
-  • To start in background:           ferrix start
-"#,
-        env!("CARGO_PKG_VERSION")
-    );
-}
-
 fn pid_file_path(config: &Path) -> PathBuf {
     if let Some(parent) = config.parent() {
         if parent == Path::new("") {
@@ -421,7 +381,9 @@ fn read_pid(pid_file: &Path) -> Option<u32> {
     }
 }
 
-fn is_pid_alive(pid: u32) -> bool {
+fn is_pid_alive(_pid: u32) -> bool {
+    #[cfg(unix)]
+    let pid = _pid;
     #[cfg(unix)]
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
@@ -752,7 +714,7 @@ async fn handle_signal(signal: &str, args: &Args) -> Result<(), String> {
 
 async fn run_server(args: Args) -> Result<(), String> {
     let config_path = args.config.to_string_lossy().to_string();
-    let config_path_buf = args.config.clone();
+    let _config_path_buf = args.config.clone();
 
     info!("Starting Ferrix v{}", env!("CARGO_PKG_VERSION"));
     info!("Loading configuration from: {}", config_path);
@@ -972,7 +934,7 @@ async fn run_server(args: Args) -> Result<(), String> {
             }
             _ = sighup.recv() => {
                 info!("SIGHUP received: reloading configuration from {}", config_path);
-                match FerrixConfig::load_or_create(&config_path_buf) {
+                match FerrixConfig::load_or_create(&_config_path_buf) {
                     Ok(ConfigLoad::Loaded(new_cfg)) | Ok(ConfigLoad::Created { config: new_cfg, .. }) => {
                         let report = validate(&new_cfg);
                         if report.is_valid() {

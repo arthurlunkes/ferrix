@@ -132,6 +132,7 @@ impl Args {
         let mut pos = positional.into_iter();
         args.command = match pos.next().as_deref() {
             None => None,
+            Some("help") => return Ok(Err(Early::Help)),
             Some("run") => Some(Command::Run),
             Some("start") => Some(Command::Start),
             Some("stop") => Some(Command::Stop),
