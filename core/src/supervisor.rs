@@ -48,23 +48,47 @@ fn handled_signals() -> libc::sigset_t {
 
 /// Waits for one of the handled signals, up to `timeout` (`None` = forever).
 fn wait_signal(set: &libc::sigset_t, timeout: Option<Duration>) -> Option<libc::c_int> {
-    unsafe {
-        match timeout {
-            None => {
-                let mut sig = 0;
-                (libc::sigwait(set, &mut sig) == 0).then_some(sig)
-            }
-            Some(t) => {
-                let ts = libc::timespec {
-                    tv_sec: t.as_secs().min(i32::MAX as u64) as _,
-                    tv_nsec: t.subsec_nanos() as libc::c_long,
-                };
-                let sig = libc::sigtimedwait(set, std::ptr::null_mut(), &ts);
-                (sig > 0).then_some(sig)
-            }
+    match timeout {
+        None => {
+            let mut sig = 0;
+            (unsafe { libc::sigwait(set, &mut sig) } == 0).then_some(sig)
         }
+        Some(t) => wait_signal_for(set, t),
     }
 }
+
+#[cfg(target_os = "linux")]
+fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
+    let ts = libc::timespec {
+        tv_sec: t.as_secs().min(i32::MAX as u64) as _,
+        tv_nsec: t.subsec_nanos() as libc::c_long,
+    };
+    let sig = unsafe { libc::sigtimedwait(set, std::ptr::null_mut(), &ts) };
+    (sig > 0).then_some(sig)
+}
+
+/// macOS and the BSDs have no `sigtimedwait`: look for a pending signal every few
+/// milliseconds (only during a restart backoff) and take it with `sigwait`.
+#[cfg(not(target_os = "linux"))]
+fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
+    let deadline = Instant::now() + t;
+    loop {
+        unsafe {
+            let mut pending: libc::sigset_t = std::mem::zeroed();
+            libc::sigpending(&mut pending);
+            let ours = [libc::SIGHUP, libc::SIGTERM, libc::SIGINT, libc::SIGCHLD]
+                .into_iter()
+                .any(|s| libc::sigismember(&pending, s) == 1 && libc::sigismember(set, s) == 1);
+            if ours {
+                let mut sig = 0;
+                return (libc::sigwait(set, &mut sig) == 0).then_some(sig);
+            }
+        }
+        let left = deadline.checked_duration_since(Instant::now())?;
+        std::thread::sleep(left.min(Duration::from_millis(20)));
+    }
+}
+
 
 /// Runs the master loop. Deliberately plain: no async runtime and no threads, just
 /// `sigwait` and `waitpid`, so the master costs almost no memory.
