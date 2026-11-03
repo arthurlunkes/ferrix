@@ -58,24 +58,9 @@ pub fn unix_secs() -> u64 {
     CLOCK.unix_ms.load(Ordering::Relaxed) / 1000
 }
 
-/// Milliseconds on the cached monotonic scale for an `Instant`.
 pub fn instant_ms(at: Instant) -> u64 {
     at.saturating_duration_since(CLOCK.base).as_millis() as u64
 }
-
-// ---------------------------------------------------------------------------
-// Coarse timers.
-//
-// Like nginx's timers (and Cloudflare's pingora-timeout), deadlines are checked against
-// the cached clock instead of reading the system clock: creating, polling or dropping a
-// timer never makes a syscall. That matters on hosts without a usable TSC (HPET clock
-// source), where every clock read is a slow syscall.
-//
-// Each proxy worker thread owns its timers outright (no locks, nothing shared with other
-// threads) and a small task on its runtime fires the expired ones every few
-// milliseconds. Threads that never called `enable_local_timers` (the shared runtime that
-// runs the admin API and health checks) fall back to ordinary tokio timers.
-// ---------------------------------------------------------------------------
 
 const TIMER_TICK: Duration = Duration::from_millis(5);
 
@@ -89,8 +74,6 @@ thread_local! {
     static WHEEL: RefCell<Option<LocalWheel>> = const { RefCell::new(None) };
 }
 
-/// Turns on per-thread coarse timers for the current (single-threaded) runtime. Must be
-/// called from inside that runtime.
 pub fn enable_local_timers() {
     let fresh = WHEEL.with(|w| {
         let mut w = w.borrow_mut();
@@ -136,8 +119,6 @@ enum Registration {
     Tokio(Pin<Box<tokio::time::Sleep>>),
 }
 
-/// A sleep that resolves once the cached clock reaches `deadline_ms` (see
-/// [`mono_ms`]). It only registers a timer if it is actually polled while pending.
 pub struct CoarseSleep {
     deadline_ms: u64,
     reg: Registration,
@@ -201,7 +182,6 @@ impl Future for CoarseSleep {
                             *waker = cx.waker().clone();
                         }
                     }
-                    // Already fired between our clock check and now; re-arm.
                     None => {
                         wheel.entries.insert(*key, cx.waker().clone());
                     }
@@ -237,7 +217,6 @@ impl Drop for CoarseSleep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Elapsed;
 
-/// Runs `fut` until the cached clock reaches `deadline_ms`.
 pub async fn timeout_at_ms<F: Future>(deadline_ms: u64, fut: F) -> Result<F::Output, Elapsed> {
     let mut fut = std::pin::pin!(fut);
     let mut sleep = CoarseSleep::until_ms(deadline_ms);
@@ -254,8 +233,6 @@ pub async fn timeout<F: Future>(dur: Duration, fut: F) -> Result<F::Output, Elap
     timeout_at_ms(mono_ms().saturating_add(dur.as_millis() as u64), fut).await
 }
 
-/// hyper timer backed by the coarse timers, so header-read and keep-alive timeouts
-/// don't read the system clock on every request.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoarseTimer;
 
@@ -284,7 +261,6 @@ impl hyper::rt::Timer for CoarseTimer {
     }
 }
 
-/// `Date` header value for the current second, formatted once per second per thread.
 pub fn http_date() -> axum::http::HeaderValue {
     use std::cell::RefCell;
     thread_local! {

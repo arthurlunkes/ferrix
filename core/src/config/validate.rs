@@ -362,7 +362,6 @@ fn validate_upstreams(cfg: &FerrixConfig, report: &mut ValidationReport) {
             let tpath = format!("{}.targets[{}].url", base, i);
             match url::Url::parse(&target.url) {
                 Ok(u) if u.scheme() == "http" || u.scheme() == "https" => {}
-                // Layer-4 targets are only meaningful for pools used by `streams`.
                 Ok(u)
                     if (u.scheme() == "tcp" || u.scheme() == "udp")
                         && cfg.streams.iter().any(|s| s.upstream == upstream.name) => {}

@@ -1,6 +1,3 @@
-//! Layer-4 proxying (nginx `stream {}`): raw TCP connections and UDP datagrams are
-//! forwarded to an upstream pool, reusing its balancing and passive health checks.
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,7 +10,6 @@ use tracing::{debug, error, info, warn};
 use crate::config::{StreamConfig, StreamProtocol, UpstreamTarget};
 use crate::http::ProxyEngine;
 
-/// `host:port` out of a target URL, ignoring any scheme and path.
 pub fn target_addr(url: &str) -> &str {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     rest.split('/').next().unwrap_or(rest)
@@ -110,7 +106,6 @@ async fn handle_tcp(
     Err(last_err)
 }
 
-/// Copies both directions until either side closes or nothing moves for `idle`.
 async fn pipe(client: TcpStream, upstream: TcpStream, idle: Duration) -> std::io::Result<()> {
     let (cr, cw) = client.into_split();
     let (ur, uw) = upstream.into_split();

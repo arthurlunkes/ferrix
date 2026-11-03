@@ -25,7 +25,6 @@ pub struct FerrixConfig {
     pub acme: AcmeConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
-    /// Layer-4 (TCP/UDP) proxies, like nginx's `stream {}` block.
     #[serde(default)]
     pub streams: Vec<StreamConfig>,
 }
@@ -41,16 +40,12 @@ pub enum StreamProtocol {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamConfig {
     pub id: String,
-    /// Address to listen on, e.g. `0.0.0.0:5432`.
     pub listen: String,
     #[serde(default)]
     pub protocol: StreamProtocol,
-    /// Upstream pool to forward to; targets are `host:port` (a `tcp://`/`udp://`/`http://`
-    /// prefix is ignored), balanced with the pool's algorithm.
     pub upstream: String,
     #[serde(default = "default_stream_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
-    /// Close a TCP connection or forget a UDP session after this long without traffic.
     #[serde(default = "default_stream_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
 }
@@ -62,17 +57,12 @@ fn default_stream_idle_timeout_ms() -> u64 {
     600_000
 }
 
-/// Request metrics and the in-memory request log (what the dashboard and the
-/// Prometheus `/metrics` endpoint show). Off by default, like nginx's `stub_status`:
-/// when disabled the proxy does no per-request bookkeeping at all.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-/// Automatic certificates (Let's Encrypt or any ACME v2 CA) for virtual hosts whose
-/// `tls.acme` is enabled. HTTP-01 challenges are answered on every plain-HTTP port.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeConfig {
     #[serde(default)]
@@ -111,8 +101,6 @@ impl Default for AcmeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
-    /// Run the control-plane API. Without it Ferrix is configured only through the
-    /// JSON file (reloaded with `ferrix reload` / SIGHUP).
     #[serde(default = "default_true")]
     pub enabled: bool,
 
@@ -125,12 +113,9 @@ pub struct AdminConfig {
     #[serde(default)]
     pub cors_origins: Vec<String>,
 
-    /// Serve the Prometheus `/metrics` endpoint without admin authentication.
     #[serde(default)]
     pub metrics_public: bool,
 
-    /// Directory with the built web dashboard (`frontend/dist`). When set, the admin
-    /// server also serves the dashboard at `/`, so no separate web server is needed.
     #[serde(default)]
     pub dashboard_dir: Option<String>,
 }
@@ -184,34 +169,21 @@ impl AdminAuthConfig {
 pub struct HttpConfig {
     #[serde(default = "default_http_listen")]
     pub listen: String,
-    /// Worker threads serving the proxy ports (nginx `worker_processes`). Defaults to
-    /// the number of CPU cores available to the process.
     #[serde(default = "default_worker_threads")]
     pub worker_threads: usize,
 
-    /// Pin worker threads to CPU cores (nginx `worker_cpu_affinity`): `"off"` (default),
-    /// `"auto"` (worker N on the N-th core the process may use) or an explicit list of
-    /// core ids, one per worker, e.g. `[0, 2, 4, 6]`.
     #[serde(default)]
     pub worker_cpu_affinity: CpuAffinity,
 
-    /// Maximum simultaneous client connections per worker (nginx `worker_connections`).
-    /// A worker at the limit stops accepting until a connection closes.
     #[serde(default = "default_worker_connections")]
     pub worker_connections: u32,
 
-    /// Raise the process's open-file limit (`RLIMIT_NOFILE`) at startup, like nginx's
-    /// `worker_rlimit_nofile`. Every connection and served file uses a descriptor.
     #[serde(default)]
     pub worker_rlimit_nofile: Option<u64>,
 
-    /// Send `Server: ferrix/<version>` (true, default) or just `Server: ferrix`, and show
-    /// the version on the default page (nginx `server_tokens`).
     #[serde(default = "default_true")]
     pub server_tokens: bool,
 
-    /// Answer requests that match no virtual host with a "Welcome to Ferrix" page (true,
-    /// default), like nginx's default site; false answers a plain 404 instead.
     #[serde(default = "default_true")]
     pub default_page: bool,
 
@@ -241,15 +213,9 @@ pub struct HttpConfig {
     #[serde(default)]
     pub static_cache: StaticCacheConfig,
 
-    /// Add an `X-Request-Id` (kept when the client already sent one) to the upstream
-    /// request and to the response.
     #[serde(default)]
     pub request_id: bool,
 
-    /// HTTP versions served to clients: any of `http1`, `http2`, `http3` (default
-    /// `[http1, http2]`). HTTP/2 is offered through TLS (ALPN) and, on plain ports, to
-    /// clients that start with it (h2c prior knowledge). HTTP/3 runs over QUIC (UDP) on
-    /// every TLS port and is announced with `Alt-Svc`; it needs the `http3` feature.
     #[serde(default = "default_protocols")]
     pub protocols: Vec<HttpProtocol>,
 }
@@ -262,7 +228,6 @@ pub enum HttpProtocol {
     Http3,
 }
 
-/// HTTP/1.1 plus HTTP/2 when the binary has it.
 fn default_protocols() -> Vec<HttpProtocol> {
     if cfg!(feature = "http2") {
         vec![HttpProtocol::Http1, HttpProtocol::Http2]
@@ -277,14 +242,10 @@ impl HttpConfig {
     }
 }
 
-/// In-memory cache for small static files (served without touching the disk).
-/// Larger files are always sent with `sendfile` straight from the kernel's page cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticCacheConfig {
-    /// Files up to this size are kept in memory; `0` disables the cache.
     #[serde(default = "default_static_cache_file")]
     pub max_file_bytes: u64,
-    /// Total memory the cache may use.
     #[serde(default = "default_static_cache_total")]
     pub max_total_bytes: u64,
 }
@@ -328,13 +289,10 @@ pub struct CompressionConfig {
     pub enabled: bool,
     #[serde(default)]
     pub level: CompressionLevel,
-    /// Responses smaller than this (when the size is known) are sent as-is.
     #[serde(default = "default_compression_min_length")]
     pub min_length: u64,
-    /// Preference order when the client accepts several encodings.
     #[serde(default = "default_compression_algorithms")]
     pub algorithms: Vec<CompressionAlgorithm>,
-    /// MIME types to compress; `text/*` style prefixes are allowed.
     #[serde(default = "default_compression_types")]
     pub types: Vec<String>,
 }
@@ -511,8 +469,6 @@ pub enum LoadBalanceAlgorithm {
     LeastConn,
     IpHash,
     Random,
-    /// Ketama-style consistent hashing on `hash_key`; adding or removing a server only
-    /// remaps the keys that belonged to it (nginx `hash ... consistent`).
     ConsistentHash,
 }
 
@@ -583,8 +539,6 @@ pub struct UpstreamConfig {
     #[serde(default = "default_true")]
     pub verify_tls: bool,
 
-    /// Key for `consistent_hash`: `$remote_addr` (default), `$request_uri`, `$uri`,
-    /// `$host`, `$http_<header>`, `$cookie_<name>` or `$arg_<name>`.
     #[serde(default)]
     pub hash_key: Option<String>,
 }
@@ -595,7 +549,6 @@ pub struct VirtualHost {
     pub name: String,
     #[serde(default)]
     pub server_names: Vec<String>,
-    /// Port this host answers on. Left out (or 0): 443 when the host has `tls`, else 80.
     #[serde(default = "default_vhost_port")]
     pub listen_port: u16,
     #[serde(default)]
@@ -619,13 +572,10 @@ pub struct VirtualHost {
     #[serde(default)]
     pub routes: Vec<RouteRule>,
 
-    /// Custom error pages: status code (e.g. "404", or "5xx" for a whole class) to an
-    /// HTML file on disk, like nginx `error_page`.
     #[serde(default)]
     pub error_pages: HashMap<String, String>,
 }
 
-/// "Not set": `FerrixConfig::resolve_ports` turns it into 80 or 443.
 fn default_vhost_port() -> u16 {
     0
 }
@@ -638,8 +588,6 @@ pub struct TlsConfig {
     #[serde(default)]
     pub key_path: String,
 
-    /// Obtain and renew the certificate automatically via ACME instead of reading
-    /// `cert_path`/`key_path`.
     #[serde(default)]
     pub acme: bool,
 }
@@ -856,7 +804,6 @@ pub struct RouteRule {
     #[serde(default)]
     pub cache: Option<CacheConfig>,
 
-    /// Overrides `http.compression.enabled` for this route.
     #[serde(default)]
     pub compression: Option<bool>,
 
@@ -866,7 +813,6 @@ pub struct RouteRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CorsConfig {
-    /// Allowed origins; `*` allows any origin.
     #[serde(default)]
     pub allow_origins: Vec<String>,
     #[serde(default)]
@@ -1037,9 +983,6 @@ pub enum ConfigLoad {
     },
 }
 
-/// On-disk format of the configuration file, chosen by its extension. YAML is the
-/// format; JSON is still read (and written back as JSON) for files created by older
-/// versions. The REST API always speaks JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Yaml,
@@ -1055,8 +998,6 @@ impl ConfigFormat {
     }
 }
 
-/// `ferrix.example.yaml`: written as `ferrix.yaml` on first start, with
-/// `@ADMIN_TOKEN@` replaced by a random token.
 pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../../../ferrix.example.yaml");
 
 const YAML_HEADER: &str = "# Ferrix configuration. Every option is described in\n\
@@ -1073,7 +1014,6 @@ impl FerrixConfig {
         Ok(cfg)
     }
 
-    /// Hosts without a `listen_port` get nginx's defaults: 443 with TLS, 80 without.
     pub fn resolve_ports(&mut self) {
         for vhost in &mut self.vhosts {
             if vhost.listen_port == 0 {
@@ -1108,7 +1048,6 @@ impl FerrixConfig {
 
         let admin_token = uuid::Uuid::new_v4().simple().to_string();
         let default_cfg = if ConfigFormat::of(p) == ConfigFormat::Yaml {
-            // The documented template, so every option is there to uncomment.
             let text = DEFAULT_CONFIG_TEMPLATE.replace("@ADMIN_TOKEN@", &admin_token);
             if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
                 let _ = std::fs::create_dir_all(dir);
@@ -1145,7 +1084,6 @@ impl FerrixConfig {
         })
     }
 
-    /// Writes the config in the format its file extension calls for.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let p = path.as_ref();
         let text = self
@@ -1279,7 +1217,6 @@ mod tests {
         assert_eq!(as_is.http.listen, "0.0.0.0:80");
         assert_eq!(as_is.vhosts[0].listen_port, 80);
 
-        // `# option` lines become live; `##` text stays a comment.
         let uncommented: String = DEFAULT_CONFIG_TEMPLATE
             .lines()
             .map(|l| {

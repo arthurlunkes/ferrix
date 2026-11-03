@@ -1,23 +1,11 @@
-//! Master process, like nginx's: `ferrix run` keeps a small parent process that starts
-//! the real server as a child and restarts it if it dies, so a crash (Ferrix is built
-//! with `panic = "abort"`) costs the in-flight connections of that moment instead of
-//! the whole service.
-//!
-//! The parent owns the PID file, so `ferrix reload` / `stop` signal it and it forwards
-//! SIGHUP / SIGTERM to the child. Set `FERRIX_SUPERVISOR=0` to run the server directly
-//! (for example under systemd or Docker, which already restart it).
-
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-/// Exit status the child uses for errors a restart can't fix (invalid config, port
-/// already in use...): sysexits' EX_CONFIG.
 pub const EXIT_FATAL: u8 = 78;
 
 const FIRST_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
-/// A child that stayed up this long is considered healthy; the backoff starts over.
 const STABLE_AFTER: Duration = Duration::from_secs(30);
 
 pub fn enabled() -> bool {
@@ -33,8 +21,6 @@ fn send(pid: u32, sig: libc::c_int) {
     }
 }
 
-/// The signals the master handles: blocked in the master (so they queue for
-/// `sigwait`) and unblocked again in the child before it runs.
 fn handled_signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -46,7 +32,6 @@ fn handled_signals() -> libc::sigset_t {
     }
 }
 
-/// Waits for one of the handled signals, up to `timeout` (`None` = forever).
 fn wait_signal(set: &libc::sigset_t, timeout: Option<Duration>) -> Option<libc::c_int> {
     match timeout {
         None => {
@@ -67,8 +52,6 @@ fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
     (sig > 0).then_some(sig)
 }
 
-/// macOS and the BSDs have no `sigtimedwait`: look for a pending signal every few
-/// milliseconds (only during a restart backoff) and take it with `sigwait`.
 #[cfg(not(target_os = "linux"))]
 fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
     let deadline = Instant::now() + t;
@@ -89,8 +72,6 @@ fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
     }
 }
 
-/// Runs the master loop. Deliberately plain: no async runtime and no threads, just
-/// `sigwait` and `waitpid`, so the master costs almost no memory.
 pub fn run(pid_file: &std::path::Path) -> ExitCode {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
 
@@ -136,8 +117,6 @@ pub fn run(pid_file: &std::path::Path) -> ExitCode {
             match wait_signal(&set, None) {
                 Some(libc::SIGHUP) => send(pid, libc::SIGHUP),
                 Some(sig @ (libc::SIGTERM | libc::SIGINT)) => {
-                    // Ctrl+C in a terminal already reached the child (same process
-                    // group); forwarding again is harmless and covers `kill -INT`.
                     send(pid, sig);
                     let _ = child.wait();
                     break 'supervise ExitCode::SUCCESS;
@@ -155,7 +134,6 @@ pub fn run(pid_file: &std::path::Path) -> ExitCode {
             break ExitCode::SUCCESS;
         }
         if status.code() == Some(EXIT_FATAL as i32) {
-            // Restarting would fail the same way; the child already logged why.
             break ExitCode::FAILURE;
         }
         let why = match (status.code(), status.signal()) {
@@ -172,7 +150,6 @@ pub fn run(pid_file: &std::path::Path) -> ExitCode {
             backoff.as_millis()
         );
 
-        // Wait out the backoff, but still honour stop requests meanwhile.
         let deadline = Instant::now() + backoff;
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             if let Some(libc::SIGTERM | libc::SIGINT) = wait_signal(&set, Some(left)) {

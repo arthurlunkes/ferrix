@@ -1,5 +1,3 @@
-//! Response compression (gzip, brotli, zstd), negotiated from `Accept-Encoding`.
-
 #[cfg(feature = "brotli")]
 use async_compression::tokio::bufread::BrotliEncoder;
 use async_compression::tokio::bufread::GzipEncoder;
@@ -13,8 +11,6 @@ use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::config::{CompressionAlgorithm, CompressionConfig, CompressionLevel};
 
-/// Picks the first algorithm from the configured preference order that the client
-/// accepts with a non-zero q-value.
 pub fn negotiate(headers: &HeaderMap, cfg: &CompressionConfig) -> Option<CompressionAlgorithm> {
     let accept = headers
         .get_all(header::ACCEPT_ENCODING)
@@ -49,7 +45,6 @@ pub fn negotiate(headers: &HeaderMap, cfg: &CompressionConfig) -> Option<Compres
         .find(|a| q_of(token(*a)).is_some_and(|q| q > 0.0))
 }
 
-/// Whether this build includes the encoder (brotli and zstd are optional features).
 pub fn available(algo: CompressionAlgorithm) -> bool {
     match algo {
         CompressionAlgorithm::Gzip => true,
@@ -116,7 +111,6 @@ fn level(algo: CompressionAlgorithm, level: CompressionLevel) -> Level {
     match level {
         CompressionLevel::Fastest => Level::Fastest,
         CompressionLevel::Best => Level::Best,
-        // Brotli's library default (11) is far too slow for on-the-fly compression.
         CompressionLevel::Default => Level::Precise(match algo {
             CompressionAlgorithm::Gzip => 6,
             CompressionAlgorithm::Br => 4,
@@ -125,8 +119,6 @@ fn level(algo: CompressionAlgorithm, level: CompressionLevel) -> Level {
     }
 }
 
-/// Marks a response as encoded with `algo`: sets `Content-Encoding`, adds
-/// `Vary: Accept-Encoding`, weakens a strong ETag and drops range support.
 pub fn mark_encoded(headers: &mut HeaderMap, algo: CompressionAlgorithm) {
     headers.insert(
         header::CONTENT_ENCODING,
@@ -149,14 +141,12 @@ pub fn compress(
     lvl: CompressionLevel,
 ) -> Response<Body> {
     let (mut parts, body) = resp.into_parts();
-    // The body is being replaced, so a zero-copy hint for the raw file no longer applies.
     parts.extensions.remove::<crate::http::server::SendFile>();
     parts.headers.remove(header::CONTENT_LENGTH);
     mark_encoded(&mut parts.headers, algo);
 
     let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     let lvl = level(algo, lvl);
-    // `negotiate` never picks an algorithm this build lacks, so `_` is gzip.
     let body = match algo {
         #[cfg(feature = "brotli")]
         CompressionAlgorithm::Br => {
@@ -171,7 +161,6 @@ pub fn compress(
     Response::from_parts(parts, body)
 }
 
-/// One-shot compression for bodies held in memory (static file cache).
 pub async fn compress_bytes(
     data: Bytes,
     algo: CompressionAlgorithm,

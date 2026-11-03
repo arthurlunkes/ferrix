@@ -4,9 +4,6 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use std::net::IpAddr;
 
-// Built on every request, so every field is either Copy or a refcounted clone of data
-// the request already owns (Uri, HeaderValue). Strings are only produced when the log is
-// serialized for the dashboard, which happens orders of magnitude less often.
 #[derive(Debug, Clone)]
 pub struct RequestLog {
     pub id: u64,

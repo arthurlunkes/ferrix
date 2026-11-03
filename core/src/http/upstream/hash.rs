@@ -1,5 +1,3 @@
-//! Ketama-style consistent hashing for the `consistent_hash` balancing algorithm.
-
 use axum::http::{header, request::Parts};
 use std::net::IpAddr;
 
@@ -7,8 +5,6 @@ use crate::config::UpstreamConfig;
 
 const POINTS_PER_WEIGHT: usize = 160;
 
-/// FNV-1a: stable across processes and Rust versions, so every Ferrix instance behind
-/// a load balancer maps a key to the same server.
 pub fn fnv1a(data: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in data {
@@ -102,7 +98,6 @@ impl HashKey {
 #[derive(Debug, Clone)]
 pub struct HashRing {
     pub key: HashKey,
-    // (point, index into upstream.targets), sorted by point.
     points: Vec<(u64, usize)>,
     targets: usize,
 }
@@ -126,8 +121,6 @@ impl HashRing {
         }
     }
 
-    /// Target indices in failover order for `hash`: the owner of the key first, then the
-    /// next distinct servers clockwise on the ring.
     pub fn order(&self, hash: u64) -> Vec<usize> {
         let mut out = Vec::with_capacity(self.targets);
         if self.points.is_empty() {

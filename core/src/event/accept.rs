@@ -1,10 +1,3 @@
-//! Accept loop for the proxy ports.
-//!
-//! The `ngx_event_accept` of Ferrix. Plain-HTTP connections start on its own HTTP/1.1
-//! fast path (`crate::http::server`),
-//! which hands anything unusual to hyper. TLS connections go to hyper directly, using
-//! Ferrix's SNI certificate resolver.
-
 use axum::body::Body;
 use hyper::body::Incoming;
 use hyper::Request;
@@ -12,8 +5,6 @@ use hyper_util::rt::TokioIo;
 #[cfg(feature = "http2")]
 use hyper_util::{rt::TokioExecutor, server::conn::auto};
 
-/// Serves one connection with hyper: HTTP/1.1 or HTTP/2 when the `http2` feature is
-/// built in, HTTP/1.1 only otherwise. Errors are only logged, so both become strings.
 #[cfg(feature = "http2")]
 macro_rules! serve_io {
     ($builder:expr, $io:expr, $service:expr) => {
@@ -43,7 +34,6 @@ use tracing::{debug, warn};
 
 use crate::http::ProxyEngine;
 
-/// Counts a worker's open client connection until it's dropped.
 struct OpenConn(Arc<AtomicUsize>);
 
 impl Drop for OpenConn {
@@ -64,8 +54,6 @@ pub async fn serve(
     tls: Option<TlsAcceptor>,
 ) {
     let http = engine.store.config().http.clone();
-    // Coarse timers and a once-per-second Date header keep clock syscalls out of the
-    // request path (see crate::event::clock).
     use crate::config::HttpProtocol;
     let http1 = http.serves(HttpProtocol::Http1);
     #[cfg(feature = "http2")]
@@ -80,7 +68,6 @@ pub async fn serve(
             .timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
             .keep_alive_interval(None);
-        // `http.protocols` without one of them: refuse it on this connection too.
         if !http.serves(HttpProtocol::Http2) {
             b = b.http1_only();
         } else if !http1 {
@@ -99,7 +86,6 @@ pub async fn serve(
     };
     let builder = Arc::new(builder);
     let is_tls = tls.is_some();
-    // HTTP/3 is served over QUIC on the same port; TLS responses tell clients so.
     let alt_svc = (is_tls && http.serves(HttpProtocol::Http3) && cfg!(feature = "http3"))
         .then(|| hyper::header::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)).ok())
         .flatten();
@@ -108,9 +94,6 @@ pub async fn serve(
         keepalive_timeout: Duration::from_millis(http.keepalive_timeout_ms.max(1)),
     });
 
-    // nginx's `worker_connections`: a worker at its limit stops accepting (the kernel
-    // keeps new connections in the listen backlog, or hands them to another worker)
-    // until one of its connections closes.
     let max_conns = http.worker_connections.max(1) as usize;
     let open = Arc::new(AtomicUsize::new(0));
     let mut warned = false;
@@ -131,7 +114,6 @@ pub async fn serve(
         let (tcp, addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
-                // Usually EMFILE/ENFILE: back off briefly instead of spinning.
                 warn!(port, error = %e, "accept failed");
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
@@ -148,10 +130,7 @@ pub async fn serve(
         let alt_svc = alt_svc.clone();
         tokio::spawn(async move {
             let _slot = slot;
-            // Plain HTTP/1.1 goes through Ferrix's own fast path first; it hands the
-            // connection to hyper for anything it doesn't handle itself.
             let conn = match tls {
-                // Without HTTP/1 there's nothing for the fast path to do.
                 None if !http1 => Conn::Plain(tcp, axum::body::Bytes::new()),
                 None => {
                     match Box::pin(crate::http::server::serve(tcp, addr, &engine, port, &fast))
@@ -182,7 +161,6 @@ pub async fn serve(
                 }
             });
 
-            // Boxed: hyper's connection state is only needed for handed-off connections.
             let result = Box::pin(async move {
                 match conn {
                     Conn::Plain(tcp, prefix) => {

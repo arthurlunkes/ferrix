@@ -1,17 +1,3 @@
-//! Fast path for plain-HTTP/1.1 connections.
-//!
-//! Most proxy traffic is bodiless HTTP/1.1 requests on keep-alive connections. For those,
-//! Ferrix parses and writes HTTP itself, which lets it:
-//!
-//! - send static files with `sendfile(2)` (zero-copy from the page cache, like nginx's
-//!   `sendfile on`), which hyper can't do because it owns the socket writes;
-//! - avoid hyper's per-poll `SystemTime::now()` (a syscall on hosts without a TSC);
-//! - write the response head and a small body with a single syscall.
-//!
-//! Anything less common (request bodies, `Expect`, protocol upgrades such as WebSocket,
-//! HTTP/2 prior knowledge) hands the connection to hyper, replaying the bytes already
-//! read, so behaviour there is unchanged.
-
 use axum::body::{Body, Bytes};
 use axum::http::{
     header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, Version,
@@ -32,12 +18,8 @@ use crate::http::ProxyEngine;
 
 const MAX_HEAD: usize = 64 * 1024;
 const MAX_HEADERS: usize = 100;
-// Bodies up to this size are copied after the head so both go out in one write.
 const COALESCE_LIMIT: usize = 32 * 1024;
 
-/// Response extension asking the plain-HTTP server to send this byte range of a file
-/// with `sendfile(2)` instead of writing the response body. The body is still filled in,
-/// so TLS and HTTP/2 connections (served by hyper) keep working unchanged.
 #[derive(Debug, Clone)]
 pub struct SendFile {
     pub path: PathBuf,
@@ -45,8 +27,6 @@ pub struct SendFile {
     pub len: u64,
 }
 
-/// Files at least this large are worth a `sendfile` (smaller ones are cheaper to copy
-/// from the in-memory cache along with the head).
 pub const SENDFILE_MIN: u64 = 32 * 1024;
 
 pub struct Settings {
@@ -56,7 +36,6 @@ pub struct Settings {
 
 pub enum Outcome {
     Done,
-    /// The connection needs hyper; `prefix` holds the bytes already read from it.
     Handoff(TcpStream, Bytes),
 }
 
@@ -72,9 +51,6 @@ pub async fn serve(
     let mut first = true;
 
     loop {
-        // Wait for (the rest of) a request head.
-        // Like nginx's keep-alive handling: an idle connection gives its read buffer back
-        // instead of holding it for as long as the client keeps the socket open.
         if !first && buf.is_empty() && buf.capacity() > 0 {
             buf = BytesMut::new();
         }
@@ -97,7 +73,6 @@ pub async fn serve(
         first = false;
 
         if head.needs_hyper {
-            // Put the head back in front of whatever else was buffered.
             let mut prefix = BytesMut::with_capacity(head.raw.len() + buf.len());
             prefix.extend_from_slice(&head.raw);
             prefix.extend_from_slice(&buf);
@@ -139,8 +114,6 @@ pub async fn serve(
         *req.version_mut() = head.version;
         *req.headers_mut() = head.headers;
 
-        // Boxed so the (large) request state machine only exists while a request is in
-        // flight; an idle keep-alive connection holds just this loop's small state.
         let resp = Box::pin(engine.handle_request(port, false, addr, req)).await;
         if write_response(&mut tcp, &mut out, resp, is_head, http10, keep_alive)
             .await
@@ -161,7 +134,6 @@ struct Head {
     keep_alive: bool,
     needs_hyper: bool,
     raw: Bytes,
-    /// Set when the request goes down the raw proxy path; `headers` is then left empty.
     raw_route: Option<crate::http::raw_proxy::RawRoute>,
 }
 
@@ -180,7 +152,6 @@ async fn read_head(
     let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
     loop {
         if !buf.is_empty() {
-            // HTTP/2 with prior knowledge: let hyper speak it.
             if buf.starts_with(b"PRI * HTTP/2.0")
                 || (buf.len() < 14 && b"PRI * HTTP/2.0".starts_with(&buf[..]))
             {
@@ -200,7 +171,6 @@ async fn read_head(
         match read {
             Ok(Ok(0)) | Ok(Err(_)) => return Ok(None),
             Ok(Ok(_)) => {}
-            // Idle keep-alive connection or slow client: just close it.
             Err(_) => return Ok(None),
         }
     }
@@ -247,8 +217,6 @@ fn parse(
     let uri = Uri::from_maybe_shared(raw.slice(path.0..path.1))
         .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
 
-    // A first pass over the raw bytes finds what decides how the request is handled;
-    // the header map is only built for requests that need one.
     let mut keep_alive = minor == 1;
     let mut needs_hyper = false;
     let mut host: &[u8] = b"";
@@ -336,8 +304,6 @@ fn push_u64(out: &mut Vec<u8>, n: u64) {
 pub(super) enum Framing {
     Length(u64),
     Chunked,
-    /// No length header at all: bodiless statuses, HEAD of an unknown-size response, or
-    /// an HTTP/1.0 body delimited by closing the connection.
     None,
 }
 
@@ -373,7 +339,6 @@ fn encode_head(
     finish_head(out, framing, keep_alive);
 }
 
-/// Ends a response head: framing, `Connection: close` when needed, and the blank line.
 pub(super) fn finish_head(out: &mut Vec<u8>, framing: Framing, keep_alive: bool) {
     match framing {
         Framing::Length(n) => {
@@ -390,8 +355,6 @@ pub(super) fn finish_head(out: &mut Vec<u8>, framing: Framing, keep_alive: bool)
     out.extend_from_slice(b"\r\n");
 }
 
-/// Writes the head already in `out` followed by `body`, framed as `framing` says. Small
-/// fixed-length bodies are appended to the head so both leave in one write.
 pub(super) async fn write_body<B>(
     tcp: &mut TcpStream,
     out: &mut Vec<u8>,
@@ -485,9 +448,6 @@ pub(super) async fn write_response(
             Framing::Length(sf.len),
             keep_alive,
         );
-        // nginx's `tcp_nopush`: hold partial frames while the head and the file go out,
-        // so the head shares full-sized packets with the file instead of travelling
-        // alone; uncorking at the end flushes whatever is left.
         set_cork(tcp, true);
         let sent = async {
             tcp.write_all(out).await?;
@@ -524,7 +484,6 @@ pub(super) async fn write_response(
             Ok(())
         }
         None if http10 => {
-            // HTTP/1.0 has no chunked encoding: the body ends when the connection does.
             encode_head(out, status, &parts.headers, Framing::None, false);
             tcp.write_all(out).await?;
             while let Some(frame) = body.frame().await {
@@ -625,8 +584,6 @@ async fn sendfile(tcp: &mut TcpStream, sf: &SendFile) -> io::Result<()> {
     Ok(())
 }
 
-/// A TCP stream with some already-read bytes put back in front, for handing a
-/// connection to hyper mid-stream.
 pub struct Rewind {
     prefix: Bytes,
     inner: TcpStream,
@@ -778,15 +735,10 @@ mod footprint {
             keepalive_timeout: std::time::Duration::ZERO,
         };
         let addr = "127.0.0.1:1".parse().unwrap();
-        // Every open keep-alive connection holds this future; request handling is boxed
-        // separately so it doesn't inflate it (it used to be ~12 KB).
         let fut = super::serve(tcp, addr, &engine, 1, &settings);
         let conn = std::mem::size_of_val(&fut);
         assert!(conn < 4096, "connection future grew to {} bytes", conn);
 
-        // Allocated once per in-flight request. Rare, large paths (TLS handshakes,
-        // static files, cache fills, WebSocket upgrades) are boxed so they don't set
-        // the size of every proxied request; it was ~12 KB before that.
         let req = axum::http::Request::new(axum::body::Body::empty());
         let hr = engine.handle_request(1, false, addr, req);
         let per_request = std::mem::size_of_val(&hr);

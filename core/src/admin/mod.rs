@@ -1,9 +1,3 @@
-//! Control-plane REST API (and, optionally, the dashboard's files).
-//!
-//! A small hand-written router on hyper: the API has a dozen fixed routes, and a web
-//! framework's routing, extractors and error machinery would stay resident in every
-//! running server for no benefit.
-
 pub mod handlers;
 pub mod sse;
 
@@ -21,10 +15,8 @@ use crate::config::AdminAuthMode;
 use crate::http::access::AccessControl;
 use handlers::AdminState;
 
-/// Request bodies larger than this are refused (configs and nginx files are far smaller).
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
-/// JSON response body, the only thing the API needs from a "Json" type.
 pub struct Json<T>(pub T);
 
 impl<T: Serialize> IntoResponse for Json<T> {
@@ -43,7 +35,6 @@ impl<T: Serialize> IntoResponse for Json<T> {
     }
 }
 
-/// Serves the admin API on `listen` until the process exits.
 pub async fn serve(listen: String, state: AdminState) {
     let listener = match TcpListener::bind(&listen).await {
         Ok(l) => l,
@@ -79,7 +70,6 @@ pub async fn serve(listen: String, state: AdminState) {
     }
 }
 
-/// Routes one admin request.
 pub async fn handle(state: &AdminState, req: Request<Body>, _peer: SocketAddr) -> Response {
     let cfg = state.store.config();
     let origin = req.headers().get(header::ORIGIN).cloned();
@@ -242,8 +232,6 @@ async fn text_body(req: Request<Body>) -> Result<String, Box<Response>> {
         .map_err(|_| Box::new((StatusCode::BAD_REQUEST, "body must be UTF-8 text").into_response()))
 }
 
-/// The built dashboard (`admin.dashboard_dir`), with single-page-app fallback to
-/// `index.html`, served by the same static-file code as the proxy.
 async fn dashboard(dir: &str, req: &axum::http::request::Parts) -> Response {
     let cache = crate::config::StaticCacheConfig::default();
     let static_req = crate::http::static_files::StaticRequest {
@@ -362,8 +350,6 @@ fn unauthorized(mode: AdminAuthMode) -> Response {
     resp
 }
 
-/// Token from `Authorization: Bearer`, `X-Ferrix-Token` or `?token=` (browsers can't set
-/// headers on an `EventSource`, so the live log stream passes it in the query).
 fn presented_token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     if let Some(value) = headers
         .get(header::AUTHORIZATION)

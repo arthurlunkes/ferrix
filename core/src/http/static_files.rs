@@ -23,8 +23,6 @@ struct CachedFile {
 
     checked_at: AtomicU64,
 
-    // Compressed copies, built on first request for each encoding (gzip_static-style).
-    // `None` inside means compression didn't make the file smaller.
     variants: [OnceCell<Option<Bytes>>; 3],
 }
 
@@ -47,7 +45,6 @@ impl FileMeta {
             .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        // Same shape as nginx: "<mtime hex>-<size hex>".
         let etag = HeaderValue::from_str(&format!("\"{:x}-{:x}\"", mtime, metadata.len()))
             .unwrap_or(HeaderValue::from_static("\"0\""));
         let last_modified = modified.and_then(|m| {
@@ -90,12 +87,9 @@ struct FileCache {
 
 static CACHE: LazyLock<RwLock<FileCache>> = LazyLock::new(|| RwLock::new(FileCache::default()));
 
-/// What the static handler needs from the request.
 pub struct StaticRequest<'a> {
     pub headers: &'a HeaderMap,
-    /// Encoding negotiated for this request when compression is enabled on the route.
     pub encoding: Option<(CompressionAlgorithm, &'a CompressionConfig)>,
-    /// `http.static_cache` limits.
     pub cache: &'a StaticCacheConfig,
 }
 
@@ -125,10 +119,6 @@ impl StaticFileServer {
             }
         }
 
-        // Read inline, like nginx: cacheable files are at most 1 MB and usually already
-        // in the kernel's page cache, so this takes microseconds. Going through the
-        // blocking pool instead spawned extra threads on a cold start (every connection
-        // missing the cache at once), each keeping its own allocator heap alive.
         let loaded = load_file(root_dir, path, try_files, req.cache.max_file_bytes)?;
 
         match loaded {
@@ -216,8 +206,6 @@ enum RangeReq {
     Unsatisfiable,
 }
 
-// Single byte range only (what browsers and download managers send); multi-range
-// requests are answered with the whole file, which RFC 9110 allows.
 fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
     let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
         return RangeReq::None;
@@ -348,8 +336,6 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
     resp
 }
 
-/// Lets the plain-HTTP server send large bodies straight from the page cache with
-/// `sendfile(2)`; other connections ignore the hint and use the body.
 fn mark_sendfile(resp: &mut Response<Body>, path: &Path, offset: u64, len: u64) {
     if len >= crate::http::server::SENDFILE_MIN {
         resp.extensions_mut().insert(crate::http::server::SendFile {
@@ -368,8 +354,6 @@ async fn respond_large(
     if let Conditional::NotModified = check_conditional(&meta, req.headers) {
         return Ok(not_modified(&meta));
     }
-    // A plain open is a fast syscall; going through tokio::fs would park the request on
-    // the blocking thread pool for it.
     let mut file = std::fs::File::open(&path)
         .map(tokio::fs::File::from_std)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -396,8 +380,6 @@ async fn respond_large(
     }
 }
 
-// A synchronous stat, like nginx does: the inode is hot in the kernel cache, so this costs
-// microseconds, while tokio::fs would hop to (and grow) the blocking thread pool.
 async fn still_same_file(entry: &Arc<CachedFile>) -> bool {
     let meta = std::fs::metadata(&entry.file_path);
     let same = match meta {

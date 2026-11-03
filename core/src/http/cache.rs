@@ -248,8 +248,6 @@ mod tests {
     }
 }
 
-// --- Proxy cache glue (nginx `proxy_cache`): deciding what to cache and replaying it ---
-
 use crate::config::{CacheConfig, VirtualHost};
 use crate::http::ProxyEngine;
 use axum::body::Body;

@@ -1,6 +1,3 @@
-//! TLS certificate selection by SNI (several sites on one port) and the rustls
-//! acceptor, the role of nginx's `ngx_event_openssl` + `ngx_http_ssl_module`.
-
 use arc_swap::ArcSwap;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -12,10 +9,6 @@ use tracing::error;
 use crate::config::store::ConfigStore;
 use crate::config::FerrixConfig;
 
-/// Picks the certificate for a TLS handshake from the SNI name, nginx-style: exact
-/// `server_names` first, then wildcards (`*.example.com` / `.example.com`), falling back
-/// to the first TLS virtual host on the port. Certificates are re-read whenever the
-/// active configuration changes, so renewing a certificate only needs a config reload.
 pub struct SniResolver {
     store: Arc<ConfigStore>,
     port: u16,
@@ -28,7 +21,6 @@ struct CertTable {
     config: Option<Arc<FerrixConfig>>,
     generation: u64,
     exact: HashMap<String, Arc<CertifiedKey>>,
-    // (".example.com", also matches bare "example.com", key)
     wildcard: Vec<(String, bool, Arc<CertifiedKey>)>,
     default: Option<Arc<CertifiedKey>>,
 }
@@ -51,8 +43,6 @@ impl SniResolver {
         });
         let config = resolver.store.config();
         let table = build_table(&config, port)?;
-        // An ACME host may not have its first certificate yet; the port still starts so
-        // it can serve as soon as the certificate is issued.
         let waits_for_acme = config
             .vhosts
             .iter()
@@ -90,7 +80,6 @@ impl SniResolver {
                 fresh
             }
             Err(e) => {
-                // Keep serving the previous certificates rather than failing handshakes.
                 error!(port = self.port, "reloading TLS certificates failed: {}", e);
                 let kept = Arc::new(CertTable {
                     config: Some(config),
@@ -135,7 +124,7 @@ fn build_table(config: &Arc<FerrixConfig>, port: u16) -> Result<CertTable, Strin
         let key = if tls.acme {
             let (cert, key) = crate::tls::acme::cert_paths(&config.acme, &vhost.id);
             if !cert.is_file() {
-                continue; // not issued yet
+                continue;
             }
             (
                 cert.to_string_lossy().into_owned(),
@@ -169,7 +158,6 @@ fn build_table(config: &Arc<FerrixConfig>, port: u16) -> Result<CertTable, Strin
             }
         }
     }
-    // Longest suffix first so `*.api.example.com` beats `*.example.com`.
     table
         .wildcard
         .sort_by_key(|(s, _, _)| std::cmp::Reverse(s.len()));
@@ -195,7 +183,6 @@ pub fn load_certified_key(cert_path: &str, key_path: &str) -> Result<CertifiedKe
     Ok(CertifiedKey::new(certs, signing))
 }
 
-/// TLS 1.3 configuration for QUIC (HTTP/3), sharing the TCP listener's certificates.
 #[cfg(feature = "http3")]
 pub fn quic_server_config(resolver: Arc<SniResolver>) -> Result<rustls::ServerConfig, String> {
     let mut config =
@@ -213,14 +200,12 @@ pub fn tls_acceptor(resolver: Arc<SniResolver>) -> Result<TlsAcceptor, String> {
     let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);
-    // Offer exactly the TCP protocols `http.protocols` allows, HTTP/2 first.
     if cfg!(feature = "http2") && http.serves(HttpProtocol::Http2) {
         config.alpn_protocols.push(b"h2".to_vec());
     }
     if http.serves(HttpProtocol::Http1) {
         config.alpn_protocols.push(b"http/1.1".to_vec());
     }
-    // Session tickets let returning clients resume without a full handshake.
     if let Ok(ticketer) = rustls::crypto::ring::Ticketer::new() {
         config.ticketer = ticketer;
     }

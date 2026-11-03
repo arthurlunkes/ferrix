@@ -1,7 +1,3 @@
-//! Talking to upstream servers, like nginx's `ngx_http_upstream`: the HTTP/1.1 client
-//! with its per-thread connection pool (`h1`), server selection (`balancer`) and
-//! consistent hashing (`hash`).
-
 pub mod balancer;
 pub mod h1;
 pub mod hash;
@@ -47,13 +43,9 @@ pub enum OutgoingBody {
     Streaming(Body),
 }
 
-// Built once per process; cloning a TlsConnector is just an Arc bump, done only when a
-// new TLS connection is opened.
 static TLS_VERIFIED: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(true));
 static TLS_INSECURE: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(false));
 
-/// Per-request settings for talking to an upstream. Connections live in the per-thread
-/// pool in `h1`, so this is a plain value with nothing shared to lock or refcount.
 #[derive(Debug, Clone, Copy)]
 pub struct UpstreamClient {
     connect_timeout: Duration,
@@ -78,7 +70,6 @@ impl UpstreamClient {
         }
     }
 
-    /// `base` is the target URL (`http://host:port`), `path` the path and query to request.
     pub async fn send(
         &self,
         method: &Method,
@@ -104,10 +95,6 @@ impl UpstreamClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
 
-            // A pooled connection can be closed by the upstream at any moment; when that
-            // happens before any response byte arrives, the request is replayed once on
-            // a fresh connection. Streaming bodies can't be replayed, so they always use
-            // a new connection.
             let mut reuse = streaming.is_none();
             loop {
                 let pooled = if reuse {
@@ -120,9 +107,6 @@ impl UpstreamClient {
                     Some(c) => c,
                     None => {
                         let tls = target.tls.then_some((self.tls(), insecure));
-                        // Boxed: opening a connection (with a possible TLS handshake,
-                        // whose state is several KB) is rare once the pool is warm, so
-                        // it shouldn't size every request's state machine.
                         Box::pin(h1::connect(&target, base, self.connect_timeout, tls)).await?
                     }
                 };
@@ -168,9 +152,6 @@ impl UpstreamClient {
 }
 
 impl UpstreamClient {
-    /// `send` for the raw proxy path: `encode` writes the full request head given the
-    /// target's authority, and the response head comes back re-encoded in `client_head`.
-    /// The body enforces the read timeout like `send`'s.
     pub async fn send_raw(
         &self,
         method: &Method,
@@ -230,8 +211,6 @@ impl UpstreamClient {
     }
 }
 
-// Fails the body when the upstream sends nothing for `dur`. The timer is only armed if
-// a read actually has to wait, so bodies that arrive with the head cost nothing.
 pub(crate) struct ReadTimeoutBody<B> {
     inner: B,
     sleep: Option<CoarseSleep>,

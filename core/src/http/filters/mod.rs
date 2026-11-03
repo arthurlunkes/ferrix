@@ -1,10 +1,3 @@
-//! Response filters, modelled on nginx's filter chain. A content handler (proxy, static
-//! files, redirect) produces the response; the filters then adjust it in a fixed order.
-//!
-//! Some filters need facts about the request that are gone once the handler consumes
-//! it, so they are captured up front in [`RequestInfo`] (which also answers CORS
-//! preflights before any handler runs).
-
 pub mod compress;
 pub mod cors;
 pub mod error_page;
@@ -18,19 +11,13 @@ use axum::response::Response;
 use crate::config::{CompressionAlgorithm, RouteRule};
 use crate::http::matcher::CompiledConfig;
 
-/// Request facts the output filters need.
 pub struct RequestInfo {
-    /// `Origin`, when the route has CORS configured.
     pub origin: Option<HeaderValue>,
-    /// `X-Request-Id` (kept or generated), when `http.request_id` is on.
     pub request_id: Option<HeaderValue>,
-    /// Encoding negotiated from `Accept-Encoding`, when compression applies.
     pub encoding: Option<CompressionAlgorithm>,
 }
 
 impl RequestInfo {
-    /// Request-side phase. Returns `Err` with the response for a CORS preflight, which
-    /// is answered without running any handler.
     pub fn capture(
         compiled: &CompiledConfig,
         route: &RouteRule,
@@ -73,8 +60,6 @@ impl RequestInfo {
     }
 }
 
-/// Output phase for a route's response, in nginx's order: compression (`gzip`), the
-/// route/vhost headers (`add_header`), CORS, then the request ID.
 pub fn run(
     compiled: &CompiledConfig,
     vhost_index: usize,

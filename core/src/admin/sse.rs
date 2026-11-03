@@ -1,5 +1,3 @@
-//! Live request log as Server-Sent Events (`GET /api/logs/stream`).
-
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue};
 use axum::response::Response;
@@ -9,7 +7,6 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::metrics::MetricsCollector;
 
-/// A comment line every so often keeps proxies and browsers from closing an idle stream.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 pub fn stream_logs(metrics: Arc<MetricsCollector>) -> Response {
@@ -23,7 +20,6 @@ pub fn stream_logs(metrics: Arc<MetricsCollector>) -> Response {
                         let frame = format!("event: request\ndata: {}\n\n", json);
                         return Some((Ok::<_, std::io::Error>(Bytes::from(frame)), rx));
                     }
-                    // A slow client missed some entries: keep streaming the newer ones.
                     Err(RecvError::Lagged(_)) => continue,
                     Err(RecvError::Closed) => return None,
                 },

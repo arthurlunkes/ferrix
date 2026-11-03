@@ -1,6 +1,3 @@
-//! Access control (nginx `access` + `auth_basic`): IP allow/deny lists, HTTP Basic
-//! authentication and how they combine (`satisfy all | any`).
-
 use axum::http::HeaderMap;
 use base64::prelude::*;
 use std::net::IpAddr;

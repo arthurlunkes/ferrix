@@ -13,18 +13,14 @@ const LATENCY_WINDOW: usize = 1024;
 
 const LOG_CAPACITY: usize = 500;
 
-// Counters are split into stripes, one per worker thread in practice, so the hot path
-// never bounces a shared cache line between cores; readers add the stripes up.
 const STRIPES: usize = 16;
 
-/// Upper bounds (seconds) of the Prometheus latency histogram buckets.
 const BUCKETS: [f64; 11] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsSnapshot {
-    /// `metrics.enabled` from the config; when false every counter stays at zero.
     pub enabled: bool,
     pub uptime_seconds: u64,
     pub total_requests: u64,
@@ -49,7 +45,6 @@ struct Stripe {
     buckets: [AtomicU64; BUCKETS.len() + 1],
     latency_sum_us: AtomicU64,
 
-    // Allocated on first use, so a Ferrix with metrics disabled never pays for them.
     latencies: OnceLock<Box<[AtomicU64]>>,
     latency_head: AtomicUsize,
 
@@ -123,8 +118,6 @@ impl MetricsCollector {
         self.stripes.iter().map(f).sum()
     }
 
-    /// Samples the request counter once a second to publish requests/second, instead of
-    /// doing that bookkeeping on every request.
     pub fn start_rps_ticker(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -235,7 +228,6 @@ impl MetricsCollector {
                 all.push(log.clone());
             }
         }
-        // Newest first across stripes; ids break ties within the same clock tick.
         all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.id.cmp(&a.id)));
         all.truncate(limit.min(LOG_CAPACITY));
         all
@@ -299,7 +291,6 @@ impl MetricsCollector {
         self.start_utc
     }
 
-    /// Prometheus text exposition format (version 0.0.4).
     pub fn prometheus(&self, upstreams: &[(String, String, bool)]) -> String {
         let mut out = String::with_capacity(2048);
         let snap = self.get_metrics_snapshot();

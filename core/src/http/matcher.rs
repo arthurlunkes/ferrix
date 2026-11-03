@@ -138,8 +138,6 @@ struct CompiledRoute {
     denied_ips: IpMatcher,
 
     response_headers: Vec<(HeaderName, HeaderValue)>,
-    /// A proxy route with nothing between the client and the upstream (see
-    /// `plain_proxy`); filled in once the whole config is known.
     plain_proxy: bool,
 }
 
@@ -173,8 +171,6 @@ impl CompiledRoute {
     }
 }
 
-/// A proxy route where no access control, limit, cache, compression, CORS, header
-/// rewriting or request id applies: the request can go straight to the upstream.
 fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule) -> bool {
     let http = &config.http;
     route.target_type == crate::config::RouteTargetType::ProxyUpstream
@@ -218,9 +214,7 @@ pub struct CompiledConfig {
     pub real_ip: RealIpResolver,
     vhosts: Vec<CompiledVHost>,
     rings: crate::fasthash::FastMap<String, HashRing>,
-    // `X-Ferrix-Upstream` value for each target, by upstream name and target index.
     target_headers: crate::fasthash::FastMap<String, Vec<Option<HeaderValue>>>,
-    /// `Server` response header, per `http.server_tokens`.
     pub server_header: HeaderValue,
 }
 
@@ -287,7 +281,6 @@ impl CompiledConfig {
         }
     }
 
-    /// Whether the route can skip the generic request pipeline (see `is_plain_proxy`).
     pub fn plain_proxy(&self, vhost_index: usize, route_index: usize) -> bool {
         self.vhosts
             .get(vhost_index)
@@ -321,8 +314,6 @@ impl CompiledConfig {
             .map(|r| (&r.allowed_ips, &r.denied_ips))
     }
 
-    // vhost-level `headers` overlaid with the route's `add_headers`, parsed once per
-    // config load instead of once per response.
     pub fn route_response_headers(
         &self,
         vhost_index: usize,

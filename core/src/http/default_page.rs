@@ -1,13 +1,8 @@
-//! The "Ferrix is running" page, the counterpart of nginx's default site: shown when no
-//! virtual host matches (or nothing is configured for `/`), so a fresh install visibly
-//! works. Disabled with `http.default_page: false`.
-
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use std::sync::LazyLock;
 
 const TEMPLATE: &str = include_str!("assets/default_page.html");
-/// The Ferrix crab, a small WebP inlined so the page needs no other request.
 const LOGO: &str = include_str!("assets/ferrix-crab.webp.b64");
 
 static WITH_VERSION: LazyLock<String> =
@@ -20,7 +15,6 @@ fn page(version: &str) -> String {
         .replace("@VERSION@", version)
 }
 
-/// Renders the page; `show_version` follows `http.server_tokens`.
 pub fn render(show_version: bool) -> Response {
     let html = if show_version {
         WITH_VERSION.as_str()

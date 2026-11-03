@@ -25,9 +25,6 @@ use health::HealthChecker;
 use metrics::MetricsCollector;
 use proxy::ProxyEngine;
 
-/// Older versions created `ferrix.json` next to `ferrix.yaml`. When only that file
-/// exists, keep using it (JSON is still read and written) rather than silently starting
-/// from a fresh default config.
 fn resolve_config_path(args: &mut Args) {
     let legacy = args.config.with_extension("json");
     if args.config == Path::new(DEFAULT_CONFIG) && !args.config.exists() && legacy.exists() {
@@ -55,8 +52,6 @@ fn spawn_workers(
     );
     for worker in 0..workers.max(1) {
         let core = cores.as_ref().map(|c| c[worker]);
-        // Each worker gets its own handle so per-request Arc clones touch a counter
-        // owned by that thread instead of one shared by every core.
         let engine = Arc::new((*engine).clone());
         let tls = tls.clone();
         let spawned = std::thread::Builder::new()
@@ -72,8 +67,6 @@ fn spawn_workers(
                 }
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
-                    // File reads that can't use sendfile are rare; don't let bursts
-                    // grow a large pool of idle threads (each with its own stack/heap).
                     .max_blocking_threads(2)
                     .build()
                 {
@@ -177,30 +170,19 @@ fn spawn_tls_listener(
     Ok(())
 }
 
-/// `mi_option_purge_delay` in the bundled mimalloc 2.x header (between
-/// `eager_commit_delay` = 14 and `use_numa_nodes` = 16, which the Rust bindings do
-/// export); the bindings lack a named constant for it.
 const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
 fn main() -> ExitCode {
-    // Return freed memory to the OS right away instead of after 10 ms. Under load that
-    // keeps ~2 MB less resident with no measurable throughput cost, like nginx giving
-    // request pools back as soon as a request ends.
     if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
         unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
     }
 
-    // The master process only waits for its child and forwards signals, so it runs
-    // before (and without) the server's async runtime.
     #[cfg(unix)]
     if let Ok(Ok(mut args)) = Args::from_env() {
         let serves = matches!(args.command, Some(Commands::Run) | None)
             && !args.test
             && args.signal.is_none();
         if !serves {
-            // Terminal commands (`status`, `--help`...) end quietly when their output
-            // is cut short, as in `ferrix status | head`, instead of panicking on a
-            // broken pipe. The server keeps SIGPIPE ignored for closed client sockets.
             unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
         }
         let runs_server = serves && !args.worker_process;
@@ -220,8 +202,6 @@ fn main() -> ExitCode {
 
 #[cfg(unix)]
 fn configured_worker_threads() -> usize {
-    // On Unix the proxy runs on its own per-core worker threads; this shared runtime
-    // only carries the admin API, health checks, ACME and TCP/UDP streams.
     2
 }
 
@@ -354,7 +334,6 @@ async fn async_main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(message) => {
                     error!("{}", message);
-                    // Tell the supervisor this won't get better by restarting.
                     #[cfg(unix)]
                     if worker_process {
                         return ExitCode::from(supervisor::EXIT_FATAL);
@@ -831,8 +810,6 @@ async fn run_server(args: Args) -> Result<(), String> {
         tokio::spawn(async {})
     };
 
-    // Bind every port once up front, so a port that can't be used stops the start with a
-    // clear message instead of leaving workers that silently serve nothing.
     #[cfg(unix)]
     for plan in &port_plan {
         let addr: SocketAddr = format!("{}:{}", proxy_host, plan.port)
@@ -896,7 +873,6 @@ async fn run_server(args: Args) -> Result<(), String> {
         ferrix::stream::spawn(proxy_engine.clone(), stream);
     }
 
-    // Under the supervisor, the parent owns the PID file (signals go to it).
     let pid_file = pid_file_path(&args.config);
     if !args.worker_process {
         let _ = std::fs::write(&pid_file, std::process::id().to_string());

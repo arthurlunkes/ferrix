@@ -1,12 +1,3 @@
-//! Minimal HTTP/1.1 client used to talk to upstreams.
-//!
-//! hyper's pooled client hands every request to a separate connection task through
-//! channels, which costs a few task wake-ups per request. Like Pingora, this client
-//! drives the connection directly from the request task and keeps idle connections in a
-//! per-thread pool: each Ferrix worker runs its own single-threaded runtime, so a
-//! connection is only ever reused by the thread (and reactor) that opened it, with no
-//! locks involved.
-
 use crate::fasthash::FastMap;
 use axum::body::Bytes;
 use axum::http::{
@@ -29,8 +20,6 @@ use tokio_rustls::TlsConnector;
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_HEADERS: usize = 128;
 const READ_CHUNK: usize = 16 * 1024;
-// Most upstream responses (head + small body) fit here; bigger bodies grow the buffer
-// in READ_CHUNK steps.
 const HEAD_CHUNK: usize = 4 * 1024;
 const MAX_IDLE_PER_HOST: usize = 256;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -88,8 +77,6 @@ impl Stream {
         }
     }
 
-    // An idle keep-alive connection must have nothing to read: EOF or stray bytes mean
-    // the upstream closed it (or broke protocol) while it sat in the pool.
     fn looks_alive(&self) -> bool {
         let mut probe = [0u8; 1];
         !self.tcp().peek(&mut probe).now_or_never().is_some()
@@ -98,8 +85,6 @@ impl Stream {
 
 pub struct Conn {
     stream: Stream,
-    // Pool this connection goes back to; set once at connect time and carried along so
-    // returning it never allocates.
     key: Box<str>,
     insecure: bool,
 }
@@ -110,8 +95,6 @@ struct Idle {
 }
 
 thread_local! {
-    // [0] plain and verified TLS, [1] TLS with certificate verification disabled, so a
-    // connection opened without verification is never handed to a pool that requires it.
     static POOL: RefCell<[FastMap<Box<str>, Vec<Idle>>; 2]> = RefCell::new([FastMap::default(), FastMap::default()]);
 }
 
@@ -150,8 +133,6 @@ fn release(conn: Conn) {
 pub enum H1Error {
     Connect(io::Error),
     ConnectTimeout,
-    // Failed before a single response byte arrived; safe to retry on a fresh connection
-    // when the request was sent over a reused one.
     Stale(io::Error),
     Io(io::Error),
     Protocol(&'static str),
@@ -178,8 +159,6 @@ pub struct Target<'a> {
 }
 
 impl<'a> Target<'a> {
-    // `base` is an upstream target URL such as `http://10.0.0.1:8080` or
-    // `https://api.example.com`; anything after the authority is ignored.
     pub fn parse(base: &'a str) -> Option<Self> {
         let (tls, rest) = if let Some(r) = base.strip_prefix("http://") {
             (false, r)
@@ -328,8 +307,6 @@ thread_local! {
     static HEAD_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(4096));
 }
 
-/// Sends one request over `conn` and reads the response head. On success the connection
-/// is owned by the returned body, which puts it back in the pool once fully read.
 pub async fn exchange(
     mut conn: Conn,
     method: &Method,
@@ -338,8 +315,6 @@ pub async fn exchange(
     headers: &HeaderMap,
     body: RequestBody<'_>,
 ) -> Result<Response<H1Body>, H1Error> {
-    // The encode buffer is borrowed from the thread for the duration of the write and
-    // handed back afterwards, so steady-state requests don't allocate it.
     let mut head = HEAD_BUF.with(|b| std::mem::take(&mut *b.borrow_mut()));
     head.clear();
     encode_head(&mut head, method, path, authority, headers, &body);
@@ -380,18 +355,12 @@ pub async fn exchange(
     Ok(Response::from_parts(parts, body))
 }
 
-/// What `exchange_raw` learned from the upstream's response head.
 pub struct RawResponse {
     pub status: u16,
-    /// The upstream sent its own `Date` header (copied to the client as is).
     pub has_date: bool,
     pub body: H1Body,
 }
 
-/// Raw-proxy variant of `exchange`: `request` is the complete, already encoded request
-/// head, and the response head is not turned into a `HeaderMap` but re-encoded straight
-/// into `client_head` (status line plus end-to-end headers; no framing, `Server`, or
-/// final CRLF, which the caller adds).
 pub async fn exchange_raw(
     mut conn: Conn,
     request: &[u8],
@@ -412,7 +381,7 @@ pub async fn exchange_raw(
             if let Some(parsed) = parse_head_raw(&mut buf, method, client_head)? {
                 match parsed {
                     Some(head) => break head,
-                    None => continue, // 1xx: wait for the final response
+                    None => continue,
                 }
             }
         }
@@ -454,8 +423,6 @@ pub async fn exchange_raw(
     })
 }
 
-/// Response headers the proxy never passes on: hop-by-hop ones, the framing (re-done for
-/// the client) and `Server` (Ferrix answers with its own, like nginx).
 fn dropped_response_header(name: &[u8]) -> bool {
     const DROPPED: [&[u8]; 11] = [
         b"connection",
@@ -473,7 +440,6 @@ fn dropped_response_header(name: &[u8]) -> bool {
     DROPPED.iter().any(|d| d.eq_ignore_ascii_case(name))
 }
 
-/// `Ok(None)`: incomplete head. `Ok(Some(None))`: a 1xx response was skipped.
 #[allow(clippy::type_complexity)]
 fn parse_head_raw(
     buf: &mut BytesMut,
@@ -648,8 +614,6 @@ enum Parsed {
 }
 
 fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1Error> {
-    // Header names/values are recorded as offsets so the head can be frozen into one
-    // shared buffer and sliced, instead of copying every value into its own allocation.
     let mut spans = [(0usize, 0usize, 0usize, 0usize); MAX_HEADERS];
     let (len, code, minor, count) = {
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
@@ -681,7 +645,6 @@ fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1E
         return Err(H1Error::Protocol("unexpected protocol upgrade"));
     }
 
-    // Spare room for the headers the proxy adds (Server, Date, X-Ferrix-Upstream...).
     let mut map = HeaderMap::with_capacity(count + 4);
     let mut content_length: Option<u64> = None;
     let mut chunked = false;
@@ -781,7 +744,6 @@ impl H1Body {
     fn finish(&mut self) {
         self.state = BodyState::Done;
         if let Some(conn) = self.conn.take() {
-            // Leftover bytes would belong to a response nobody asked for.
             if self.keep_alive && self.buf.is_empty() {
                 release(conn);
             }
@@ -953,8 +915,6 @@ pub fn tls_connector(verify: bool) -> TlsConnector {
     TlsConnector::from(Arc::new(config))
 }
 
-// Used only when an upstream sets `verify_tls: false` (self-signed internal services),
-// mirroring nginx's default of not verifying upstream certificates.
 #[derive(Debug)]
 struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
 
@@ -1066,7 +1026,6 @@ mod tests {
                 seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
                 sock.write_all(resp).await.unwrap();
             }
-            // Keep the connection open for a moment so the client can pool it.
             let mut rest = [0u8; 1];
             let _ = tokio::time::timeout(Duration::from_millis(100), sock.read(&mut rest)).await;
             seen
@@ -1259,7 +1218,6 @@ mod tests {
         .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         server.await.unwrap();
-        // The server task has dropped its socket by now.
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(pooled(&base, false).is_none());
     }

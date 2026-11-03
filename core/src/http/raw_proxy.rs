@@ -1,10 +1,3 @@
-//! Raw proxy path for plain-HTTP/1.1 requests to a "plain" proxy route (see
-//! `CompiledConfig::plain_proxy`), the case nginx is built around: the client's request
-//! head is re-encoded straight into the upstream request and the upstream's response head
-//! straight into the client response, without building `Request`/`Response` objects or
-//! header maps in between. Retries, failover, health marks and timeouts behave exactly as
-//! in `proxy_http_request`.
-
 use axum::http::{header, Method};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -19,16 +12,12 @@ use super::upstream::{ReadTimeoutBody, UpstreamClient};
 use super::ProxyEngine;
 use crate::config::RouteRule;
 
-/// A request routed to a plain proxy route.
 pub struct RawRoute {
     compiled: Arc<CompiledConfig>,
     vhost_index: usize,
     route_index: usize,
 }
 
-/// Request headers that never go upstream: hop-by-hop ones, the framing (requests on this
-/// path have no body), `Host` (replaced by the upstream's authority) and the forwarding
-/// headers Ferrix sets itself.
 fn dropped_request_header(name: &[u8]) -> bool {
     const DROPPED: [&[u8]; 14] = [
         b"host",
@@ -50,8 +39,6 @@ fn dropped_request_header(name: &[u8]) -> bool {
 }
 
 impl ProxyEngine {
-    /// The plain proxy route for this request, if it has one and nothing (metrics, a
-    /// trusted-proxy setup) needs the full pipeline.
     pub(crate) fn raw_route(&self, port: u16, host: &str, path: &str) -> Option<RawRoute> {
         let compiled = self.store.compiled();
         let config = &compiled.config;
@@ -73,8 +60,6 @@ impl ProxyEngine {
             })
     }
 
-    /// Proxies one request. `head` is the client's complete request head. Returns
-    /// whether the client connection can stay open for another request.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn raw_proxy(
         &self,
@@ -263,7 +248,6 @@ fn push_header(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
     out.extend_from_slice(b"\r\n");
 }
 
-/// The upstream request, like `prepare_forwarded_headers` + `h1::encode_head` produce it.
 fn encode_request(
     out: &mut Vec<u8>,
     head: &[u8],
@@ -282,7 +266,6 @@ fn encode_request(
 
     let mut headers = [httparse::EMPTY_HEADER; 100];
     let mut req = httparse::Request::new(&mut headers);
-    // The head already parsed once on the way in, so this can't fail.
     let _ = req.parse(head);
     let mut xff = String::new();
     for h in req.headers.iter() {

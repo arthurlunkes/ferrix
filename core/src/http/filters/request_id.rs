@@ -1,6 +1,3 @@
-//! `X-Request-Id` tagging (`http.request_id`): keeps the client's ID or creates one, and
-//! sends it upstream and back to the client.
-
 use axum::http::{HeaderName, HeaderValue};
 
 pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");

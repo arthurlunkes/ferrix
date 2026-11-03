@@ -1,7 +1,3 @@
-//! A small non-cryptographic hasher (FxHash, as used inside rustc) for the maps looked up
-//! on every proxied request. Keys there come from the configuration, never from clients,
-//! so the DoS resistance of std's SipHash buys nothing and only costs time.
-
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 

@@ -81,7 +81,6 @@ pub async fn validate_config(candidate: FerrixConfig) -> impl IntoResponse {
     Json(report_payload(&validate(&candidate)))
 }
 
-/// Same as `POST /api/config/validate`, for YAML text.
 pub async fn validate_config_yaml(body: String) -> axum::response::Response {
     match FerrixConfig::parse(&body, ConfigFormat::Yaml) {
         Ok(candidate) => Json(report_payload(&validate(&candidate))).into_response(),
@@ -128,8 +127,6 @@ pub async fn update_config(
     })))
 }
 
-/// The active configuration as YAML, exactly as it would be written to `ferrix.yaml`
-/// (the dashboard's config editor works on this text).
 pub async fn get_config_yaml(state: &AdminState) -> impl IntoResponse {
     match state.store.config().render(ConfigFormat::Yaml) {
         Ok(yaml) => (
@@ -142,8 +139,6 @@ pub async fn get_config_yaml(state: &AdminState) -> impl IntoResponse {
     }
 }
 
-/// Replaces the configuration from YAML text: parsed, validated, persisted and
-/// hot-reloaded, with the same JSON result as `POST /api/config`.
 pub async fn update_config_yaml(
     state: &AdminState,
     body: String,

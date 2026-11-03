@@ -1,17 +1,9 @@
-//! A minimal `tracing` subscriber: one line per event on stderr, filtered by `RUST_LOG`.
-//!
-//! `tracing-subscriber` with its environment filter would pull in a full regex engine
-//! and formatting machinery that stays resident in every server; Ferrix only needs
-//! "level per target prefix", which this does in a few lines.
-
 use std::fmt::Write as _;
 use std::io::Write as _;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
 
-/// Parsed `RUST_LOG`: a default level plus `target=level` overrides, e.g.
-/// `info`, `warn,ferrix=debug` or `ferrix::http=trace`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
     default: Option<Level>,
@@ -45,12 +37,10 @@ impl Filter {
                 }
                 None => match parse_level(part) {
                     Some(l) => f.default = l,
-                    // A bare target means "everything for it".
                     None => f.targets.push((part.to_string(), Some(Level::TRACE))),
                 },
             }
         }
-        // Longest prefix wins.
         f.targets.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
         f
     }
@@ -72,8 +62,6 @@ pub struct LineLogger {
     filter: Filter,
 }
 
-/// Installs the logger as the global `tracing` subscriber. `default` is used when
-/// `RUST_LOG` isn't set.
 pub fn init(default: &str) {
     let spec = std::env::var("RUST_LOG").unwrap_or_else(|_| default.to_string());
     let _ = tracing::subscriber::set_global_default(LineLogger {
@@ -128,7 +116,6 @@ impl Subscriber for LineLogger {
         let _ = std::io::stderr().lock().write_all(line.as_bytes());
     }
 
-    // Ferrix logs events only; spans are accepted and ignored.
     fn new_span(&self, _span: &Attributes<'_>) -> Id {
         Id::from_u64(1)
     }

@@ -1,6 +1,3 @@
-//! Concurrent connection limiting (nginx `limit_conn`): a counter per key, released
-//! when the request finishes.
-
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicI64, Ordering};

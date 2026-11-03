@@ -1,5 +1,3 @@
-//! Per-route CORS handling: answers preflight requests and decorates responses.
-
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
 
@@ -8,7 +6,6 @@ use crate::config::CorsConfig;
 fn allowed_origin(cfg: &CorsConfig, origin: &HeaderValue) -> Option<HeaderValue> {
     let o = origin.to_str().ok()?;
     if cfg.allow_origins.iter().any(|a| a == "*") {
-        // With credentials the spec forbids `*`, so echo the origin back instead.
         return Some(if cfg.allow_credentials {
             origin.clone()
         } else {
@@ -42,8 +39,6 @@ fn base_headers(cfg: &CorsConfig, allow: HeaderValue, h: &mut HeaderMap) {
     }
 }
 
-/// Response for a CORS preflight (`OPTIONS` with `Access-Control-Request-Method`), or
-/// `None` when the request isn't one and should be routed normally.
 pub fn preflight(cfg: &CorsConfig, method: &Method, headers: &HeaderMap) -> Option<Response<Body>> {
     if method != Method::OPTIONS || !headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
         return None;
@@ -67,7 +62,6 @@ pub fn preflight(cfg: &CorsConfig, method: &Method, headers: &HeaderMap) -> Opti
             h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, v);
         }
         None => {
-            // No explicit list: allow whatever the browser asked for.
             if let Some(req) = headers.get(header::ACCESS_CONTROL_REQUEST_HEADERS) {
                 h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, req.clone());
             }

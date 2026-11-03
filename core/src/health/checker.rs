@@ -25,8 +25,6 @@ pub struct TargetHealthStatus {
 pub struct HealthChecker {
     statuses: Arc<RwLock<HashMap<String, TargetHealthStatus>>>,
 
-    // Targets that are unhealthy or have recent failures. While it is zero (the normal
-    // case) the per-request checks skip the shared map entirely.
     troubled: Arc<AtomicUsize>,
 }
 
@@ -91,8 +89,6 @@ impl HealthChecker {
     }
 
     pub fn mark_success(&self, upstream_name: &str, target_url: &str, latency_ms: f64) {
-        // Nothing to clear while every target is clean; latency for the dashboard comes
-        // from the active health checks.
         if self.troubled.load(Ordering::Acquire) == 0 {
             return;
         }
@@ -165,7 +161,6 @@ impl HealthChecker {
                             }
                             last_check.insert(target.url.clone(), now);
 
-                            // Same HTTP client (and connection handling) as proxied traffic.
                             let client = UpstreamClient::new(
                                 Duration::from_secs(hc.timeout_secs.max(1)),
                                 Duration::from_secs(hc.timeout_secs.max(1)),

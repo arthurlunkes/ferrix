@@ -65,8 +65,6 @@ impl UpstreamPoolManager {
         }
     }
 
-    /// Failover order for `consistent_hash` upstreams: ring order from the key's owner,
-    /// skipping unavailable servers, then the backups.
     pub fn select_targets_hashed<'a>(
         &self,
         upstream: &'a UpstreamConfig,
@@ -82,8 +80,6 @@ impl UpstreamPoolManager {
             .collect();
         out.extend(upstream.targets.iter().filter(|t| t.backup).filter(usable));
         if out.is_empty() {
-            // Everything looks unavailable: still try the key's owner, like the other
-            // algorithms do as a last resort.
             out.extend(
                 ring.order(hash)
                     .into_iter()
@@ -182,7 +178,6 @@ impl UpstreamPoolManager {
                 pool.sort_by_cached_key(|t| self.active_conns(&t.url));
                 pool
             }
-            // Without a ring (e.g. route tester) fall back to hashing the client address.
             LoadBalanceAlgorithm::IpHash | LoadBalanceAlgorithm::ConsistentHash => {
                 let mut hasher = DefaultHasher::new();
                 client_ip.hash(&mut hasher);

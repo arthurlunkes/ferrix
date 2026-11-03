@@ -1896,8 +1896,6 @@ impl Converter {
     }
 }
 
-/// nginx `worker_cpu_affinity`: `auto` (optionally with a mask) or one bitmask per
-/// worker, rightmost bit = CPU 0 (e.g. `0001 0010 0100 1000`).
 fn parse_cpu_affinity(args: &[String]) -> crate::config::CpuAffinity {
     use crate::config::CpuAffinity;
     match args.first().map(String::as_str) {

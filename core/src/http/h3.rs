@@ -1,10 +1,3 @@
-//! HTTP/3 (QUIC) for TLS ports, like nginx's `listen 443 quic`.
-//!
-//! One QUIC endpoint listens on UDP at the same address as the TLS listener and uses the
-//! same SNI certificates. Each request goes through the same `ProxyEngine::handle_request`
-//! as HTTP/1.1 and HTTP/2, so routing, filters and proxying behave identically; clients
-//! find the endpoint through the `Alt-Svc` header the TCP listener adds.
-
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue, Request, Response, StatusCode};
 use bytes::Buf;
@@ -17,7 +10,6 @@ use tracing::{debug, error, info};
 use crate::http::ProxyEngine;
 use crate::tls::sni::SniResolver;
 
-/// Headers that are specific to an HTTP/1 connection and are not allowed in HTTP/3.
 const CONNECTION_HEADERS: [header::HeaderName; 5] = [
     header::CONNECTION,
     header::TRANSFER_ENCODING,
@@ -26,7 +18,6 @@ const CONNECTION_HEADERS: [header::HeaderName; 5] = [
     header::HeaderName::from_static("proxy-connection"),
 ];
 
-/// Starts the QUIC endpoint for `addr`. Returns an error if the UDP port can't be bound.
 pub fn spawn(
     addr: SocketAddr,
     engine: Arc<ProxyEngine>,
@@ -122,7 +113,6 @@ async fn serve_request(
     }
 
     let (mut parts, ()) = req.into_parts();
-    // HTTP/3 carries the host in the `:authority` pseudo-header; routing reads `Host`.
     if !parts.headers.contains_key(header::HOST) {
         if let Some(v) = parts
             .uri

@@ -1,11 +1,5 @@
-//! Command-line parsing. Hand-written instead of using a CLI framework: Ferrix has a
-//! handful of commands and flags, and a framework's code would stay resident in every
-//! running server for no benefit.
-
 use std::path::PathBuf;
 
-/// The configuration is always read from here unless `-c` names another file, like
-/// nginx's built-in `/etc/nginx/nginx.conf`, so every command finds the running server.
 #[cfg(unix)]
 pub const DEFAULT_CONFIG: &str = "/etc/ferrix/ferrix.yaml";
 #[cfg(not(unix))]
@@ -39,11 +33,9 @@ pub struct Args {
     pub http_listen: Option<String>,
     pub test: bool,
     pub signal: Option<String>,
-    /// Internal: set by the supervisor on the server process it starts.
     pub worker_process: bool,
 }
 
-/// What the process should do instead of running a command.
 pub enum Early {
     Help,
     Version,
@@ -99,7 +91,6 @@ impl Args {
 
         let mut it = argv.into_iter();
         while let Some(arg) = it.next() {
-            // Accept both `--flag value` and `--flag=value`.
             let (flag, inline) = match arg.split_once('=') {
                 Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
                 _ => (arg.clone(), None),

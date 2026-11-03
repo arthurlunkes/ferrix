@@ -121,7 +121,6 @@ impl ProxyEngine {
                 Err(req) => req,
             }
         };
-        // A precise clock read only when someone will look at the latency.
         let start_time = if metrics_on {
             Instant::now()
         } else {
@@ -146,16 +145,11 @@ impl ProxyEngine {
         if metrics_on {
             self.metrics.dec_active_connections();
         }
-        // Like nginx, Ferrix answers with its own Server header (replacing an upstream's).
         let mut response = response;
         filters::headers::server(&compiled, response.headers_mut());
         response
     }
 
-    /// Fast path for the most common case, a proxy route with nothing else configured
-    /// on it (`CompiledConfig::plain_proxy`): straight to the upstream, skipping access
-    /// control, limits, filters and error pages. Anything else is handed back.
-    // The request goes back unboxed on purpose: this runs for every request.
     #[allow(clippy::result_large_err)]
     async fn plain_proxy(
         &self,
@@ -406,8 +400,6 @@ impl ProxyEngine {
         let req_path = req.uri().path().to_string();
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
-            // A host with no routes, or nothing configured for `/`, is a fresh setup:
-            // greet like nginx's default site.
             if (vhost.routes.is_empty() || req_path == "/") && compiled.config.http.default_page {
                 return default_page::render(compiled.config.http.server_tokens);
             }
@@ -505,8 +497,6 @@ impl ProxyEngine {
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
                 };
-                // Boxed (like the cache and error-page paths) so a proxied request's
-                // state machine doesn't carry the size of the paths it doesn't take.
                 match Box::pin(StaticFileServer::serve_file(
                     root_dir,
                     file_path,
@@ -655,8 +645,6 @@ fn build_target_path(uri: &axum::http::Uri, req_path: &str, route: &RouteRule) -
     }
 }
 
-// Unique per process without a shared atomic: the high bits identify the thread, the low
-// bits count requests on it, so workers never contend on the same cache line.
 fn next_request_id() -> u64 {
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU64, Ordering};

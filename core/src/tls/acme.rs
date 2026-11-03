@@ -1,11 +1,3 @@
-//! Automatic TLS certificates over ACME (Let's Encrypt by default).
-//!
-//! Virtual hosts with `tls.acme: true` get a certificate for their exact `server_names`.
-//! Ownership is proven with the HTTP-01 challenge, answered by the proxy itself on
-//! `/.well-known/acme-challenge/<token>`, so port 80 must reach Ferrix. Certificates are
-//! stored under `acme.storage_dir` and renewed in the background; the TLS listener picks
-//! new ones up without a restart.
-
 #[cfg(feature = "acme")]
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
@@ -27,7 +19,6 @@ use crate::config::{AcmeConfig, VirtualHost};
 
 pub const CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 
-/// Bumped whenever a certificate is written, so TLS listeners reload their tables.
 pub static CERT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "acme")]
@@ -58,7 +49,6 @@ impl AcmeChallenges {
     }
 }
 
-/// Names that can be validated over HTTP-01: exact DNS names only.
 pub fn domains_for(vhost: &VirtualHost) -> Vec<String> {
     let mut out: Vec<String> = vhost
         .server_names
@@ -95,7 +85,6 @@ pub fn cert_paths(cfg: &AcmeConfig, vhost_id: &str) -> (PathBuf, PathBuf) {
 }
 
 #[cfg(feature = "acme")]
-/// Seconds until the first certificate in `pem` expires, or `None` if unreadable.
 fn seconds_left(pem: &[u8]) -> Option<i64> {
     let (_, parsed) = x509_parser::pem::parse_x509_pem(pem).ok()?;
     let cert = parsed.parse_x509().ok()?;
@@ -143,7 +132,6 @@ impl AcmeManager {
 
     pub fn start(self: Arc<Self>) {
         tokio::spawn(async move {
-            // Give the plain-HTTP listeners a moment to bind before the CA calls back.
             tokio::time::sleep(Duration::from_secs(2)).await;
             loop {
                 let ok = self.run_once().await;
@@ -152,7 +140,6 @@ impl AcmeManager {
         });
     }
 
-    /// Issues or renews every certificate that needs it. Returns false if any failed.
     pub async fn run_once(&self) -> bool {
         let config = self.store.config();
         let acme = &config.acme;
@@ -200,7 +187,6 @@ impl AcmeManager {
     }
 
     async fn account(&self, cfg: &AcmeConfig) -> Result<Account, String> {
-        // Credentials are bound to a directory, so keep one file per CA URL.
         let file = Path::new(&cfg.storage_dir).join(format!(
             "account-{:016x}.json",
             crate::http::upstream::hash::fnv1a(cfg.directory_url.as_bytes())
@@ -307,8 +293,6 @@ impl AcmeManager {
     }
 }
 
-/// Stand-in when Ferrix is built without the `acme` feature: config validation
-/// already rejects `tls.acme`, so there is nothing to issue.
 #[cfg(not(feature = "acme"))]
 pub struct AcmeManager;
 

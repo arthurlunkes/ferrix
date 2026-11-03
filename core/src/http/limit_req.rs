@@ -1,6 +1,3 @@
-//! Request rate limiting (nginx `limit_req`): a token bucket per key, with `nodelay`,
-//! queueing and `delay=` modes.
-
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -25,10 +22,6 @@ struct Bucket {
     last_update: Instant,
 }
 
-// Buckets and counters are split over independent shards so worker threads that hit
-// different keys never wait on the same lock. Keys are any hashable value (e.g. a
-// `(route_id, client_ip)` tuple) reduced to a 64-bit hash, which avoids formatting a
-// String per request; a collision would only merge two clients' quotas.
 pub(super) const SHARDS: usize = 64;
 
 pub(super) fn key_hash(key: impl Hash) -> u64 {

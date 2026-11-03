@@ -1,13 +1,6 @@
-//! Process-level tuning, the equivalent of nginx's `worker_rlimit_nofile` and
-//! `worker_cpu_affinity`.
-
 use crate::config::CpuAffinity;
 
-/// Raises the open-file limit (`RLIMIT_NOFILE`) to `wanted`. The soft limit can always go
-/// up to the hard limit; going past it needs root (or `CAP_SYS_RESOURCE`). Returns the
-/// soft limit actually in effect.
 #[cfg(unix)]
-// `rlim_t` is u64 on Linux but not on every Unix, so the casts stay.
 #[allow(clippy::unnecessary_cast)]
 pub fn set_nofile_limit(wanted: u64) -> Result<u64, String> {
     let mut lim = libc::rlimit {
@@ -23,7 +16,6 @@ pub fn set_nofile_limit(wanted: u64) -> Result<u64, String> {
         rlim_max: lim.rlim_max.max(wanted),
     };
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &next) } != 0 {
-        // Not allowed to raise the hard limit: settle for the highest soft limit we can.
         next.rlim_max = lim.rlim_max;
         next.rlim_cur = wanted.min(lim.rlim_max);
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &next) } != 0 {
@@ -38,7 +30,6 @@ pub fn set_nofile_limit(_wanted: u64) -> Result<u64, String> {
     Err("worker_rlimit_nofile is only supported on Unix".into())
 }
 
-/// The core each worker should be pinned to, or `None` when affinity is off.
 pub fn worker_cores(affinity: &CpuAffinity, workers: usize) -> Option<Vec<usize>> {
     let pool = match affinity {
         CpuAffinity::Off => return None,
@@ -52,7 +43,6 @@ pub fn worker_cores(affinity: &CpuAffinity, workers: usize) -> Option<Vec<usize>
     Some((0..workers).map(|i| pool[i % pool.len()]).collect())
 }
 
-/// Cores this process may run on (respects `taskset`, cgroup `cpuset` limits, etc.).
 #[cfg(target_os = "linux")]
 fn allowed_cores() -> Vec<usize> {
     unsafe {
@@ -71,7 +61,6 @@ fn allowed_cores() -> Vec<usize> {
     Vec::new()
 }
 
-/// Pins the calling thread to one core.
 #[cfg(target_os = "linux")]
 pub fn pin_current_thread(core: usize) -> Result<(), String> {
     unsafe {
@@ -112,7 +101,6 @@ mod tests {
     #[test]
     #[allow(clippy::unnecessary_cast)]
     fn nofile_limit_can_be_set_within_the_hard_limit() {
-        // Re-apply the current soft limit: lowering it would starve other tests of sockets.
         let mut lim = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,

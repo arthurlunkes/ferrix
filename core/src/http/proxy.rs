@@ -1,7 +1,3 @@
-//! Reverse proxying (nginx `ngx_http_proxy_module`): buffering the request body,
-//! building the upstream request headers, failover across targets
-//! (`proxy_next_upstream`) and cleaning up the upstream response.
-
 use super::*;
 
 #[derive(Debug)]
@@ -128,8 +124,6 @@ impl ProxyEngine {
                 }
             }
 
-            // Connection counts only matter to least_conn and max_conns; skip the shared
-            // counters otherwise.
             let counted = track_conns || target.max_conns.is_some();
             if counted {
                 self.pool_manager.inc_conn(&target.url);
@@ -222,7 +216,6 @@ pub(super) const HOP_BY_HOP: [HeaderName; 9] = [
 ];
 
 pub(super) fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    // Usually none are present; one pass over the (few) names beats nine hashed removals.
     if !headers.keys().any(|k| HOP_BY_HOP.contains(k)) {
         return;
     }
@@ -248,8 +241,6 @@ pub(super) fn build_upstream_response(
     Response::from_parts(parts, body)
 }
 
-/// Turns the client's request headers into the ones sent upstream, in place (the
-/// request is consumed by the proxy anyway, so there's no need to copy the map).
 pub(super) fn prepare_forwarded_headers(
     headers: &mut HeaderMap,
     route: &RouteRule,
@@ -257,8 +248,6 @@ pub(super) fn prepare_forwarded_headers(
     is_tls: bool,
 ) {
     let scheme = scheme_str(is_tls);
-    // Room for the X-Real-IP / X-Forwarded-* entries up front, so adding them never
-    // rehashes the map.
     headers.reserve(3 + route.proxy_set_headers.len());
     let host = headers.remove(header::HOST);
     strip_hop_by_hop(headers);

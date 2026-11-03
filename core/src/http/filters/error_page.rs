@@ -1,5 +1,3 @@
-//! Custom error pages (nginx `error_page`).
-
 use axum::body::Body;
 use axum::http::{header, HeaderValue};
 use axum::response::Response;
@@ -8,9 +6,6 @@ use tracing::warn;
 use crate::config::VirtualHost;
 use crate::http::X_FERRIX_UPSTREAM;
 
-/// Swaps the body of an error response for the vhost's custom page (`error_pages`),
-/// keeping the status. Responses that came from an upstream are passed through, like
-/// nginx without `proxy_intercept_errors`.
 pub async fn apply(vhost: &VirtualHost, resp: Response) -> Response {
     let status = resp.status();
     if status.as_u16() < 400
