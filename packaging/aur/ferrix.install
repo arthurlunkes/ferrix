@@ -1,0 +1,8 @@
+post_install() {
+  echo "Ferrix is installed. Start it with: sudo systemctl enable --now ferrix"
+  echo "Then open http://localhost/ ; configuration: /etc/ferrix/ferrix.yaml"
+}
+
+post_upgrade() {
+  systemctl try-restart ferrix.service 2>/dev/null || true
+}

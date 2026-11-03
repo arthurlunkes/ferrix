@@ -56,7 +56,7 @@ fn wait_signal(set: &libc::sigset_t, timeout: Option<Duration>) -> Option<libc::
             }
             Some(t) => {
                 let ts = libc::timespec {
-                    tv_sec: t.as_secs() as libc::time_t,
+                    tv_sec: t.as_secs().min(i32::MAX as u64) as _,
                     tv_nsec: t.subsec_nanos() as libc::c_long,
                 };
                 let sig = libc::sigtimedwait(set, std::ptr::null_mut(), &ts);

@@ -163,15 +163,17 @@ docker compose up ferrix-core   # Run ultra-lean Core
 docker compose up ferrix-full   # Run All-in-One with Web Dashboard
 ```
 
-### 📦 4. Installing the Ferrix core system-wide
+### 📦 4. Installing Ferrix system-wide
 
-The **Ferrix core** can be installed as a system utility (`/usr/local/bin/ferrix` or `C:\Program Files\Ferrix\ferrix.exe`) with no Node.js dependency:
-
-#### On Linux (with an automatic systemd service):
+#### On Linux: one command, any distribution
 
 ```bash
-sudo ./core/scripts/install.sh
+curl -fsSL https://arthurlunkes.github.io/ferrix/install.sh | sh
 ```
+
+It uses your package manager: the Ferrix APT repository on Debian/Ubuntu (updates come with `apt upgrade`), the `.rpm` on Fedora/RHEL/openSUSE and the Arch package on Arch. Ferrix then runs as a systemd service on port 80; open `http://localhost/`. Details, manual steps and removal: [Installation guide](docs/02-instalacao-e-execucao.md#-installing-on-linux).
+
+From a checkout of this repository, `./core/scripts/install.sh` builds and installs it instead.
 
 #### On Windows (PowerShell as Administrator):
 

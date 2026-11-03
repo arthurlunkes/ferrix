@@ -194,10 +194,16 @@ fn main() -> ExitCode {
     // before (and without) the server's async runtime.
     #[cfg(unix)]
     if let Ok(Ok(mut args)) = Args::from_env() {
-        let runs_server = matches!(args.command, Some(Commands::Run) | None)
+        let serves = matches!(args.command, Some(Commands::Run) | None)
             && !args.test
-            && args.signal.is_none()
-            && !args.worker_process;
+            && args.signal.is_none();
+        if !serves {
+            // Terminal commands (`status`, `--help`...) end quietly when their output
+            // is cut short, as in `ferrix status | head`, instead of panicking on a
+            // broken pipe. The server keeps SIGPIPE ignored for closed client sockets.
+            unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        }
+        let runs_server = serves && !args.worker_process;
         if runs_server && supervisor::enabled() {
             resolve_config_path(&mut args);
             ferrix::log::init("ferrix=info");

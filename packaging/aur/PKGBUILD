@@ -1,0 +1,37 @@
+# Maintainer: Arthur Lunkes <arthur.lunkes2017 at gmail dot com>
+# Published as `ferrix-bin` on the AUR. To update for a new release: bump pkgver,
+# run `updpkgsums`, then `makepkg --printsrcinfo > .SRCINFO`.
+pkgname=ferrix-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="High-performance web server and reverse proxy written in Rust, inspired by nginx"
+arch=('x86_64' 'aarch64')
+url="https://github.com/arthurlunkes/ferrix"
+license=('MIT')
+provides=('ferrix')
+conflicts=('ferrix')
+install=ferrix.install
+# The release binary is already stripped; a -debug package would be empty.
+options=('!debug' '!strip')
+source=("ferrix.service::https://raw.githubusercontent.com/arthurlunkes/ferrix/v${pkgver}/packaging/ferrix.service"
+        "ferrix.sysusers"
+        "ferrix.tmpfiles")
+source_x86_64=("https://github.com/arthurlunkes/ferrix/releases/download/v${pkgver}/ferrix-v${pkgver}-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("https://github.com/arthurlunkes/ferrix/releases/download/v${pkgver}/ferrix-v${pkgver}-aarch64-unknown-linux-musl.tar.gz")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  local dir="ferrix-v${pkgver}-${CARCH}-unknown-linux-musl"
+  install -Dm755 "${dir}/ferrix" "${pkgdir}/usr/bin/ferrix"
+  install -Dm644 ferrix.service "${pkgdir}/usr/lib/systemd/system/ferrix.service"
+  install -Dm644 ferrix.sysusers "${pkgdir}/usr/lib/sysusers.d/ferrix.conf"
+  install -Dm644 ferrix.tmpfiles "${pkgdir}/usr/lib/tmpfiles.d/ferrix.conf"
+  install -Dm644 "${dir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${dir}/ferrix.example.yaml" "${pkgdir}/usr/share/doc/ferrix/ferrix.example.yaml"
+  install -d "${pkgdir}/usr/share/ferrix/dashboard"
+  cp -r "${dir}/ui/." "${pkgdir}/usr/share/ferrix/dashboard/"
+}

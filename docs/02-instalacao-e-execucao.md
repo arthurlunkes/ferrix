@@ -80,7 +80,72 @@ A configuration that needs a missing module (for example `tls.acme: true` withou
 `acme`) is rejected by `ferrix -t` with an explanation; a client asking for an encoding
 that isn't built in simply gets one that is.
 
-## 📦 Installing on a Linux machine (systemd)
+## 📦 Installing on Linux
+
+### Quick install (any distribution)
+
+```bash
+curl -fsSL https://arthurlunkes.github.io/ferrix/install.sh | sh
+```
+
+The installer uses your system's own package manager, so updates and removal work the usual way:
+
+| System | What it does |
+| --- | --- |
+| Debian, Ubuntu and derivatives | Adds the Ferrix APT repository and runs `apt install ferrix`; later versions arrive with `apt upgrade` |
+| Fedora, RHEL, openSUSE | Installs the release `.rpm` |
+| Arch and derivatives | Installs the release `.pkg.tar.zst` |
+| Anything else | Installs the binary in `/usr/local/bin` and a systemd unit |
+
+Every download is checked against the release's `SHA256SUMS`. `FERRIX_VERSION=0.2.0` installs a given version and `FERRIX_METHOD=binary` skips the package manager:
+
+```bash
+curl -fsSL https://arthurlunkes.github.io/ferrix/install.sh | FERRIX_VERSION=0.2.0 sh
+```
+
+All packages are built from the same static (musl) binary, so they run on any distribution regardless of its glibc version, on x86_64 and arm64.
+
+### Debian / Ubuntu: the APT repository by hand
+
+```bash
+sudo curl -fsSL https://arthurlunkes.github.io/ferrix/apt/ferrix-archive-keyring.gpg \
+  -o /usr/share/keyrings/ferrix-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/ferrix-archive-keyring.gpg] https://arthurlunkes.github.io/ferrix/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/ferrix.list
+sudo apt update && sudo apt install ferrix
+```
+
+The repository is signed with the key `8D01 6191 3151 3806 7A8A  5C5B 4ABD 5DC1 460A DD45`.
+
+### Fedora, RHEL, openSUSE and Arch
+
+Download the package for your system from the [latest release](https://github.com/arthurlunkes/ferrix/releases/latest) and install it:
+
+```bash
+sudo dnf install ./ferrix-0.2.0-1.x86_64.rpm          # Fedora / RHEL
+sudo zypper install ./ferrix-0.2.0-1.x86_64.rpm       # openSUSE
+sudo pacman -U ferrix-0.2.0-1-x86_64.pkg.tar.zst      # Arch
+```
+
+An AUR package (`ferrix-bin`) is prepared in `packaging/aur/` and will be published soon.
+
+### What the package sets up
+
+- `/usr/bin/ferrix` and the web dashboard in `/usr/share/ferrix/dashboard`.
+- A `ferrix` system user and the `ferrix.service` unit, started right away. It runs as that user and may bind ports 80 and 443 without root.
+- `/etc/ferrix/`, where Ferrix writes `ferrix.yaml` on its first start: every option listed and commented out, plus a random admin token. Upgrades never touch it.
+
+Because the service runs as the `ferrix` user, apply changes with `sudo systemctl reload ferrix` (or `sudo ferrix reload`).
+
+### Removing it
+
+```bash
+sudo apt remove ferrix        # Debian / Ubuntu
+sudo dnf remove ferrix        # Fedora / RHEL
+sudo pacman -R ferrix         # Arch
+```
+
+`/etc/ferrix` and its configuration are kept; delete the folder by hand if you no longer need it.
 
 ### From source
 
@@ -90,19 +155,7 @@ git clone https://github.com/arthurlunkes/ferrix && cd ferrix
 sudo systemctl enable --now ferrix
 ```
 
-The script builds Ferrix, installs `/usr/local/bin/ferrix`, writes `/etc/ferrix/ferrix.yaml` (every option listed, commented out) and the `ferrix.service` unit, which may bind ports 80 and 443 without running as root.
-
-### From a release binary
-
-```bash
-VERSION=v0.1.0                          # see github.com/arthurlunkes/ferrix/releases
-ARCH=x86_64                             # or aarch64
-wget https://github.com/arthurlunkes/ferrix/releases/download/$VERSION/ferrix-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
-tar xzf ferrix-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
-sudo install -m 755 ferrix-$VERSION-$ARCH-unknown-linux-gnu/ferrix /usr/local/bin/
-sudo setcap cap_net_bind_service=+ep /usr/local/bin/ferrix   # allow ports 80/443
-ferrix run --config /etc/ferrix/ferrix.yaml
-```
+The script builds Ferrix, installs `/usr/local/bin/ferrix` and the `ferrix.service` unit, which runs as your user and may bind ports 80 and 443 without root.
 
 ### Checking that it works
 

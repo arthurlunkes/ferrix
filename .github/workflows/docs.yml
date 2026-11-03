@@ -1,12 +1,20 @@
 name: Deploy Documentation to GitHub Pages
 
+# Publishes https://arthurlunkes.github.io/ferrix: the documentation (mdBook), the
+# installer (/install.sh) and the APT repository (/apt), rebuilt from the latest
+# release's .deb packages and signed with the APT_GPG_PRIVATE_KEY secret.
+
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
       - "book.toml"
+      - "packaging/**"
       - ".github/workflows/docs.yml"
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +28,7 @@ concurrency:
 
 jobs:
   deploy-pages:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -36,6 +45,45 @@ jobs:
       - name: Build documentation
         run: mdbook build
 
+      - name: Add the installer
+        run: install -m 0644 packaging/install.sh book/install.sh
+
+      - name: Build the APT repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p book/apt/pool/main
+          if ! gh release download --repo "${{ github.repository }}" --pattern '*.deb' --dir book/apt/pool/main; then
+            echo "No release with .deb packages yet: skipping the APT repository."
+            rm -rf book/apt
+            exit 0
+          fi
+          sudo apt-get install -y -qq apt-utils >/dev/null
+          cd book/apt
+          for arch in amd64 arm64; do
+            mkdir -p "dists/stable/main/binary-${arch}"
+            apt-ftparchive --arch "$arch" packages pool > "dists/stable/main/binary-${arch}/Packages"
+            gzip -9kf "dists/stable/main/binary-${arch}/Packages"
+          done
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin=Ferrix \
+            -o APT::FTPArchive::Release::Label=Ferrix \
+            -o APT::FTPArchive::Release::Suite=stable \
+            -o APT::FTPArchive::Release::Codename=stable \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Components=main \
+            release dists/stable > dists/stable/Release
+          echo "$GPG_KEY" | gpg --batch --import
+          gpg --batch --yes --default-key "$GPG_KEY_ID" --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes --default-key "$GPG_KEY_ID" -abs -o dists/stable/Release.gpg dists/stable/Release
+          gpg --armor --export "$GPG_KEY_ID" > ferrix-archive-keyring.asc
+          gpg --export "$GPG_KEY_ID" > ferrix-archive-keyring.gpg
+          find . -type f | sort
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
@@ -47,4 +95,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-

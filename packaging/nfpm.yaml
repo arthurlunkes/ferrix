@@ -1,0 +1,63 @@
+# deb, rpm and Arch packages of Ferrix, built by the release workflow:
+#   packaging/build/ferrix        the Linux binary (static, musl)
+#   packaging/build/dashboard/    the built web dashboard (frontend/dist)
+#   VERSION=0.2.0 ARCH=amd64 nfpm package --config packaging/nfpm.yaml --packager deb
+# The configuration is not packaged: Ferrix writes /etc/ferrix/ferrix.yaml on its first
+# start, with a random admin token, and an upgrade never touches it.
+name: ferrix
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: httpd
+priority: optional
+maintainer: Arthur Lunkes <arthur.lunkes2017@gmail.com>
+description: |
+  High-performance web server and reverse proxy written in Rust, inspired by nginx.
+  Static files, load balancing, TLS with automatic Let's Encrypt certificates,
+  HTTP/1.1, HTTP/2 and HTTP/3, and a web dashboard.
+vendor: Ferrix
+homepage: https://github.com/arthurlunkes/ferrix
+license: MIT
+
+provides:
+  - httpd
+
+contents:
+  - src: packaging/build/ferrix
+    dst: /usr/bin/ferrix
+    file_info:
+      mode: 0755
+  - src: packaging/ferrix.service
+    dst: /usr/lib/systemd/system/ferrix.service
+    file_info:
+      mode: 0644
+  - src: packaging/build/dashboard
+    dst: /usr/share/ferrix/dashboard
+    type: tree
+  - src: ferrix.example.yaml
+    dst: /usr/share/doc/ferrix/ferrix.example.yaml
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/ferrix/LICENSE
+    file_info:
+      mode: 0644
+  - dst: /etc/ferrix
+    type: dir
+    file_info:
+      mode: 0750
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+
+overrides:
+  deb:
+    depends:
+      - adduser | passwd
+  rpm:
+    depends:
+      - shadow-utils
+  archlinux:
+    depends:
+      - shadow

@@ -48,3 +48,6 @@ Thumbs.db
 
 # Benchmarks config is versioned intentionally
 !benchmarks/conf/ferrix.yaml
+
+# Package staging (release workflow)
+packaging/build/

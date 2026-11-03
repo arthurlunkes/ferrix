@@ -94,10 +94,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Linux binaries are static (musl): one build runs on any distribution,
+          # whatever its glibc version, and goes into the deb/rpm/Arch packages.
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            use_cross: false
-          - target: aarch64-unknown-linux-gnu
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
           - target: x86_64-apple-darwin
@@ -182,9 +184,55 @@ jobs:
             ferrix-*.zip
             ferrix-*.zip.sha256
 
+  linux-packages:
+    name: Linux packages (deb, rpm, Arch)
+    needs: [check-version, build-binaries]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the Linux archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*-linux-musl
+          merge-multiple: true
+          path: archives
+
+      - name: Install nfpm
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nfpm
+
+      - name: Build the packages
+        shell: bash
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          TAG="${{ needs.check-version.outputs.tag_name }}"
+          mkdir -p dist
+          for pair in amd64:x86_64-unknown-linux-musl arm64:aarch64-unknown-linux-musl; do
+            ARCH="${pair%%:*}"; TRIPLE="${pair#*:}"
+            rm -rf packaging/build && mkdir -p packaging/build
+            tar -xzf "archives/ferrix-${TAG}-${TRIPLE}.tar.gz" -C packaging/build
+            mv "packaging/build/ferrix-${TAG}-${TRIPLE}/ferrix" packaging/build/ferrix
+            mv "packaging/build/ferrix-${TAG}-${TRIPLE}/ui" packaging/build/dashboard
+            for packager in deb rpm archlinux; do
+              VERSION="$VERSION" ARCH="$ARCH" nfpm package --config packaging/nfpm.yaml --packager "$packager" --target dist/
+            done
+          done
+          ls -la dist/
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-linux-native
+          path: dist/*
+
   publish-release:
     name: Publish GitHub Release
-    needs: [check-version, build-binaries]
+    needs: [check-version, build-binaries, linux-packages]
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -198,8 +246,12 @@ jobs:
           merge-multiple: true
           path: release_assets
 
-      - name: Display release assets
-        run: ls -la release_assets/
+      - name: Write SHA256SUMS
+        working-directory: release_assets
+        run: |
+          rm -f ./*.sha256
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create GitHub Release & Tag
         uses: softprops/action-gh-release@v2
