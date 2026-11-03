@@ -41,6 +41,17 @@ jobs:
       - name: Run unit & integration tests
         run: cargo test --workspace --all-targets
 
+      # Optional modules outside the default build still have to compile and pass.
+      - name: Clippy and tests with HTTP/3
+        run: |
+          cargo clippy --workspace --all-targets --features ferrix/http3 -- -D warnings
+          cargo test --workspace --all-targets --features ferrix/http3
+
+      - name: Clippy and tests of the minimal build
+        run: |
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+          cargo test --workspace --all-targets --no-default-features
+
   frontend-check:
     name: Frontend UI (Lint & Build)
     runs-on: ubuntu-latest

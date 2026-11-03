@@ -55,11 +55,12 @@ h3-quinn = { version = "0.0.10", optional = true }
 # minimal build (`cargo build --release --no-default-features`) leaves them out and
 # keeps less code resident in every running server.
 [features]
-default = ["http2", "http3", "brotli", "zstd", "acme", "admin", "nginx-import"]
+default = ["http2", "brotli", "zstd", "acme", "admin", "nginx-import"]
 # HTTP/2 for clients (h2c and over TLS via ALPN).
 http2 = ["hyper/http2", "hyper-util/http2", "hyper-util/server-auto"]
-# HTTP/3 (QUIC) for clients on TLS ports; still only served when `http.protocols`
-# lists `http3`.
+# HTTP/3 (QUIC) for clients on TLS ports, served when `http.protocols` lists `http3`.
+# Not in the default build: even unused it costs ~1 MB of binary and ~0.7 MB of
+# memory. Build with `--features http3` to get it.
 http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn"]
 # Brotli and zstd response compression (gzip is always available).
 brotli = ["async-compression/brotli"]

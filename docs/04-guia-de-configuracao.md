@@ -279,7 +279,7 @@ Notes:
 - Open the UDP port in your firewall (and publish it in Docker: `-p 443:443/udp`).
 - Requests are routed, filtered and proxied the same way whatever the version; upstreams are always reached over HTTP/1.1, like nginx.
 - Changing `protocols` needs a restart (`ferrix restart`), since it changes the listeners.
-- HTTP/3 is built in by default (feature `http3`) but only runs when listed here. It adds about 1 MB to the binary, and ~5 MB of memory once in use.
+- HTTP/3 is **not in the default build**, so the packages and Docker images don't include it: build Ferrix with `cargo build --release --features http3`. Even when unused it would add about 1 MB to the binary and 0.7 MB of memory, and ~5 MB once in use. Without it, `http3` in `protocols` is ignored with a warning.
 
 ## 🔐 HTTPS: several certificates per port (SNI) and Let's Encrypt
 

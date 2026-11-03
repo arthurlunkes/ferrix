@@ -54,12 +54,12 @@ Optimized binary location: `target/release/ferrix`.
 ### Optional modules (smaller builds)
 
 Like nginx's `--with-*` build options, some modules can be left out at compile time.
-All of them are built by default:
+All of them except `http3` are built by default:
 
 | Feature | What it adds |
 | --- | --- |
 | `http2` | HTTP/2 for clients (over TLS via ALPN, and h2c) |
-| `http3` | HTTP/3 over QUIC on TLS ports (served when `http.protocols` lists `http3`) |
+| `http3` | HTTP/3 over QUIC on TLS ports (served when `http.protocols` lists `http3`). **Not in the default build** |
 | `brotli` | Brotli response compression (gzip is always available) |
 | `zstd` | zstd response compression |
 | `acme` | Automatic Let's Encrypt certificates (`tls.acme`) |
@@ -67,13 +67,15 @@ All of them are built by default:
 | `nginx-import` | `ferrix import` and the dashboard's "Import nginx" page |
 
 ```bash
-# Everything (default)
+# Default: every module except HTTP/3
 cargo build --release
 # Minimal: HTTP/1.1, gzip, certificates from files, configured only through
 # ferrix.yaml + `ferrix reload` (no admin API).
 cargo build --release --no-default-features
 # Pick and choose
 cargo build --release --no-default-features --features "http2,brotli"
+# Everything plus HTTP/3
+cargo build --release --features http3
 ```
 
 A configuration that needs a missing module (for example `tls.acme: true` without

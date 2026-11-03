@@ -19,7 +19,8 @@ http:
   listen: 0.0.0.0:80
 
   ## HTTP versions served to clients: http1, http2, http3.
-  ## http3 runs over QUIC (UDP) on every TLS port; open that UDP port too.
+  ## http3 runs over QUIC (UDP) on every TLS port; open that UDP port too. It needs
+  ## a Ferrix built with `--features http3` (the packages and images leave it out).
   protocols: [http1, http2]
   # protocols: [http1, http2, http3]
 
