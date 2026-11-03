@@ -137,6 +137,20 @@ An AUR package (`ferrix-bin`) is prepared in `packaging/aur/` and will be publis
 
 Because the service runs as the `ferrix` user, apply changes with `sudo systemctl reload ferrix` (or `sudo ferrix reload`).
 
+### Switching from a source install
+
+If Ferrix was installed earlier with `./core/scripts/install.sh` (binary in `/usr/local/bin`, unit in `/etc/systemd/system`), remove those first: they take precedence over the package's files, so the old version would keep running. The configuration in `/etc/ferrix` is kept.
+
+```bash
+sudo systemctl disable --now ferrix
+sudo rm -f /etc/systemd/system/ferrix.service /usr/local/bin/ferrix
+sudo systemctl daemon-reload
+curl -fsSL https://arthurlunkes.github.io/ferrix/install.sh | sh
+hash -r && which ferrix        # should print /usr/bin/ferrix
+```
+
+The service then runs as the `ferrix` system user instead of your own; the package hands `/etc/ferrix` over to it.
+
 ### Removing it
 
 ```bash
