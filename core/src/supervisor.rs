@@ -89,7 +89,6 @@ fn wait_signal_for(set: &libc::sigset_t, t: Duration) -> Option<libc::c_int> {
     }
 }
 
-
 /// Runs the master loop. Deliberately plain: no async runtime and no threads, just
 /// `sigwait` and `waitpid`, so the master costs almost no memory.
 pub fn run(pid_file: &std::path::Path) -> ExitCode {
