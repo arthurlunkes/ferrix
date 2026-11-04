@@ -126,3 +126,11 @@ For engineers who prefer editing configurations in code:
   - Download active configuration backups (`Export JSON`).
   - Upload previously saved configurations (`Import JSON`).
 - **"Reset"**: Reverts uncommitted changes back to current active memory state.
+
+## nginx modules in the panel
+
+- **Virtual Hosts → route → "nginx modules"**: rewrite phase (`if`/`set`/`rewrite`), gRPC, `auth_request`, `valid_referers`, `secure_link`, `mirror`, `sub_filter`, SSI, `image_filter`, and for static routes `autoindex`, FLV and WebDAV; the access-log switch per route.
+- **Route target**: besides proxy/static/redirect, *Fixed response* (`return 200 "ok"`) and *FastCGI / SCGI / uwsgi*.
+- **Virtual Hosts → Rewrite tab**: server-level `if` and `rewrite`.
+- **Upstreams**: sticky cookie and consistent hash (hash key).
+- **Server** page: access log to a file, variables (`map` / `geo` / `split_clients`) and TCP/UDP streams with SNI routing (`ssl_preread`).

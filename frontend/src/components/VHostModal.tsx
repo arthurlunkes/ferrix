@@ -29,6 +29,7 @@ import { Tabs, TabItem } from "./ui/Tabs";
 import { Badge } from "./ui/Badge";
 import { KeyValueEditor } from "./ui/KeyValueEditor";
 import { CidrListEditor } from "./ui/CidrListEditor";
+import { ExtraTargetFields, RouteModulesEditor, ConditionsEditor, RewriteRulesEditor } from "./RouteModules";
 
 interface VHostModalProps {
   vhost: VirtualHost | null;
@@ -225,6 +226,7 @@ const RouteCard: React.FC<{
   onRemove: () => void;
 }> = ({ route, index, total, shadowed, upstreams, onChange, onMove, onRemove }) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [modulesOpen, setModulesOpen] = useState(false);
 
   const toggleCondition = (cond: NextUpstreamCondition) => {
     const current = route.proxy_next_upstream?.conditions ?? [];
@@ -311,6 +313,8 @@ const RouteCard: React.FC<{
             <option value="proxy_upstream">Proxy to upstream</option>
             <option value="static_files">Static files</option>
             <option value="redirect">HTTP redirect</option>
+            <option value="return">Fixed response (return)</option>
+            <option value="cgi">FastCGI / SCGI / uwsgi</option>
           </Select>
         </Field>
       </div>
@@ -372,6 +376,8 @@ const RouteCard: React.FC<{
         </div>
       )}
 
+      <ExtraTargetFields route={route} upstreams={upstreams} onChange={onChange} />
+
       {route.target_type === "redirect" && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Field label="Destination URL" className="col-span-2">
@@ -420,6 +426,20 @@ const RouteCard: React.FC<{
         {advancedOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         Advanced: timeouts, failover, limits, access control
       </button>
+
+      <button
+        type="button"
+        onClick={() => setModulesOpen(!modulesOpen)}
+        className="flex items-center gap-1.5 text-[11px] font-semibold text-content-muted hover:text-content-secondary transition"
+      >
+        {modulesOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        nginx modules: rewrite/if/set, auth_request, gRPC, sub_filter, SSI, WebDAV, image filter...
+      </button>
+      {modulesOpen && (
+        <div className="pt-3 border-t border-border-subtle">
+          <RouteModulesEditor route={route} onChange={onChange} />
+        </div>
+      )}
 
       {advancedOpen && (
         <div className="space-y-5 pt-3 border-t border-border-subtle">
@@ -630,6 +650,7 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
     { id: "headers", label: "Headers" },
     { id: "security", label: "Security" },
     { id: "limits", label: "Limits" },
+    { id: "rewrite", label: "Rewrite" },
   ];
 
   return (
@@ -797,6 +818,28 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
               <LimitConnEditor
                 value={formData.limit_conn}
                 onChange={(v) => setFormData({ ...formData, limit_conn: v })}
+              />
+            </div>
+          </div>
+        )}
+        {tab === "rewrite" && (
+          <div className="space-y-6">
+            <p className="text-xs text-content-muted">
+              Server-level <code>if</code> and <code>rewrite</code>: run before a route is chosen (a
+              rewritten URI picks the route).
+            </p>
+            <div>
+              <span className="block text-xs font-medium text-content-secondary mb-1.5">Conditions (if)</span>
+              <ConditionsEditor
+                value={formData.conditions ?? []}
+                onChange={(v) => setFormData({ ...formData, conditions: v })}
+              />
+            </div>
+            <div>
+              <span className="block text-xs font-medium text-content-secondary mb-1.5">Rewrites</span>
+              <RewriteRulesEditor
+                value={formData.rewrites ?? []}
+                onChange={(v) => setFormData({ ...formData, rewrites: v })}
               />
             </div>
           </div>

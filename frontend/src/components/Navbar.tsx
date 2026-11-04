@@ -10,6 +10,7 @@ import {
   Compass,
   UploadCloud,
   ShieldAlert,
+  Settings,
 } from "lucide-react";
 import { ServerStatus } from "../services/api";
 import { RouteTesterModal } from "./RouteTesterModal";
@@ -26,6 +27,7 @@ const TABS = [
   { to: "/vhosts", label: "Virtual Hosts", icon: Globe },
   { to: "/live", label: "Live Requests", icon: Zap },
   { to: "/upstreams", label: "Upstreams", icon: Server },
+  { to: "/settings", label: "Server", icon: Settings },
   { to: "/import", label: "Import Nginx", icon: UploadCloud },
   { to: "/config", label: "Config Editor", icon: FileCode },
 ];
