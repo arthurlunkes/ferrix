@@ -203,7 +203,8 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
                 format!("'{}' não é um endereço host:porta válido", st.listen),
             );
         }
-        if !cfg.upstreams.contains_key(&st.upstream) {
+        let no_upstream_needed = st.return_text.is_some() || st.pass.is_some();
+        if !no_upstream_needed && !cfg.upstreams.contains_key(&st.upstream) {
             report.error(
                 format!("{}.upstream", base),
                 format!("o upstream '{}' não existe", st.upstream),

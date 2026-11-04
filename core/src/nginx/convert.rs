@@ -414,10 +414,20 @@ impl Converter {
         let mut idle_timeout_ms = 600_000;
         let mut accept_pp = false;
         let mut send_pp = false;
+        let mut extra = StreamConfig::default();
+        let mut listen_ssl = false;
+        let mut ssl_cert: Option<String> = None;
+        let mut ssl_key: Option<String> = None;
+        let mut proxy_ssl = false;
+        let mut up_tls = crate::config::StreamUpstreamTls {
+            verify: false, // nginx default for proxy_ssl_verify
+            ..Default::default()
+        };
         for item in block {
             match item.name.as_str() {
                 "listen" => {
                     accept_pp |= item.args.iter().any(|a| a == "proxy_protocol");
+                    listen_ssl |= item.args.iter().any(|a| a == "ssl");
                     if let Some(addr) = item.arg(0) {
                         let addr = if addr.contains(':') {
                             addr.to_string()
@@ -445,9 +455,61 @@ impl Converter {
                 }
                 "ssl_preread" => {}
                 "proxy_protocol" => send_pp = item.arg(0) == Some("on"),
+                "allow" => extra.allowed_ips.extend(item.arg(0).map(String::from)),
+                "deny" => extra.denied_ips.extend(item.arg(0).map(String::from)),
+                "limit_conn" => extra.limit_conn = item.arg(1).and_then(|v| v.parse().ok()),
+                "proxy_upload_rate" => {
+                    extra.upload_rate = item.arg(0).and_then(parse_size).unwrap_or(0)
+                }
+                "proxy_download_rate" => {
+                    extra.download_rate = item.arg(0).and_then(parse_size).unwrap_or(0)
+                }
+                "return" => extra.return_text = item.arg(0).map(String::from),
+                "pass" => extra.pass = item.arg(0).map(String::from),
+                "ssl_certificate" => ssl_cert = item.arg(0).map(String::from),
+                "ssl_certificate_key" => ssl_key = item.arg(0).map(String::from),
+                "ssl_protocols"
+                | "ssl_ciphers"
+                | "ssl_session_cache"
+                | "ssl_session_timeout"
+                | "ssl_prefer_server_ciphers"
+                | "ssl_handshake_timeout" => {}
+                "proxy_ssl" => proxy_ssl = item.arg(0) == Some("on"),
+                "proxy_ssl_verify" => up_tls.verify = item.arg(0) == Some("on"),
+                "proxy_ssl_name" => up_tls.settings.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_trusted_certificate" => {
+                    up_tls.settings.trusted_ca = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_certificate" => {
+                    up_tls.settings.client_cert = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_certificate_key" => {
+                    up_tls.settings.client_key = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_server_name"
+                | "proxy_ssl_protocols"
+                | "proxy_ssl_ciphers"
+                | "proxy_ssl_session_reuse" => {}
                 _ => self.note_unsupported(item),
             }
         }
+        if listen_ssl {
+            if let (Some(cert_path), Some(key_path)) = (ssl_cert, ssl_key) {
+                extra.tls = Some(crate::config::StreamTlsConfig {
+                    cert_path,
+                    key_path,
+                });
+            }
+        }
+        if proxy_ssl {
+            extra.upstream_tls = Some(up_tls);
+        }
+        let no_upstream = extra.return_text.is_some() || extra.pass.is_some();
+        let pass = match pass {
+            Some(p) => Some(p),
+            None if no_upstream => Some(String::new()),
+            None => None,
+        };
         let (Some((listen, protocol)), Some(pass)) = (listen, pass) else {
             self.report.unsupported(
                 &self.file,
@@ -469,7 +531,9 @@ impl Converter {
                 .cloned()
                 .unwrap_or_default()
         };
-        let upstream = if self.config.upstreams.contains_key(&pass) {
+        let upstream = if no_upstream && pass.is_empty() {
+            String::new()
+        } else if self.config.upstreams.contains_key(&pass) {
             pass
         } else {
             let name = format!("stream-{}", port);
@@ -506,6 +570,7 @@ impl Converter {
             sni_routes,
             accept_proxy_protocol: accept_pp,
             send_proxy_protocol: send_pp,
+            ..extra
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
     }

@@ -37,7 +37,7 @@ pub enum StreamProtocol {
     Udp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
     pub id: String,
     pub listen: String,
@@ -59,6 +59,49 @@ pub struct StreamConfig {
     /// Send a PROXY protocol v1 header to the upstream (nginx `proxy_protocol on`).
     #[serde(default)]
     pub send_proxy_protocol: bool,
+
+    /// nginx stream `listen ... ssl` + `ssl_certificate`: terminate TLS here.
+    #[serde(default)]
+    pub tls: Option<StreamTlsConfig>,
+    /// nginx stream `proxy_ssl on` (+ `proxy_ssl_*`): TLS towards the upstream.
+    #[serde(default)]
+    pub upstream_tls: Option<StreamUpstreamTls>,
+    /// nginx stream `allow` / `deny`.
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub denied_ips: Vec<String>,
+    /// nginx stream `limit_conn`: max simultaneous connections per client IP.
+    #[serde(default)]
+    pub limit_conn: Option<u32>,
+    /// nginx `proxy_upload_rate` (client → upstream), bytes/s; 0 = off.
+    #[serde(default)]
+    pub upload_rate: u64,
+    /// nginx `proxy_download_rate` (upstream → client), bytes/s; 0 = off.
+    #[serde(default)]
+    pub download_rate: u64,
+    /// nginx stream `return`: send this text and close (no upstream).
+    #[serde(default)]
+    pub return_text: Option<String>,
+    /// nginx stream `pass`: hand the connection to this local address (e.g. an
+    /// HTTP listener of Ferrix) instead of an upstream.
+    #[serde(default)]
+    pub pass: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamTlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamUpstreamTls {
+    /// nginx `proxy_ssl_verify` (default on here; nginx defaults to off).
+    #[serde(default = "default_true")]
+    pub verify: bool,
+    #[serde(flatten)]
+    pub settings: UpstreamTlsConfig,
 }
 
 fn default_stream_connect_timeout_ms() -> u64 {

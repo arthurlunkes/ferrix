@@ -595,3 +595,25 @@ routes:
 ```
 
 `pass: "10.0.0.5:5432"` sends every tunnel to one fixed target.
+
+### More stream options
+
+```yaml
+streams:
+  - id: pg
+    listen: 0.0.0.0:5433
+    upstream: postgres
+    tls: { cert_path: /etc/ferrix/pg.pem, key_path: /etc/ferrix/pg.key }   # terminate TLS (listen ... ssl)
+    upstream_tls: { verify: true, server_name: db.internal, trusted_ca: /etc/ferrix/ca.pem }   # proxy_ssl on
+    allowed_ips: [10.0.0.0/8]       # allow / deny
+    denied_ips: []
+    limit_conn: 20                  # per client IP
+    upload_rate: 1048576            # proxy_upload_rate, bytes/s
+    download_rate: 1048576          # proxy_download_rate
+  - id: banner
+    listen: 0.0.0.0:7000
+    return_text: "maintenance\n"    # stream return: send and close, no upstream
+  - id: to-https
+    listen: 0.0.0.0:8443
+    pass: 127.0.0.1:443             # stream pass: hand the connection to a local listener
+```
