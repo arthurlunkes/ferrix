@@ -458,6 +458,101 @@ fn load_file(
     })))
 }
 
+/// nginx `ngx_http_autoindex_module`: HTML listing of `root_dir/path` when it is a
+/// directory. Returns `None` if it isn't one (or escapes the root), so the caller
+/// answers 404. Directories that end without `/` get a 301 to `uri/`, like nginx.
+pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>> {
+    let base_root = PathBuf::from(root_dir).canonicalize().ok()?;
+    let dir = base_root
+        .join(path.trim_start_matches('/'))
+        .canonicalize()
+        .ok()?;
+    if !dir.starts_with(&base_root) || !dir.is_dir() {
+        return None;
+    }
+    if !uri.ends_with('/') {
+        return Response::builder()
+            .status(StatusCode::MOVED_PERMANENTLY)
+            .header(header::LOCATION, format!("{uri}/"))
+            .body(Body::empty())
+            .ok();
+    }
+
+    let mut entries: Vec<(String, bool, u64, String)> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if name.starts_with('.') {
+                return None;
+            }
+            let md = e.metadata().ok()?;
+            let mtime = md
+                .modified()
+                .ok()
+                .map(|m| {
+                    let dt: chrono::DateTime<chrono::Utc> = m.into();
+                    dt.format("%d-%b-%Y %H:%M").to_string()
+                })
+                .unwrap_or_default();
+            Some((name, md.is_dir(), md.len(), mtime))
+        })
+        .collect();
+    // Directories first, then by name: same order as nginx.
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let title = html_escape(uri);
+    let mut html = format!(
+        "<html>\r\n<head><title>Index of {title}</title></head>\r\n<body>\r\n\
+         <h1>Index of {title}</h1><hr><pre><a href=\"../\">../</a>\r\n"
+    );
+    for (name, is_dir, len, mtime) in entries {
+        let shown = if is_dir {
+            format!("{name}/")
+        } else {
+            name.clone()
+        };
+        let href = percent_encode_segment(&shown);
+        let size = if is_dir {
+            "-".to_string()
+        } else {
+            len.to_string()
+        };
+        let pad = 51usize.saturating_sub(shown.chars().count()).max(1);
+        html.push_str(&format!(
+            "<a href=\"{href}\">{}</a>{}{mtime} {size:>19}\r\n",
+            html_escape(&shown),
+            " ".repeat(pad)
+        ));
+    }
+    html.push_str("</pre><hr></body>\r\n</html>\r\n");
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .ok()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn percent_encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +677,28 @@ mod tests {
             .unwrap();
         assert!(len < text.len());
         assert_eq!(r.into_body().collect().await.unwrap().to_bytes().len(), len);
+    }
+
+    #[test]
+    fn autoindex_lists_directory() {
+        let d = dir_with("a&b.txt", "hi");
+        std::fs::create_dir(d.0.join("sub")).unwrap();
+        let r = autoindex(d.root(), "/", "/").unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let r = autoindex(d.root(), "/sub", "/sub").unwrap();
+        assert_eq!(r.status(), StatusCode::MOVED_PERMANENTLY);
+        assert!(autoindex(d.root(), "/a&b.txt", "/a&b.txt").is_none());
+        assert!(autoindex(d.root(), "/../", "/../").is_none());
+    }
+
+    #[tokio::test]
+    async fn autoindex_html_escapes_and_sorts_dirs_first() {
+        let d = dir_with("a&b.txt", "hi");
+        std::fs::create_dir(d.0.join("zdir")).unwrap();
+        let r = autoindex(d.root(), "/", "/").unwrap();
+        let body = r.into_body().collect().await.unwrap().to_bytes();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("href=\"a%26b.txt\">a&amp;b.txt</a>"));
+        assert!(html.find("zdir/").unwrap() < html.find("a&amp;b").unwrap());
     }
 }

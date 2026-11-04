@@ -764,6 +764,10 @@ pub struct RouteRule {
     pub static_root: Option<String>,
     #[serde(default)]
     pub try_files: Option<String>,
+
+    /// nginx `autoindex on`: list a directory that has no index.html.
+    #[serde(default)]
+    pub autoindex: bool,
     #[serde(default)]
     pub redirect_url: Option<String>,
     #[serde(default = "default_redirect_code")]
@@ -857,6 +861,7 @@ impl Default for RouteRule {
             upstream_name: None,
             static_root: None,
             try_files: None,
+            autoindex: false,
             redirect_url: None,
             redirect_code: None,
             websocket_enabled: true,

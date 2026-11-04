@@ -1433,6 +1433,9 @@ impl Converter {
                         route.target_type = RouteTargetType::StaticFiles;
                     }
                 }
+                "autoindex" => {
+                    route.autoindex = item.arg(0) == Some("on");
+                }
                 "return" => {
                     if let Some(r) = self.convert_return(item) {
                         route.target_type = RouteTargetType::Redirect;

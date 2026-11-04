@@ -506,6 +506,14 @@ impl ProxyEngine {
                 .await
                 {
                     Ok(r) => r,
+                    Err(StatusCode::NOT_FOUND) if route.autoindex => {
+                        match static_files::autoindex(root_dir, file_path, &req_path) {
+                            Some(r) => r,
+                            None => {
+                                (StatusCode::NOT_FOUND, "404 Static File Error").into_response()
+                            }
+                        }
+                    }
                     Err(code) => {
                         (code, format!("{} Static File Error", code.as_u16())).into_response()
                     }
