@@ -147,6 +147,7 @@ export interface RouteRule {
   upstream_name?: string | null;
   static_root?: string | null;
   try_files?: string | null;
+  autoindex?: boolean;
   redirect_url?: string | null;
   redirect_code?: number | null;
   websocket_enabled: boolean;
