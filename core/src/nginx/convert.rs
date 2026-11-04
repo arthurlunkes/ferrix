@@ -1691,6 +1691,52 @@ impl Converter {
                     route.cgi.get_or_insert_with(Default::default).index =
                         item.arg(0).map(String::from);
                 }
+                "image_filter" => {
+                    use crate::config::ImageOp;
+                    let f = route.image_filter.get_or_insert_with(Default::default);
+                    let dim = |s: Option<&str>| s.and_then(|v| v.parse().ok()).unwrap_or(0);
+                    match item.arg(0) {
+                        Some("test") => f.op = ImageOp::Test,
+                        Some("size") => f.op = ImageOp::Size,
+                        Some("resize") => {
+                            f.op = ImageOp::Resize;
+                            f.width = dim(item.arg(1));
+                            f.height = dim(item.arg(2));
+                        }
+                        Some("crop") => {
+                            f.op = ImageOp::Crop;
+                            f.width = dim(item.arg(1));
+                            f.height = dim(item.arg(2));
+                        }
+                        Some("rotate") => {
+                            if f.op == ImageOp::Resize && f.width == 0 && f.height == 0 {
+                                f.op = ImageOp::Rotate;
+                            }
+                            f.rotate = dim(item.arg(1)) as u16;
+                        }
+                        _ => {}
+                    }
+                    self.converted(
+                        item,
+                        "virou route.image_filter (precisa da feature image-filter)",
+                    );
+                }
+                "image_filter_jpeg_quality" => {
+                    if let Some(q) = item.arg(0).and_then(|v| v.parse().ok()) {
+                        route
+                            .image_filter
+                            .get_or_insert_with(Default::default)
+                            .jpeg_quality = q;
+                    }
+                }
+                "image_filter_buffer" => {
+                    if let Some(b) = item.arg(0).and_then(parse_size) {
+                        route
+                            .image_filter
+                            .get_or_insert_with(Default::default)
+                            .buffer_bytes = b;
+                    }
+                }
                 "ssi" => route.ssi = item.arg(0) == Some("on"),
                 "ssi_types" => route.ssi_types = item.args.clone(),
                 "flv" => {
