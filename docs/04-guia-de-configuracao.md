@@ -541,3 +541,5 @@ vhosts:
 ```
 
 `on` answers 400 without a valid certificate; `optional` lets the request through and `$ssl_client_verify` says `SUCCESS` or `NONE`. Variables for `proxy_set_headers`: `$ssl_client_verify`, `$ssl_client_s_dn`, `$ssl_client_i_dn`, `$ssl_client_escaped_cert`. Vhosts sharing a port share one trust list (the union of their CAs). Changing `verify_client` or `client_ca` takes effect after a restart.
+
+OCSP stapling: `tls.ocsp_file: /etc/ferrix/site.ocsp` (nginx `ssl_stapling_file`) staples that DER OCSP response; refresh the file (e.g. `openssl ocsp ... -respout`) and run `ferrix reload`. Ferrix does not query OCSP responders itself (Let's Encrypt no longer runs one).

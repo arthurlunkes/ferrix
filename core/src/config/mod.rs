@@ -778,6 +778,10 @@ pub struct TlsConfig {
     /// nginx `ssl_client_certificate`: PEM CA bundle for client certificates.
     #[serde(default)]
     pub client_ca: Option<String>,
+    /// nginx `ssl_stapling_file`: DER OCSP response stapled to the handshake
+    /// (re-read on every config reload).
+    #[serde(default)]
+    pub ocsp_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

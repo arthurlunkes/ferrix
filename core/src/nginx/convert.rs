@@ -1123,6 +1123,7 @@ impl Converter {
         let mut ssl_key: Option<String> = None;
         let mut client_verify = crate::config::ClientVerify::Off;
         let mut client_ca: Option<String> = None;
+        let mut ocsp_file: Option<String> = None;
 
         let mut server_gzip: Option<bool> = None;
         let mut error_pages: Vec<&Directive> = Vec::new();
@@ -1146,6 +1147,12 @@ impl Converter {
                     };
                     self.converted(item, "virou tls.verify_client");
                 }
+                "ssl_stapling_file" => ocsp_file = item.arg(0).map(String::from),
+                "ssl_stapling" | "ssl_stapling_verify" => self.converted(
+                    item,
+                    "o Ferrix grampeia a resposta OCSP de tls.ocsp_file (ssl_stapling_file); \
+                     não busca no responder sozinho",
+                ),
                 "ssl_client_certificate" | "ssl_trusted_certificate" => {
                     if item.name == "ssl_client_certificate" || client_ca.is_none() {
                         client_ca = item.arg(0).map(String::from);
@@ -1307,6 +1314,7 @@ impl Converter {
                     acme: false,
                     verify_client: client_verify,
                     client_ca: client_ca.clone(),
+                    ocsp_file: ocsp_file.clone(),
                 });
                 if saw_ssl_listen {
                     self.report.note(

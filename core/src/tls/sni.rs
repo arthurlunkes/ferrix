@@ -121,6 +121,12 @@ fn build_table(config: &Arc<FerrixConfig>, port: u16) -> Result<CertTable, Strin
     let mut loaded: HashMap<(String, String), Arc<CertifiedKey>> = HashMap::new();
     for vhost in config.vhosts.iter().filter(|v| v.listen_port == port) {
         let Some(tls) = &vhost.tls else { continue };
+        let ocsp = match &tls.ocsp_file {
+            Some(f) => Some(std::fs::read(f).map_err(|e| {
+                format!("virtual host '{}': OCSP response {}: {}", vhost.name, f, e)
+            })?),
+            None => None,
+        };
         let key = if tls.acme {
             let (cert, key) = crate::tls::acme::cert_paths(&config.acme, &vhost.id);
             if !cert.is_file() {
@@ -133,13 +139,13 @@ fn build_table(config: &Arc<FerrixConfig>, port: u16) -> Result<CertTable, Strin
         } else {
             (tls.cert_path.clone(), tls.key_path.clone())
         };
-        let certified = match loaded.get(&key) {
+        let certified = match loaded.get(&key).filter(|_| ocsp.is_none()) {
             Some(k) => k.clone(),
             None => {
-                let k = Arc::new(
-                    load_certified_key(&key.0, &key.1)
-                        .map_err(|e| format!("virtual host '{}': {}", vhost.name, e))?,
-                );
+                let mut ck = load_certified_key(&key.0, &key.1)
+                    .map_err(|e| format!("virtual host '{}': {}", vhost.name, e))?;
+                ck.ocsp = ocsp;
+                let k = Arc::new(ck);
                 loaded.insert(key, k.clone());
                 k
             }
@@ -214,4 +220,31 @@ pub fn tls_acceptor(resolver: Arc<SniResolver>) -> Result<TlsAcceptor, String> {
         config.ticketer = ticketer;
     }
     Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+#[cfg(test)]
+mod ocsp_tests {
+    use super::*;
+
+    #[test]
+    fn ocsp_file_is_stapled() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls");
+        let ocsp = std::env::temp_dir().join(format!("ferrix-ocsp-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&ocsp, b"\x30\x03\x0a\x01\x00").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].listen_port = 443;
+        cfg.vhosts[0].tls = Some(crate::config::TlsConfig {
+            cert_path: format!("{dir}/server.pem"),
+            key_path: format!("{dir}/server.key"),
+            ocsp_file: Some(ocsp.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        let table = build_table(&Arc::new(cfg), 443).unwrap();
+        assert_eq!(
+            table.default.unwrap().ocsp.as_deref(),
+            Some(&b"\x30\x03\x0a\x01\x00"[..])
+        );
+        let _ = std::fs::remove_file(ocsp);
+    }
 }
