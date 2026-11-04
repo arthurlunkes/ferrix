@@ -11,6 +11,7 @@ pub mod matcher;
 mod proxy;
 mod raw_proxy;
 pub mod realip;
+pub mod referer;
 pub mod server;
 pub mod static_files;
 pub mod upstream;
@@ -453,6 +454,16 @@ impl ProxyEngine {
                     );
                     return resp;
                 }
+            }
+        }
+
+        if !route.valid_referers.is_empty() {
+            let referer = req
+                .headers()
+                .get(header::REFERER)
+                .and_then(|v| v.to_str().ok());
+            if !referer::is_valid(&route.valid_referers, referer, &vhost.server_names) {
+                return (StatusCode::FORBIDDEN, "403 Forbidden - Invalid Referer").into_response();
             }
         }
 

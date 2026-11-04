@@ -832,6 +832,10 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub cors: Option<CorsConfig>,
+
+    /// nginx `valid_referers`: when non-empty, other Referers get 403.
+    #[serde(default)]
+    pub valid_referers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -901,6 +905,7 @@ impl Default for RouteRule {
             cache: None,
             compression: None,
             cors: None,
+            valid_referers: Vec::new(),
         }
     }
 }
