@@ -65,6 +65,7 @@ export type LoadBalanceAlgorithm =
   | "weighted_round_robin"
   | "least_conn"
   | "ip_hash"
+  | "consistent_hash"
   | "random";
 
 export interface UpstreamConfig {
@@ -73,6 +74,14 @@ export interface UpstreamConfig {
   targets: UpstreamTarget[];
   health_check?: HealthCheckConfig | null;
   verify_tls: boolean;
+  hash_key?: string | null;
+  sticky?: StickyConfig | null;
+}
+
+export interface StickyConfig {
+  cookie: string;
+  path?: string | null;
+  max_age_secs?: number | null;
 }
 
 export interface TargetHealthStatus {
@@ -164,6 +173,83 @@ export interface RouteRule {
   proxy_read_timeout_ms?: number | null;
   proxy_send_timeout_ms?: number | null;
   proxy_next_upstream?: ProxyNextUpstreamConfig | null;
+  access_log?: boolean;
+  valid_referers?: string[];
+  auth_request?: AuthRequestConfig | null;
+  mirror?: string[];
+  secure_link?: SecureLinkConfig | null;
+  sub_filter?: SubFilterConfig | null;
+  set?: [string, string][];
+  conditions?: ConditionConfig[];
+  rewrites?: RewriteRule[];
+  dav?: DavConfig | null;
+  flv?: boolean;
+  ssi?: boolean;
+  ssi_types?: string[];
+  image_filter?: ImageFilterConfig | null;
+  cgi?: CgiConfig | null;
+  grpc?: boolean;
+}
+
+export interface AuthRequestConfig {
+  url: string;
+  set_headers: string[];
+  timeout_ms?: number | null;
+}
+
+export interface SecureLinkConfig {
+  md5: string;
+  hash_arg?: string | null;
+  expires_arg?: string | null;
+}
+
+export interface SubFilterConfig {
+  replacements: [string, string][];
+  once: boolean;
+  types: string[];
+}
+
+export type RewriteFlag = "none" | "last" | "break" | "redirect" | "permanent";
+
+export interface RewriteRule {
+  pattern: string;
+  replacement: string;
+  flag: RewriteFlag;
+}
+
+export interface ConditionConfig {
+  condition: string;
+  set: [string, string][];
+  return_code?: number | null;
+  return_value?: string | null;
+  rewrite?: RewriteRule | null;
+}
+
+export interface DavConfig {
+  methods: string[];
+  create_full_put_path: boolean;
+  access?: number | null;
+}
+
+export type ImageOp = "test" | "size" | "resize" | "crop" | "rotate";
+
+export interface ImageFilterConfig {
+  op: ImageOp;
+  width: number;
+  height: number;
+  rotate: number;
+  jpeg_quality: number;
+  buffer_bytes: number;
+}
+
+export type CgiProtocol = "fastcgi" | "scgi" | "uwsgi";
+
+export interface CgiConfig {
+  protocol: CgiProtocol;
+  pass: string;
+  root?: string | null;
+  index?: string | null;
+  params: Record<string, string>;
 }
 
 export interface VirtualHost {
@@ -179,6 +265,8 @@ export interface VirtualHost {
   basic_auth?: BasicAuthConfig | null;
   satisfy: Satisfy;
   routes: RouteRule[];
+  conditions?: ConditionConfig[];
+  rewrites?: RewriteRule[];
 }
 
 export type AdminAuthMode = "none" | "token" | "basic";
@@ -215,6 +303,30 @@ export interface HttpConfig {
   proxy_send_timeout_ms: number;
   client_max_body_size: number;
   proxy_request_buffer_size: number;
+  access_log?: AccessLogConfig | null;
+  variables?: Record<string, VariableDef>;
+}
+
+export interface AccessLogConfig {
+  path: string;
+  format: string;
+}
+
+export type VariableDef =
+  | { type: "map"; source: string; entries: { pattern: string; value: string }[]; default: string }
+  | { type: "geo"; source?: string | null; ranges: { network: string; value: string }[]; default: string }
+  | { type: "split_clients"; source: string; buckets: { percent: number; value: string }[] };
+
+export type StreamProtocol = "tcp" | "udp";
+
+export interface StreamConfig {
+  id: string;
+  listen: string;
+  protocol: StreamProtocol;
+  upstream: string;
+  connect_timeout_ms: number;
+  idle_timeout_ms: number;
+  sni_routes?: Record<string, string>;
 }
 
 export interface FerrixConfig {
@@ -223,6 +335,7 @@ export interface FerrixConfig {
   real_ip: RealIpConfig;
   upstreams: Record<string, UpstreamConfig>;
   vhosts: VirtualHost[];
+  streams?: StreamConfig[];
 }
 
 export type IssueSeverity = "error" | "warning";
