@@ -1022,6 +1022,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
 
+    /// nginx `flv`: pseudo-streaming with `?start=<byte>` for .flv files.
+    #[serde(default)]
+    pub flv: bool,
+
     /// nginx `dav_methods` on a static route.
     #[serde(default)]
     pub dav: Option<DavConfig>,
@@ -1155,6 +1159,7 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            flv: false,
             dav: None,
             cgi: None,
             grpc: false,

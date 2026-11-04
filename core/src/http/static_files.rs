@@ -458,6 +458,54 @@ fn load_file(
     })))
 }
 
+/// FLV header sent before data served from an offset (nginx `ngx_http_flv_module`).
+const FLV_HEADER: &[u8] = b"FLV\x01\x05\0\0\0\x09\0\0\0\0";
+
+/// nginx `flv`: `file.flv?start=N` streams from byte N with an FLV header in
+/// front. `None` = not applicable (no/zero start), serve the file normally.
+pub async fn flv(root_dir: &str, path: &str, query: Option<&str>) -> Option<Response<Body>> {
+    if !path.ends_with(".flv") {
+        return None;
+    }
+    let start: u64 = query?
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("start="))?
+        .parse()
+        .ok()?;
+    if start == 0 {
+        return None;
+    }
+    let base = PathBuf::from(root_dir).canonicalize().ok()?;
+    let file = base
+        .join(path.trim_start_matches('/'))
+        .canonicalize()
+        .ok()?;
+    if !file.starts_with(&base) {
+        return None;
+    }
+    let mut f = tokio::fs::File::open(&file).await.ok()?;
+    let len = f.metadata().await.ok()?.len();
+    if start >= len {
+        return None;
+    }
+    f.seek(SeekFrom::Start(start)).await.ok()?;
+    let stream = futures_util::StreamExt::chain(
+        futures_util::stream::once(async {
+            Ok::<_, std::io::Error>(Bytes::from_static(FLV_HEADER))
+        }),
+        tokio_util::io::ReaderStream::new(f),
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "video/x-flv")
+        .header(
+            header::CONTENT_LENGTH,
+            len - start + FLV_HEADER.len() as u64,
+        )
+        .body(Body::from_stream(stream))
+        .ok()
+}
+
 /// nginx `ngx_http_autoindex_module`: HTML listing of `root_dir/path` when it is a
 /// directory. Returns `None` if it isn't one (or escapes the root), so the caller
 /// answers 404. Directories that end without `/` get a 301 to `uri/`, like nginx.
@@ -700,5 +748,16 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("href=\"a%26b.txt\">a&amp;b.txt</a>"));
         assert!(html.find("zdir/").unwrap() < html.find("a&amp;b").unwrap());
+    }
+
+    #[tokio::test]
+    async fn flv_start_prepends_header() {
+        let d = dir_with("v.flv", "0123456789");
+        assert!(flv(d.root(), "/v.flv", None).await.is_none());
+        assert!(flv(d.root(), "/v.flv", Some("start=0")).await.is_none());
+        let r = flv(d.root(), "/v.flv", Some("start=7")).await.unwrap();
+        let b = r.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&b[..13], FLV_HEADER);
+        assert_eq!(&b[13..], b"789");
     }
 }

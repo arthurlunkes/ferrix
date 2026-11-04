@@ -1691,6 +1691,10 @@ impl Converter {
                     route.cgi.get_or_insert_with(Default::default).index =
                         item.arg(0).map(String::from);
                 }
+                "flv" => {
+                    route.flv = true;
+                    self.converted(item, "virou route.flv");
+                }
                 "dav_methods" => {
                     let methods: Vec<String> = item
                         .args
