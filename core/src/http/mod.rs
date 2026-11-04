@@ -533,6 +533,11 @@ impl ProxyEngine {
             Err(preflight) => return *preflight,
         };
         let compression = &compiled.config.http.compression;
+        if route.sub_filter.is_some() {
+            // The backend must answer uncompressed so the text can be rewritten;
+            // Ferrix still compresses for the client afterwards.
+            parts.headers.remove(header::ACCEPT_ENCODING);
+        }
 
         let resp = match route.target_type {
             RouteTargetType::Redirect => {
@@ -694,6 +699,11 @@ impl ProxyEngine {
                     .await
                 }
             }
+        };
+
+        let resp = match &route.sub_filter {
+            Some(cfg) => filters::sub::apply(cfg, resp).await,
+            None => resp,
         };
 
         let mut resp = filters::run(

@@ -848,6 +848,23 @@ pub struct RouteRule {
     /// nginx `secure_link` + `secure_link_md5`.
     #[serde(default)]
     pub secure_link: Option<SecureLinkConfig>,
+
+    /// nginx `sub_filter`: string replacements in text responses.
+    #[serde(default)]
+    pub sub_filter: Option<SubFilterConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubFilterConfig {
+    /// `[from, to]` pairs, applied in order.
+    #[serde(default)]
+    pub replacements: Vec<[String; 2]>,
+    /// nginx `sub_filter_once` (nginx default is `on`).
+    #[serde(default = "default_true")]
+    pub once: bool,
+    /// Extra MIME types besides text/html (nginx `sub_filter_types`); `*` = all.
+    #[serde(default)]
+    pub types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -953,6 +970,7 @@ impl Default for RouteRule {
             auth_request: None,
             mirror: Vec::new(),
             secure_link: None,
+            sub_filter: None,
         }
     }
 }
