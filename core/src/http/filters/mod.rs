@@ -1,12 +1,17 @@
+pub mod charset;
 pub mod compress;
 pub mod cors;
 pub mod error_page;
+pub mod gunzip;
 pub mod headers;
 #[cfg(feature = "image-filter")]
 pub mod image;
+pub mod limit_rate;
 pub mod request_id;
 pub mod ssi;
 pub mod sub;
+pub mod upstream_headers;
+pub mod userid;
 
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method};

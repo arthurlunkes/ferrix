@@ -372,3 +372,43 @@ async fn head_requests_get_no_body() {
     assert_eq!(next.status, 200);
     assert_eq!(next.body, "body");
 }
+
+#[tokio::test]
+async fn connect_tunnel_relays_bytes() {
+    // Echo server the client tunnels to.
+    let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut s, _) = echo.accept().await.unwrap();
+        let mut b = [0u8; 64];
+        let n = s.read(&mut b).await.unwrap();
+        s.write_all(&b[..n]).await.unwrap();
+    });
+    let port = closed_port().await;
+    let extra = format!(
+        "      - id: tunnel\n        path_prefix: /\n        target_type: return\n        redirect_code: 405\n        tunnel: {{ allowed_ports: [{echo_port}] }}\n"
+    );
+    let addr = ferrix(site(port, &["http://127.0.0.1:1".to_string()], &extra)).await;
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(
+        format!("CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\nHost: 127.0.0.1:{echo_port}\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = sock.read(&mut buf).await.unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    sock.write_all(b"ping").await.unwrap();
+    let n = tokio::time::timeout(Duration::from_secs(2), sock.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..n], b"ping");
+
+    // A port that is not allowed is refused.
+    let r = request(addr, "CONNECT 127.0.0.1:22 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert_eq!(r.status, 403);
+}

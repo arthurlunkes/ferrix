@@ -110,7 +110,17 @@ websocket_enabled: false
 - `mirror: [http://shadow:8080]`: sends a copy of each request (method, URI, headers; no body, like `mirror_request_body off`) and ignores the response.
 - `secure_link: { md5, hash_arg, expires_arg }`: nginx `secure_link`/`secure_link_md5` (base64url MD5). Wrong hash = 403, expired = 410.
 - `sub_filter: { replacements: [[from, to]], once, types }`: nginx `sub_filter` on text/html (plus `types`); uncompressed bodies up to 8 MB.
+- `proxy_redirect: [[from, to]]` (`default`, prefix or `~regex` with `$1`), `proxy_cookie_path` / `proxy_cookie_domain: [[from, to]]`, `proxy_cookie_flags: [[cookie|~regex|*, "secure httponly samesite=strict nosecure ..."]]`: nginx rewrites of `Location`/`Refresh` and `Set-Cookie` from the backend.
+- `proxy_intercept_errors: true`: backend 4xx/5xx are answered with the vhost `error_pages`.
+- `limit_except: { methods: [GET, POST], allow: [10.0.0.0/8] }`: other methods get 403 unless the client IP is in `allow` (GET also allows HEAD).
+- `limit_rate: 102400`, `limit_rate_after: 1048576`: nginx `limit_rate` / `limit_rate_after`, bytes per second for each response body after the first N bytes (turns off zero-copy sendfile for that route).
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
+- `empty_gif: true`: nginx `empty_gif`, answers a 1×1 transparent GIF (tracking pixels).
+- `random_index: true`: nginx `random_index`, a request for a directory serves a random visible file from it.
+- `userid: { name: uid, domain, path: /, expires_secs: 31536000, flags: "Secure HttpOnly" }`: nginx `userid on`, a visitor-id cookie set on the first response (and added to that request so the backend sees it).
+- `add_before_body: /header.html`, `add_after_body: /footer.html`, `addition_types`: nginx addition filter; the URI is fetched as a subrequest from the same vhost (or a full URL) and wrapped around text/html bodies.
+- `gunzip: true`: nginx `gunzip on`, gzip responses are decompressed (streaming) for clients that do not accept gzip.
+- `charset: utf-8`, `source_charset: windows-1251`, `override_charset`, `charset_types`: nginx charset module; text responses get `; charset=` and, when the source differs, the body is converted (WHATWG encodings).
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route
@@ -475,3 +485,154 @@ routes:
     strip_prefix: true
     image_filter: { op: resize, width: 300, height: 0, jpeg_quality: 80, buffer_bytes: 5242880 }
 ```
+
+### `least_time` balancing
+
+`algorithm: least_time` (nginx `least_time header`): each target keeps a moving average of its response time; the pool picks the lowest `average × (active connections + 1)`. Targets not measured yet are tried first.
+
+### URL and redirect normalization (`http`)
+
+- `merge_slashes` (default `true`, like nginx): `//a///b` is routed and forwarded as `/a/b`.
+- `absolute_redirect` (default `true`): redirects Ferrix builds itself with a relative target (`/new`, directory slash redirects, `rewrite ... redirect`, `return 301 /x`) get `scheme://host`. Backend redirects are untouched (see `proxy_redirect`).
+- `port_in_redirect` (default `true`): keep the Host port in those redirects.
+- `server_name_in_redirect` (default `false`): use the vhost's first concrete server name instead of the Host header.
+
+### Cache: stale, lock, revalidate, background update
+
+Extra `cache:` fields on a proxy route (nginx `proxy_cache_*`):
+
+```yaml
+cache:
+  valid_secs: 60
+  use_stale: [error, timeout, updating, http_500, http_502, http_503, http_504]
+  stale_keep_secs: 86400     # how long expired entries are kept for the options below
+  lock: true                 # proxy_cache_lock: one request fills, the rest wait (lock_timeout_ms, default 5000)
+  revalidate: true           # proxy_cache_revalidate: If-None-Match / If-Modified-Since; 304 refreshes the entry
+  background_update: true    # serve stale (needs "updating") and refresh in the background
+```
+
+`x-cache-status` shows `HIT`, `MISS`, `STALE`, `UPDATING` or `REVALIDATED`.
+
+### PROXY protocol
+
+- `http.proxy_protocol: true` (nginx `listen ... proxy_protocol`): every HTTP/HTTPS connection must start with a PROXY protocol v1 or v2 header (AWS NLB, HAProxy, ...); its source address becomes the client IP. Connections without it are closed.
+- `streams[].accept_proxy_protocol: true`: the same for a TCP stream.
+- `streams[].send_proxy_protocol: true` (nginx `proxy_protocol on`): send a v1 header with the client address to the upstream.
+
+### TLS to the backend (`upstreams.<name>.tls`)
+
+nginx `proxy_ssl_certificate`, `proxy_ssl_certificate_key`, `proxy_ssl_trusted_certificate`, `proxy_ssl_name` (`proxy_ssl_verify` is `verify_tls`):
+
+```yaml
+upstreams:
+  internal_api:
+    targets: [{ url: "https://10.0.0.5:8443" }]
+    verify_tls: true
+    tls:
+      client_cert: /etc/ferrix/client.pem   # mTLS: certificate shown to the backend
+      client_key: /etc/ferrix/client.key
+      trusted_ca: /etc/ferrix/internal-ca.pem   # instead of the public web roots
+      server_name: api.internal            # SNI and certificate name instead of the IP
+```
+
+### Client certificates (`tls.verify_client`)
+
+nginx `ssl_verify_client on|optional` + `ssl_client_certificate`:
+
+```yaml
+vhosts:
+  - id: api
+    listen_port: 443
+    tls: { cert_path: /etc/ferrix/api.pem, key_path: /etc/ferrix/api.key, verify_client: on, client_ca: /etc/ferrix/clients-ca.pem }
+```
+
+`on` answers 400 without a valid certificate; `optional` lets the request through and `$ssl_client_verify` says `SUCCESS` or `NONE`. Variables for `proxy_set_headers`: `$ssl_client_verify`, `$ssl_client_s_dn`, `$ssl_client_i_dn`, `$ssl_client_escaped_cert`. Vhosts sharing a port share one trust list (the union of their CAs). Changing `verify_client` or `client_ca` takes effect after a restart.
+
+OCSP stapling: `tls.ocsp_file: /etc/ferrix/site.ocsp` (nginx `ssl_stapling_file`) staples that DER OCSP response; refresh the file (e.g. `openssl ocsp ... -respout`) and run `ferrix reload`. Ferrix does not query OCSP responders itself (Let's Encrypt no longer runs one).
+
+### memcached (`target_type: memcached`)
+
+nginx `memcached_pass` + `set $memcached_key`: the body comes from memcached `get <key>`; a miss answers 404 (pair it with `error_pages`), errors answer 502.
+
+```yaml
+routes:
+  - id: cached-pages
+    path_prefix: /
+    target_type: memcached
+    memcached: { pass: "127.0.0.1:11211", key: "$uri?$args", content_type: text/html, gzip_flag: 2 }
+```
+
+### GeoIP (`http.geoip`, build feature `geoip`, on by default)
+
+MaxMind GeoLite2/GeoIP2 `.mmdb` files (the legacy `.dat` format of nginx's geoip module is not read):
+
+```yaml
+http:
+  geoip:
+    country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
+    city_db: /usr/share/GeoIP/GeoLite2-City.mmdb
+    asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
+```
+
+Variables (usable in `map`, `if`, `set`, `rewrite` and `proxy_set_headers`): `$geoip_country_code`, `$geoip_country_name`, `$geoip_continent_code`, `$geoip_city`, `$geoip_city_country_code`, `$geoip_region`, `$geoip_region_name`, `$geoip_postal_code`, `$geoip_latitude`, `$geoip_longitude`, `$geoip_org`, `$geoip_asn`. They use the client IP after `real_ip`.
+
+### JSON variables (`type: json`)
+
+nginx `json_set $user_id $request_body .user.id;` → `http.variables.user_id: { type: json, source: $request_body, path: .user.id }`. Paths use `.key`, `[index]` and `["key with spaces"]`; strings come out raw, other values as compact JSON, missing ones empty. When a variable reads `$request_body`, request bodies up to `http.proxy_request_buffer_size` are read into it (and still forwarded unchanged); larger ones leave it empty.
+
+### CONNECT forward proxy (`tunnel`)
+
+nginx `tunnel_pass`: `CONNECT host:port` requests on the route open a TCP connection and relay bytes both ways (HTTPS through a forward proxy). Other methods get the route's normal target.
+
+```yaml
+routes:
+  - id: forward-proxy
+    path_prefix: /
+    target_type: return
+    redirect_code: 405
+    tunnel: { allowed_ports: [443], allowed_hosts: ["*.example.com"], idle_timeout_ms: 600000 }
+    allowed_ips: [10.0.0.0/8]   # keep a forward proxy private
+```
+
+`pass: "10.0.0.5:5432"` sends every tunnel to one fixed target.
+
+### More stream options
+
+```yaml
+streams:
+  - id: pg
+    listen: 0.0.0.0:5433
+    upstream: postgres
+    tls: { cert_path: /etc/ferrix/pg.pem, key_path: /etc/ferrix/pg.key }   # terminate TLS (listen ... ssl)
+    upstream_tls: { verify: true, server_name: db.internal, trusted_ca: /etc/ferrix/ca.pem }   # proxy_ssl on
+    allowed_ips: [10.0.0.0/8]       # allow / deny
+    denied_ips: []
+    limit_conn: 20                  # per client IP
+    upload_rate: 1048576            # proxy_upload_rate, bytes/s
+    download_rate: 1048576          # proxy_download_rate
+  - id: banner
+    listen: 0.0.0.0:7000
+    return_text: "maintenance\n"    # stream return: send and close, no upstream
+  - id: to-https
+    listen: 0.0.0.0:8443
+    pass: 127.0.0.1:443             # stream pass: hand the connection to a local listener
+```
+
+### HTTP/2 and HTTP/3 limits
+
+```yaml
+http:
+  http2:
+    max_concurrent_streams: 128      # http2_max_concurrent_streams
+    max_header_list_size: 65536      # http2_max_header_size
+    initial_stream_window: 65535     # http2_recv_buffer_size / http2_body_preread_size
+    initial_connection_window: 1048576
+    max_frame_size: 16384            # http2_chunk_size
+    keepalive_interval_ms: 30000     # PING idle connections
+  http3:
+    max_concurrent_streams: 128      # http3_max_concurrent_streams
+    stream_buffer_size: 65536        # http3_stream_buffer_size
+    idle_timeout_ms: 75000
+```
+
+They apply after a restart (the reload warns about it).

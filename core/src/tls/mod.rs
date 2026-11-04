@@ -1,4 +1,5 @@
 pub mod acme;
+pub mod client_cert;
 pub mod sni;
 
 use std::collections::BTreeMap;
@@ -105,6 +106,7 @@ mod tests {
                     cert_path: "/c.pem".into(),
                     key_path: "/k.pem".into(),
                     acme: false,
+                    ..Default::default()
                 }),
             )],
             ..Default::default()
@@ -127,6 +129,7 @@ mod tests {
                         cert_path: "/primeiro.pem".into(),
                         key_path: "/primeiro-key.pem".into(),
                         acme: false,
+                        ..Default::default()
                     }),
                 ),
                 vhost(
@@ -135,6 +138,7 @@ mod tests {
                         cert_path: "/segundo.pem".into(),
                         key_path: "/segundo-key.pem".into(),
                         acme: false,
+                        ..Default::default()
                     }),
                 ),
             ],
@@ -157,6 +161,7 @@ mod tests {
                         cert_path: "/c.pem".into(),
                         key_path: "/k.pem".into(),
                         acme: false,
+                        ..Default::default()
                     }),
                 ),
             ],

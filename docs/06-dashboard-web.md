@@ -134,3 +134,7 @@ For engineers who prefer editing configurations in code:
 - **Virtual Hosts → Rewrite tab**: server-level `if` and `rewrite`.
 - **Upstreams**: sticky cookie and consistent hash (hash key).
 - **Server** page: access log to a file, variables (`map` / `geo` / `split_clients`) and TCP/UDP streams with SNI routing (`ssl_preread`).
+- **Route → "nginx modules"** also covers backend response rewrites (`proxy_redirect`, `proxy_cookie_*`, `proxy_intercept_errors`), the response cache with stale/lock/revalidate, `limit_except`, `limit_rate`, addition/charset/gunzip, `userid`, CONNECT tunnels, `empty_gif` and `random_index`; the *memcached* target.
+- **Virtual Hosts → TLS tab**: certificate or Let's Encrypt, client certificates (`ssl_verify_client`) and OCSP stapling file; **Error pages** tab.
+- **Upstreams**: backend TLS (`proxy_ssl_*`) and `least_time`.
+- **Server** page: PROXY protocol, URL/redirect normalization, GeoIP databases, HTTP/2 and HTTP/3 limits, `json` variables, and stream TLS, `proxy_ssl`, allow/deny, limits, rates, `return` and `pass`.

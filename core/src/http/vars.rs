@@ -43,11 +43,14 @@ pub struct Ctx<'a> {
     pub headers: &'a HeaderMap,
     pub client_ip: IpAddr,
     pub is_tls: bool,
-    pub defs: &'a HashMap<String, VariableDef>,
+    /// http settings: `variables` (map/geo/split_clients) and `geoip`.
+    pub http: &'a crate::config::HttpConfig,
     /// `set` results.
     pub set: HashMap<String, String>,
     /// `$1`..`$9` from the last matching regex.
     pub captures: Vec<String>,
+    /// TLS client certificate, for `$ssl_client_*`.
+    pub client_cert: Option<std::sync::Arc<crate::tls::client_cert::ClientCert>>,
 }
 
 fn query_arg<'q>(q: &'q str, name: &str) -> Option<&'q str> {
@@ -69,7 +72,7 @@ impl Ctx<'_> {
         if let Some(v) = self.set.get(name) {
             return v.clone();
         }
-        if let Some(def) = self.defs.get(name) {
+        if let Some(def) = self.http.variables.get(name) {
             if depth < 8 {
                 return self.eval_def(def, depth + 1);
             }
@@ -101,6 +104,32 @@ impl Ctx<'_> {
             "scheme" => if self.is_tls { "https" } else { "http" }.to_string(),
             "https" => if self.is_tls { "on" } else { "" }.to_string(),
             "request_method" => self.method.to_string(),
+            #[cfg(feature = "geoip")]
+            n if n.starts_with("geoip_") => match &self.http.geoip {
+                Some(g) => crate::http::geoip::variable(g, n, self.client_ip).unwrap_or_default(),
+                None => String::new(),
+            },
+            "ssl_client_verify" => if self.client_cert.is_some() {
+                "SUCCESS"
+            } else {
+                "NONE"
+            }
+            .to_string(),
+            "ssl_client_s_dn" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.subject.clone())
+                .unwrap_or_default(),
+            "ssl_client_i_dn" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.issuer.clone())
+                .unwrap_or_default(),
+            "ssl_client_escaped_cert" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.escaped_pem())
+                .unwrap_or_default(),
             "content_type" => hdr("content-type"),
             "content_length" => hdr("content-length"),
             n if n.starts_with("arg_") => query_arg(q, &n[4..]).unwrap_or("").to_string(),
@@ -168,6 +197,10 @@ impl Ctx<'_> {
                     .max_by_key(|(l, _)| *l)
                     .map(|(_, v)| v.clone())
                     .unwrap_or_else(|| default.clone())
+            }
+            VariableDef::Json { source, path } => {
+                let src = self.expand_depth(source, depth);
+                json_path(&src, path).unwrap_or_default()
             }
             VariableDef::SplitClients { source, buckets } => {
                 let src = self.expand_depth(source, depth);
@@ -297,6 +330,41 @@ impl Ctx<'_> {
             _ => false,
         }
     }
+}
+
+/// Walks `.a.b[0]["c d"]` in a JSON document. Strings come out raw, other
+/// values as compact JSON, like nginx's json_set.
+pub fn json_path(doc: &str, path: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(doc).ok()?;
+    let mut rest = path.trim();
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('.') {
+            let end = r.find(['.', '[']).unwrap_or(r.len());
+            let key = &r[..end];
+            if !key.is_empty() {
+                v = v.get_mut(key)?.take();
+            }
+            rest = &r[end..];
+        } else if let Some(r) = rest.strip_prefix('[') {
+            let end = r.find(']')?;
+            let inner = r[..end].trim();
+            v = match inner.trim_matches('"').parse::<usize>() {
+                Ok(i) if !inner.starts_with('"') => v.get_mut(i)?.take(),
+                _ => v.get_mut(inner.trim_matches('"'))?.take(),
+            };
+            rest = &r[end + 1..];
+        } else {
+            // Leading key without a dot.
+            let end = rest.find(['.', '[']).unwrap_or(rest.len());
+            v = v.get_mut(&rest[..end])?.take();
+            rest = &rest[end..];
+        }
+    }
+    Some(match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    })
 }
 
 fn unquote(s: &str) -> &str {
@@ -435,15 +503,21 @@ mod tests {
 
     fn ctx<'a>(defs: &'a HashMap<String, VariableDef>, h: &'a HeaderMap, uri: &str) -> Ctx<'a> {
         static GET: Method = Method::GET;
+        let http: &'static crate::config::HttpConfig =
+            Box::leak(Box::new(crate::config::HttpConfig {
+                variables: defs.clone(),
+                ..Default::default()
+            }));
         Ctx {
             method: &GET,
             uri: uri.parse().unwrap(),
             headers: h,
             client_ip: "10.1.2.3".parse().unwrap(),
             is_tls: false,
-            defs,
+            http,
             set: HashMap::new(),
             captures: vec![],
+            client_cert: None,
         }
     }
 
@@ -562,5 +636,20 @@ mod tests {
         let mut c = ctx(&defs, &h, "/x");
         run_route_phase(&mut c, &[], &[("$v".into(), "a$uri".into())], &[], None);
         assert_eq!(c.var("v"), "a/x");
+    }
+
+    #[test]
+    fn json_paths() {
+        let doc = r#"{"user":{"name":"Ana","roles":["admin","dev"],"age":30},"a b":{"x":true}}"#;
+        assert_eq!(json_path(doc, ".user.name").as_deref(), Some("Ana"));
+        assert_eq!(json_path(doc, "user.roles[1]").as_deref(), Some("dev"));
+        assert_eq!(json_path(doc, ".user.age").as_deref(), Some("30"));
+        assert_eq!(json_path(doc, r#"["a b"].x"#).as_deref(), Some("true"));
+        assert_eq!(
+            json_path(doc, ".user.roles").as_deref(),
+            Some(r#"["admin","dev"]"#)
+        );
+        assert_eq!(json_path(doc, ".nope"), None);
+        assert_eq!(json_path("not json", ".a"), None);
     }
 }

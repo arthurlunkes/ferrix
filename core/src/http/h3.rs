@@ -30,10 +30,19 @@ pub fn spawn(
     let http = engine.store.config().http.clone();
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(
-        Duration::from_millis(http.keepalive_timeout_ms.max(1000))
-            .try_into()
-            .ok(),
+        Duration::from_millis(
+            http.http3
+                .idle_timeout_ms
+                .unwrap_or(http.keepalive_timeout_ms)
+                .max(1000),
+        )
+        .try_into()
+        .ok(),
     );
+    transport.max_concurrent_bidi_streams(http.http3.max_concurrent_streams.unwrap_or(128).into());
+    if let Some(b) = http.http3.stream_buffer_size {
+        transport.stream_receive_window(b.into());
+    }
     server.transport_config(Arc::new(transport));
     let endpoint = quinn::Endpoint::server(server, addr)
         .map_err(|e| format!("HTTP/3: cannot bind UDP {}: {}", addr, e))?;

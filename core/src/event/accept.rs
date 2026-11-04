@@ -64,10 +64,24 @@ pub async fn serve(
             .auto_date_header(false)
             .keep_alive(http.keepalive_timeout_ms > 0)
             .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
+        let l = &http.http2;
         b.http2()
             .timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
-            .keep_alive_interval(None);
+            .keep_alive_interval(l.keepalive_interval_ms.map(Duration::from_millis))
+            .max_concurrent_streams(l.max_concurrent_streams.unwrap_or(128));
+        if let Some(v) = l.max_header_list_size {
+            b.http2().max_header_list_size(v);
+        }
+        if let Some(v) = l.initial_stream_window {
+            b.http2().initial_stream_window_size(v);
+        }
+        if let Some(v) = l.initial_connection_window {
+            b.http2().initial_connection_window_size(v);
+        }
+        if let Some(v) = l.max_frame_size {
+            b.http2().max_frame_size(v.clamp(16_384, 16_777_215));
+        }
         if !http.serves(HttpProtocol::Http2) {
             b = b.http1_only();
         } else if !http1 {
@@ -111,7 +125,7 @@ pub async fn serve(
             continue;
         }
         warned = false;
-        let (tcp, addr) = match listener.accept().await {
+        let (mut tcp, mut addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
                 warn!(port, error = %e, "accept failed");
@@ -128,8 +142,20 @@ pub async fn serve(
         let tls = tls.clone();
         let fast = fast.clone();
         let alt_svc = alt_svc.clone();
+        let proxy_protocol = http.proxy_protocol;
+        let header_timeout = fast.header_timeout;
         tokio::spawn(async move {
             let _slot = slot;
+            if proxy_protocol {
+                match crate::net::proxy_protocol::read(&mut tcp, header_timeout).await {
+                    Ok(Some(real)) => addr = real,
+                    Ok(None) => {}
+                    Err(e) => {
+                        debug!(%addr, error = %e, "PROXY protocol header rejected");
+                        return;
+                    }
+                }
+            }
             let conn = match tls {
                 None if !http1 => Conn::Plain(tcp, axum::body::Bytes::new()),
                 None => {
@@ -144,13 +170,19 @@ pub async fn serve(
                 }
                 Some(acceptor) => Conn::Tls(acceptor, tcp),
             };
+            // Client certificate of this TLS connection, set after the handshake.
+            let peer_cert: Arc<std::sync::OnceLock<Arc<crate::tls::client_cert::ClientCert>>> =
+                Arc::new(std::sync::OnceLock::new());
+            let peer_for_service = peer_cert.clone();
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let engine = engine.clone();
                 let alt_svc = alt_svc.clone();
+                let mut req = req.map(Body::new);
+                if let Some(c) = peer_for_service.get() {
+                    req.extensions_mut().insert(c.clone());
+                }
                 async move {
-                    let mut resp = engine
-                        .handle_request(port, is_tls, addr, req.map(Body::new))
-                        .await;
+                    let mut resp = engine.handle_request(port, is_tls, addr, req).await;
                     resp.headers_mut()
                         .entry(hyper::header::DATE)
                         .or_insert_with(crate::event::clock::http_date);
@@ -168,7 +200,19 @@ pub async fn serve(
                         Some(serve_io!(builder, io, service))
                     }
                     Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
-                        Ok(stream) => Some(serve_io!(builder, stream, service)),
+                        Ok(stream) => {
+                            if let Some(der) = stream
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|c| c.first())
+                            {
+                                let _ = peer_cert.set(Arc::new(
+                                    crate::tls::client_cert::ClientCert::from_der(der),
+                                ));
+                            }
+                            Some(serve_io!(builder, stream, service))
+                        }
                         Err(e) => {
                             debug!(%addr, error = %e, "TLS handshake failed");
                             None

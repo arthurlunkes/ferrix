@@ -4,7 +4,9 @@ pub mod cgi;
 pub mod grpc;
 pub mod h1;
 pub mod hash;
+pub mod memcached;
 pub mod sticky;
+pub mod tls_client;
 
 use crate::event::clock::CoarseSleep;
 use axum::body::{Body, Bytes};
@@ -50,11 +52,21 @@ pub enum OutgoingBody {
 static TLS_VERIFIED: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(true));
 static TLS_INSECURE: LazyLock<TlsConnector> = LazyLock::new(|| h1::tls_connector(false));
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct UpstreamClient {
     connect_timeout: Duration,
     read_timeout: Duration,
     verify_tls: bool,
+    custom_tls: Option<&'static tls_client::CustomTls>,
+}
+
+impl std::fmt::Debug for UpstreamClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpstreamClient")
+            .field("verify_tls", &self.verify_tls)
+            .field("custom_tls", &self.custom_tls.is_some())
+            .finish()
+    }
 }
 
 impl UpstreamClient {
@@ -63,10 +75,31 @@ impl UpstreamClient {
             connect_timeout,
             read_timeout,
             verify_tls,
+            custom_tls: None,
         }
     }
 
+    /// Uses the upstream's own TLS client settings (client cert, CA, name).
+    pub fn with_tls(mut self, cfg: Option<&crate::config::UpstreamTlsConfig>) -> Self {
+        self.custom_tls = tls_client::get(cfg, self.verify_tls);
+        self
+    }
+
+    fn pool_key<'a>(&self, base: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.custom_tls {
+            Some(c) => format!("{base}#{}", c.pool_tag).into(),
+            None => base.into(),
+        }
+    }
+
+    fn sni(&self) -> Option<&'static str> {
+        self.custom_tls.and_then(|c| c.server_name.as_deref())
+    }
+
     fn tls(&self) -> &'static TlsConnector {
+        if let Some(c) = self.custom_tls {
+            return &c.connector;
+        }
         if self.verify_tls {
             &TLS_VERIFIED
         } else {
@@ -86,6 +119,7 @@ impl UpstreamClient {
         let target = Target::parse(base)
             .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
         let insecure = target.tls && !self.verify_tls;
+        let pool_key = self.pool_key(base);
         let deadline_ms = crate::event::clock::mono_ms() + self.read_timeout.as_millis() as u64;
 
         let attempt = async {
@@ -102,7 +136,7 @@ impl UpstreamClient {
             let mut reuse = streaming.is_none();
             loop {
                 let pooled = if reuse {
-                    h1::pooled(base, insecure)
+                    h1::pooled(&pool_key, insecure)
                 } else {
                     None
                 };
@@ -110,8 +144,8 @@ impl UpstreamClient {
                 let conn = match pooled {
                     Some(c) => c,
                     None => {
-                        let tls = target.tls.then_some((self.tls(), insecure));
-                        Box::pin(h1::connect(&target, base, self.connect_timeout, tls)).await?
+                        let tls = target.tls.then_some((self.tls(), insecure, self.sni()));
+                        Box::pin(h1::connect(&target, &pool_key, self.connect_timeout, tls)).await?
                     }
                 };
                 let req_body = match (&full, streaming.take()) {
@@ -167,6 +201,7 @@ impl UpstreamClient {
         let target = Target::parse(base)
             .ok_or_else(|| UpstreamError::Other(format!("Invalid upstream URL: {}", base)))?;
         let insecure = target.tls && !self.verify_tls;
+        let pool_key = self.pool_key(base);
         let deadline_ms = crate::event::clock::mono_ms() + self.read_timeout.as_millis() as u64;
         let mut request = Vec::with_capacity(512);
         encode(target.authority, &mut request);
@@ -175,7 +210,7 @@ impl UpstreamClient {
             let mut reuse = true;
             loop {
                 let pooled = if reuse {
-                    h1::pooled(base, insecure)
+                    h1::pooled(&pool_key, insecure)
                 } else {
                     None
                 };
@@ -183,8 +218,8 @@ impl UpstreamClient {
                 let conn = match pooled {
                     Some(c) => c,
                     None => {
-                        let tls = target.tls.then_some((self.tls(), insecure));
-                        Box::pin(h1::connect(&target, base, self.connect_timeout, tls)).await?
+                        let tls = target.tls.then_some((self.tls(), insecure, self.sni()));
+                        Box::pin(h1::connect(&target, &pool_key, self.connect_timeout, tls)).await?
                     }
                 };
                 let mark = client_head.len();

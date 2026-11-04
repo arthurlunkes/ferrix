@@ -13,6 +13,8 @@ pub struct UpstreamPoolManager {
     rr_indices: RwLock<HashMap<String, AtomicUsize>>,
 
     active_connections: RwLock<HashMap<String, Arc<AtomicI64>>>,
+    /// EWMA of response time per target, in microseconds (least_time).
+    latency_us: RwLock<HashMap<String, Arc<AtomicI64>>>,
     health_checker: Arc<HealthChecker>,
 }
 
@@ -21,6 +23,7 @@ impl UpstreamPoolManager {
         Self {
             rr_indices: RwLock::new(HashMap::new()),
             active_connections: RwLock::new(HashMap::new()),
+            latency_us: RwLock::new(HashMap::new()),
             health_checker,
         }
     }
@@ -38,6 +41,41 @@ impl UpstreamPoolManager {
         map.entry(target_url.to_string())
             .or_insert_with(|| Arc::new(AtomicI64::new(0)))
             .clone()
+    }
+
+    fn latency_cell(&self, target_url: &str) -> Arc<AtomicI64> {
+        if let Some(c) = self
+            .latency_us
+            .read()
+            .ok()
+            .and_then(|m| m.get(target_url).cloned())
+        {
+            return c;
+        }
+        match self.latency_us.write() {
+            Ok(mut m) => m
+                .entry(target_url.to_string())
+                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
+                .clone(),
+            Err(_) => Arc::new(AtomicI64::new(0)),
+        }
+    }
+
+    /// Feeds one response time into the target's moving average (weight 1/8).
+    pub fn record_latency(&self, target_url: &str, ms: f64) {
+        let cell = self.latency_cell(target_url);
+        let sample = (ms * 1000.0) as i64;
+        let old = cell.load(Ordering::Relaxed);
+        let new = if old == 0 {
+            sample
+        } else {
+            old + (sample - old) / 8
+        };
+        cell.store(new.max(1), Ordering::Relaxed);
+    }
+
+    pub fn avg_latency_us(&self, target_url: &str) -> i64 {
+        self.latency_cell(target_url).load(Ordering::Relaxed)
     }
 
     pub fn inc_conn(&self, target_url: &str) {
@@ -178,6 +216,18 @@ impl UpstreamPoolManager {
                 pool.sort_by_cached_key(|t| self.active_conns(&t.url));
                 pool
             }
+            LoadBalanceAlgorithm::LeastTime => {
+                // Untried targets (0) go first so every target gets measured;
+                // ties rotate round-robin.
+                let idx = self.next_rr_index(&upstream.name, pool.len());
+                pool.rotate_left(idx);
+                pool.sort_by_cached_key(|t| {
+                    let lat = self.avg_latency_us(&t.url);
+                    let conns = self.active_conns(&t.url).max(0) + 1;
+                    lat.saturating_mul(conns)
+                });
+                pool
+            }
             LoadBalanceAlgorithm::IpHash | LoadBalanceAlgorithm::ConsistentHash => {
                 let mut hasher = DefaultHasher::new();
                 client_ip.hash(&mut hasher);
@@ -223,6 +273,7 @@ mod tests {
             verify_tls: true,
             hash_key: None,
             sticky: None,
+            tls: None,
         }
     }
 
@@ -329,6 +380,27 @@ mod tests {
 
         m.inc_conn("unico");
         assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1"))), vec!["unico"]);
+    }
+
+    #[test]
+    fn least_time_prefers_the_fastest_target() {
+        let m = manager();
+        let mut p = pool("p", vec![target("slow"), target("fast"), target("new")]);
+        p.algorithm = LoadBalanceAlgorithm::LeastTime;
+        m.record_latency("slow", 80.0);
+        m.record_latency("fast", 5.0);
+        // An unmeasured target is tried first, then the fastest.
+        assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1")))[0], "new");
+        m.record_latency("new", 40.0);
+        assert_eq!(
+            urls(&m.select_targets(&p, ip("1.1.1.1"))),
+            vec!["fast", "new", "slow"]
+        );
+        // Busy targets are penalised by their active connections.
+        for _ in 0..20 {
+            m.inc_conn("fast");
+        }
+        assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1")))[0], "new");
     }
 
     #[test]

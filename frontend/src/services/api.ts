@@ -66,6 +66,7 @@ export type LoadBalanceAlgorithm =
   | "least_conn"
   | "ip_hash"
   | "consistent_hash"
+  | "least_time"
   | "random";
 
 export interface UpstreamConfig {
@@ -76,6 +77,7 @@ export interface UpstreamConfig {
   verify_tls: boolean;
   hash_key?: string | null;
   sticky?: StickyConfig | null;
+  tls?: UpstreamTlsConfig | null;
 }
 
 export interface StickyConfig {
@@ -152,7 +154,7 @@ export interface RouteRule {
   path_prefix: string;
   match_type: RouteMatchType;
   strip_prefix: boolean;
-  target_type: "proxy_upstream" | "static_files" | "redirect" | "return" | "cgi";
+  target_type: "proxy_upstream" | "static_files" | "redirect" | "return" | "cgi" | "memcached";
   upstream_name?: string | null;
   static_root?: string | null;
   try_files?: string | null;
@@ -189,6 +191,81 @@ export interface RouteRule {
   image_filter?: ImageFilterConfig | null;
   cgi?: CgiConfig | null;
   grpc?: boolean;
+  cache?: CacheConfig | null;
+  proxy_redirect?: [string, string][];
+  proxy_cookie_path?: [string, string][];
+  proxy_cookie_domain?: [string, string][];
+  proxy_cookie_flags?: [string, string][];
+  proxy_intercept_errors?: boolean;
+  limit_except?: { methods: string[]; allow: string[] } | null;
+  limit_rate?: number;
+  limit_rate_after?: number;
+  empty_gif?: boolean;
+  random_index?: boolean;
+  userid?: UserIdConfig | null;
+  add_before_body?: string | null;
+  add_after_body?: string | null;
+  addition_types?: string[];
+  gunzip?: boolean;
+  charset?: string | null;
+  source_charset?: string | null;
+  override_charset?: boolean;
+  charset_types?: string[];
+  memcached?: MemcachedConfig | null;
+  tunnel?: TunnelConfig | null;
+}
+
+export interface CacheConfig {
+  valid_secs: number;
+  bypass_headers: string[];
+  bypass_cookies: string[];
+  bypass_query_params: string[];
+  use_stale: string[];
+  stale_keep_secs: number;
+  lock: boolean;
+  lock_timeout_ms?: number | null;
+  revalidate: boolean;
+  background_update: boolean;
+}
+
+export interface UserIdConfig {
+  name?: string | null;
+  domain?: string | null;
+  path?: string | null;
+  expires_secs?: number | null;
+  flags?: string | null;
+}
+
+export interface MemcachedConfig {
+  pass: string;
+  key?: string | null;
+  content_type?: string | null;
+  gzip_flag?: number | null;
+}
+
+export interface TunnelConfig {
+  pass?: string | null;
+  allowed_ports: number[];
+  allowed_hosts: string[];
+  idle_timeout_ms?: number | null;
+}
+
+export type ClientVerify = "off" | "on" | "optional";
+
+export interface TlsConfig {
+  cert_path: string;
+  key_path: string;
+  acme: boolean;
+  verify_client?: ClientVerify;
+  client_ca?: string | null;
+  ocsp_file?: string | null;
+}
+
+export interface UpstreamTlsConfig {
+  client_cert?: string | null;
+  client_key?: string | null;
+  trusted_ca?: string | null;
+  server_name?: string | null;
 }
 
 export interface AuthRequestConfig {
@@ -265,6 +342,8 @@ export interface VirtualHost {
   basic_auth?: BasicAuthConfig | null;
   satisfy: Satisfy;
   routes: RouteRule[];
+  tls?: TlsConfig | null;
+  error_pages?: Record<string, string>;
   conditions?: ConditionConfig[];
   rewrites?: RewriteRule[];
 }
@@ -305,6 +384,14 @@ export interface HttpConfig {
   proxy_request_buffer_size: number;
   access_log?: AccessLogConfig | null;
   variables?: Record<string, VariableDef>;
+  proxy_protocol?: boolean;
+  merge_slashes?: boolean;
+  absolute_redirect?: boolean;
+  port_in_redirect?: boolean;
+  server_name_in_redirect?: boolean;
+  geoip?: { country_db?: string | null; city_db?: string | null; asn_db?: string | null } | null;
+  http2?: Record<string, number | null>;
+  http3?: Record<string, number | null>;
 }
 
 export interface AccessLogConfig {
@@ -315,7 +402,8 @@ export interface AccessLogConfig {
 export type VariableDef =
   | { type: "map"; source: string; entries: { pattern: string; value: string }[]; default: string }
   | { type: "geo"; source?: string | null; ranges: { network: string; value: string }[]; default: string }
-  | { type: "split_clients"; source: string; buckets: { percent: number; value: string }[] };
+  | { type: "split_clients"; source: string; buckets: { percent: number; value: string }[] }
+  | { type: "json"; source: string; path: string };
 
 export type StreamProtocol = "tcp" | "udp";
 
@@ -327,6 +415,17 @@ export interface StreamConfig {
   connect_timeout_ms: number;
   idle_timeout_ms: number;
   sni_routes?: Record<string, string>;
+  accept_proxy_protocol?: boolean;
+  send_proxy_protocol?: boolean;
+  tls?: { cert_path: string; key_path: string } | null;
+  upstream_tls?: ({ verify: boolean } & UpstreamTlsConfig) | null;
+  allowed_ips?: string[];
+  denied_ips?: string[];
+  limit_conn?: number | null;
+  upload_rate?: number;
+  download_rate?: number;
+  return_text?: string | null;
+  pass?: string | null;
 }
 
 export interface FerrixConfig {

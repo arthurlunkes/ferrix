@@ -165,6 +165,7 @@ mod tests {
             verify_tls: true,
             hash_key: Some("$request_uri".into()),
             sticky: None,
+            tls: None,
         }
     }
 

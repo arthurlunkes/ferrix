@@ -15,7 +15,21 @@ pub struct CachedResponse {
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
     expires_at: Instant,
+    stale_until: Instant,
     inserted_seq: u64,
+}
+
+impl CachedResponse {
+    pub fn is_fresh(&self) -> bool {
+        self.expires_at > Instant::now()
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 struct Entry {
@@ -25,6 +39,8 @@ struct Entry {
 pub struct ResponseCache {
     entries: RwLock<HashMap<String, Entry>>,
     seq: std::sync::atomic::AtomicU64,
+    /// Per-key fill locks (proxy_cache_lock / updating).
+    locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ResponseCache {
@@ -32,15 +48,22 @@ impl ResponseCache {
         Arc::new(Self {
             entries: RwLock::new(HashMap::new()),
             seq: std::sync::atomic::AtomicU64::new(0),
+            locks: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
+    /// Fresh entries only.
     pub fn get(&self, key: &str) -> Option<CachedResponse> {
+        self.get_any(key).filter(|r| r.is_fresh())
+    }
+
+    /// Fresh or still-kept stale entry; drops it once the stale window is over.
+    pub fn get_any(&self, key: &str) -> Option<CachedResponse> {
         let now = Instant::now();
         {
             let entries = self.entries.read().ok()?;
             let entry = entries.get(key)?;
-            if entry.response.expires_at > now {
+            if entry.response.stale_until > now {
                 return Some(entry.response.clone());
             }
         }
@@ -51,6 +74,31 @@ impl ResponseCache {
         None
     }
 
+    /// Marks a revalidated entry fresh again.
+    pub fn refresh(&self, key: &str, valid_for: Duration, keep_stale: Duration) {
+        if let Ok(mut entries) = self.entries.write() {
+            if let Some(e) = entries.get_mut(key) {
+                e.response.expires_at = Instant::now() + valid_for;
+                e.response.stale_until = e.response.expires_at + keep_stale;
+            }
+        }
+    }
+
+    pub fn lock_for(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = match self.locks.lock() {
+            Ok(l) => l,
+            Err(p) => p.into_inner(),
+        };
+        // Drop locks nobody holds any more so the map stays small.
+        if locks.len() > 1024 {
+            locks.retain(|_, l| Arc::strong_count(l) > 1);
+        }
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     pub fn put(
         &self,
         key: String,
@@ -59,12 +107,26 @@ impl ResponseCache {
         body: Bytes,
         valid_for: Duration,
     ) {
+        self.put_keeping(key, status, headers, body, valid_for, Duration::ZERO)
+    }
+
+    pub fn put_keeping(
+        &self,
+        key: String,
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Bytes,
+        valid_for: Duration,
+        keep_stale: Duration,
+    ) {
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let expires_at = Instant::now() + valid_for;
         let response = CachedResponse {
             status,
             headers,
             body,
-            expires_at: Instant::now() + valid_for,
+            expires_at,
+            stale_until: expires_at + keep_stale,
             inserted_seq: seq,
         };
 
@@ -286,12 +348,13 @@ impl ProxyEngine {
             .await
         {
             Ok(bytes) => {
-                self.response_cache.put(
+                self.response_cache.put_keeping(
                     key,
                     parts.status.as_u16(),
                     headers,
                     bytes.clone(),
                     Duration::from_secs(cfg.valid_secs),
+                    keep_stale(cfg),
                 );
                 let mut r = Response::from_parts(parts, Body::from(bytes));
                 if let Some(v) = crate::http::cache::header_value("MISS") {
@@ -305,6 +368,180 @@ impl ProxyEngine {
             )
                 .into_response(),
         }
+    }
+}
+
+fn keep_stale(cfg: &CacheConfig) -> Duration {
+    if cfg.use_stale.is_empty() && !cfg.revalidate {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(cfg.stale_keep_secs)
+    }
+}
+
+/// Whether `status` (from the backend, or Ferrix's own 502/504 on error /
+/// timeout) lets a stale entry be served instead.
+pub(super) fn stale_allowed(cfg: &CacheConfig, status: u16) -> bool {
+    cfg.use_stale.iter().any(|c| match c.as_str() {
+        "error" => status == 502,
+        "timeout" => status == 504,
+        other => {
+            other
+                .strip_prefix("http_")
+                .and_then(|n| n.parse::<u16>().ok())
+                == Some(status)
+        }
+    })
+}
+
+fn tag(mut r: Response, status: &str) -> Response {
+    if let Some(v) = crate::http::cache::header_value(status) {
+        r.headers_mut().insert("x-cache-status", v);
+    }
+    r
+}
+
+impl ProxyEngine {
+    /// Cache lookup + fill for a proxied GET/HEAD, with nginx's stale, lock,
+    /// revalidate and background-update behaviour.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn serve_with_cache(
+        &self,
+        compiled: &crate::http::matcher::CompiledConfig,
+        route: &crate::config::RouteRule,
+        upstream_name: &str,
+        upstream_cfg: &crate::config::UpstreamConfig,
+        targets: Vec<&crate::config::UpstreamTarget>,
+        is_tls: bool,
+        client_ip: std::net::IpAddr,
+        mut parts: axum::http::request::Parts,
+        body: Body,
+        key: String,
+        cfg: &CacheConfig,
+    ) -> Response {
+        let cache = &self.response_cache;
+        let stale = match cache.get_any(&key) {
+            Some(e) if e.is_fresh() => return tag(build_cached_response(&e), "HIT"),
+            other => other,
+        };
+        let updating = cfg.use_stale.iter().any(|c| c == "updating");
+
+        let mut _guard = None;
+        if cfg.lock || (updating && stale.is_some()) {
+            let lock = cache.lock_for(&key);
+            match (&stale, lock.clone().try_lock_owned()) {
+                (_, Ok(g)) => _guard = Some(g),
+                // Someone is already refreshing: hand out the stale copy.
+                (Some(s), Err(_)) if updating => return tag(build_cached_response(s), "UPDATING"),
+                (_, Err(_)) => {
+                    let wait = Duration::from_millis(cfg.lock_timeout_ms.unwrap_or(5000));
+                    if let Ok(g) = tokio::time::timeout(wait, lock.lock_owned()).await {
+                        if let Some(e) = cache.get(&key) {
+                            return tag(build_cached_response(&e), "HIT");
+                        }
+                        _guard = Some(g);
+                    }
+                }
+            }
+        }
+
+        if let (Some(s), true, Some(guard)) =
+            (&stale, cfg.background_update && updating, _guard.take())
+        {
+            // Serve stale now; refresh with a plain GET in the background.
+            if let Some(target) = targets.first() {
+                let base = target.url.clone();
+                let path = super::build_target_path(&parts.uri, parts.uri.path(), route);
+                let mut headers = parts.headers.clone();
+                super::proxy::prepare_forwarded_headers(&mut headers, route, client_ip, is_tls);
+                let http = &compiled.config.http;
+                let client = crate::http::upstream::UpstreamClient::new(
+                    Duration::from_millis(http.proxy_connect_timeout_ms),
+                    Duration::from_millis(http.proxy_read_timeout_ms),
+                    upstream_cfg.verify_tls,
+                )
+                .with_tls(upstream_cfg.tls.as_ref());
+                let cache = cache.clone();
+                let key = key.clone();
+                let valid = Duration::from_secs(cfg.valid_secs);
+                let keep = keep_stale(cfg);
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let Ok(r) = client
+                        .send(
+                            &axum::http::Method::GET,
+                            &base,
+                            &path,
+                            &headers,
+                            crate::http::upstream::OutgoingBody::Empty,
+                        )
+                        .await
+                    else {
+                        return;
+                    };
+                    if r.status() != StatusCode::OK
+                        || crate::http::cache::has_set_cookie(r.headers())
+                        || crate::http::cache::upstream_forbids_cache(r.headers())
+                    {
+                        return;
+                    }
+                    let headers = crate::http::cache::cacheable_headers(r.headers());
+                    if let Ok(b) = axum::body::to_bytes(
+                        r.into_body(),
+                        crate::http::cache::MAX_CACHEABLE_BODY_BYTES as usize,
+                    )
+                    .await
+                    {
+                        cache.put_keeping(key, 200, headers, b, valid, keep);
+                    }
+                });
+            }
+            return tag(build_cached_response(s), "UPDATING");
+        }
+
+        // proxy_cache_revalidate: ask with the validators of the stale copy.
+        let mut added_validators = false;
+        if let (true, Some(s)) = (cfg.revalidate, &stale) {
+            let client_asked = parts.headers.contains_key(header::IF_NONE_MATCH)
+                || parts.headers.contains_key(header::IF_MODIFIED_SINCE);
+            if !client_asked {
+                if let Some(v) = s.header("etag").and_then(crate::http::cache::header_value) {
+                    parts.headers.insert(header::IF_NONE_MATCH, v);
+                    added_validators = true;
+                }
+                if let Some(v) = s
+                    .header("last-modified")
+                    .and_then(crate::http::cache::header_value)
+                {
+                    parts.headers.insert(header::IF_MODIFIED_SINCE, v);
+                    added_validators = true;
+                }
+            }
+        }
+
+        let resp = self
+            .proxy_http_request(
+                compiled,
+                route,
+                upstream_name,
+                upstream_cfg,
+                targets,
+                is_tls,
+                client_ip,
+                axum::extract::Request::from_parts(parts, body),
+            )
+            .await;
+
+        if let Some(s) = &stale {
+            if added_validators && resp.status() == StatusCode::NOT_MODIFIED {
+                cache.refresh(&key, Duration::from_secs(cfg.valid_secs), keep_stale(cfg));
+                return tag(build_cached_response(s), "REVALIDATED");
+            }
+            if stale_allowed(cfg, resp.status().as_u16()) {
+                return tag(build_cached_response(s), "STALE");
+            }
+        }
+        Box::pin(self.store_if_cacheable(key, cfg, resp)).await
     }
 }
 
@@ -560,5 +797,143 @@ mod proxy_cache_tests {
             .store_if_cacheable("k3".to_string(), &cfg, resp)
             .await;
         assert!(engine.response_cache.get("k3").is_none());
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+    use crate::config::store::ConfigStore;
+    use crate::config::{CacheConfig, FerrixConfig, RouteRule, UpstreamConfig, UpstreamTarget};
+    use crate::health::HealthChecker;
+    use crate::metrics::MetricsCollector;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Backend that answers 304 to conditional requests and 200 "v1" otherwise.
+    async fn backend(hits: Arc<AtomicUsize>) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else {
+                    return;
+                };
+                let hits = hits.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                    let resp = if req.contains("if-none-match: \"v1\"") {
+                        "HTTP/1.1 304 Not Modified\r\netag: \"v1\"\r\nconnection: close\r\n\r\n"
+                            .to_string()
+                    } else {
+                        "HTTP/1.1 200 OK\r\netag: \"v1\"\r\ncontent-length: 2\r\nconnection: close\r\n\r\nv1".to_string()
+                    };
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn engine() -> ProxyEngine {
+        let store = ConfigStore::new(FerrixConfig::default(), "test.json");
+        ProxyEngine::new(
+            Arc::new(store),
+            MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        )
+    }
+
+    async fn get(e: &ProxyEngine, url: &str, cfg: &CacheConfig) -> (String, String) {
+        let compiled =
+            crate::http::matcher::CompiledConfig::build(Arc::new(FerrixConfig::default()));
+        let route = RouteRule::default();
+        let target = UpstreamTarget {
+            url: url.into(),
+            weight: 1,
+            max_fails: 100,
+            fail_timeout_secs: 1,
+            backup: false,
+            down: false,
+            max_conns: None,
+        };
+        let up = UpstreamConfig {
+            name: "u".into(),
+            algorithm: Default::default(),
+            targets: vec![target.clone()],
+            health_check: None,
+            verify_tls: true,
+            hash_key: None,
+            sticky: None,
+            tls: None,
+        };
+        let parts = axum::extract::Request::builder()
+            .uri("/x")
+            .header("host", "h")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0;
+        let r = e
+            .serve_with_cache(
+                &compiled,
+                &route,
+                "u",
+                &up,
+                vec![&target],
+                false,
+                "127.0.0.1".parse().unwrap(),
+                parts,
+                Body::empty(),
+                "k".into(),
+                cfg,
+            )
+            .await;
+        let tag = r
+            .headers()
+            .get("x-cache-status")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let b = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
+        (tag, String::from_utf8_lossy(&b).into())
+    }
+
+    #[tokio::test]
+    async fn revalidate_then_stale_on_error() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = backend(hits.clone()).await;
+        let e = engine();
+        let cfg = CacheConfig {
+            valid_secs: 0,
+            revalidate: true,
+            use_stale: vec!["error".into()],
+            ..Default::default()
+        };
+        assert_eq!(get(&e, &url, &cfg).await, ("MISS".into(), "v1".into()));
+        // Expired at once: revalidated with If-None-Match → 304 → cached body.
+        assert_eq!(
+            get(&e, &url, &cfg).await,
+            ("REVALIDATED".into(), "v1".into())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        // Backend gone: the stale copy is served.
+        assert_eq!(
+            get(&e, "http://127.0.0.1:1", &cfg).await,
+            ("STALE".into(), "v1".into())
+        );
+    }
+
+    #[test]
+    fn stale_conditions() {
+        let cfg = CacheConfig {
+            use_stale: vec!["error".into(), "timeout".into(), "http_503".into()],
+            ..Default::default()
+        };
+        assert!(stale_allowed(&cfg, 502) && stale_allowed(&cfg, 504) && stale_allowed(&cfg, 503));
+        assert!(!stale_allowed(&cfg, 500) && !stale_allowed(&cfg, 200));
     }
 }

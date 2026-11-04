@@ -458,6 +458,48 @@ fn load_file(
     })))
 }
 
+/// nginx `empty_gif`: the classic 43-byte transparent 1×1 GIF.
+pub const EMPTY_GIF: &[u8] = &[
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
+];
+
+pub fn empty_gif() -> Response<Body> {
+    let mut r = Response::new(Body::from(EMPTY_GIF));
+    r.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/gif"));
+    r
+}
+
+/// nginx `random_index`: for `dir/` returns `dir/<random visible file>`.
+pub fn random_index(root_dir: &str, path: &str) -> Option<String> {
+    if !path.ends_with('/') {
+        return None;
+    }
+    let base = PathBuf::from(root_dir).canonicalize().ok()?;
+    let dir = base
+        .join(path.trim_start_matches('/'))
+        .canonicalize()
+        .ok()?;
+    if !dir.starts_with(&base) {
+        return None;
+    }
+    let files: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    let pick = (crate::event::clock::mono_ms() as usize ^ uuid::Uuid::new_v4().as_u128() as usize)
+        % files.len();
+    Some(format!("{path}{}", files[pick]))
+}
+
 /// FLV header sent before data served from an offset (nginx `ngx_http_flv_module`).
 const FLV_HEADER: &[u8] = b"FLV\x01\x05\0\0\0\x09\0\0\0\0";
 
@@ -759,5 +801,16 @@ mod tests {
         let b = r.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&b[..13], FLV_HEADER);
         assert_eq!(&b[13..], b"789");
+    }
+
+    #[test]
+    fn random_index_picks_a_visible_file() {
+        let d = dir_with("a.html", "a");
+        std::fs::write(d.0.join(".hidden"), "x").unwrap();
+        for _ in 0..10 {
+            assert_eq!(random_index(d.root(), "/").as_deref(), Some("/a.html"));
+        }
+        assert!(random_index(d.root(), "/a.html").is_none());
+        assert_eq!(EMPTY_GIF.len(), 43);
     }
 }

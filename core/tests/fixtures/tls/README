@@ -1,0 +1,2 @@
+Test-only certificates (100-year validity) for the upstream mTLS test.
+Not versioned: generate with ./gerar.sh (CI does it). The CA key is discarded. Never use them outside tests.

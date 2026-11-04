@@ -66,6 +66,13 @@ struct Converter {
 
     stream_maps: HashMap<String, HashMap<String, String>>,
 
+    /// Per server: location path → full backend URL of its proxy_pass
+    /// (targets for `auth_request` / `mirror`).
+    internal_locations: HashMap<String, String>,
+
+    /// proxy_cache_use_stale / _lock / _revalidate / _background_update in scope.
+    cache_tuning: CacheConfig,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -99,6 +106,8 @@ impl Converter {
             http_headers: HashMap::new(),
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
+            internal_locations: HashMap::new(),
+            cache_tuning: CacheConfig::default(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -403,9 +412,22 @@ impl Converter {
         let mut pass: Option<String> = None;
         let mut connect_timeout_ms = 5_000;
         let mut idle_timeout_ms = 600_000;
+        let mut accept_pp = false;
+        let mut send_pp = false;
+        let mut extra = StreamConfig::default();
+        let mut listen_ssl = false;
+        let mut ssl_cert: Option<String> = None;
+        let mut ssl_key: Option<String> = None;
+        let mut proxy_ssl = false;
+        let mut up_tls = crate::config::StreamUpstreamTls {
+            verify: false, // nginx default for proxy_ssl_verify
+            ..Default::default()
+        };
         for item in block {
             match item.name.as_str() {
                 "listen" => {
+                    accept_pp |= item.args.iter().any(|a| a == "proxy_protocol");
+                    listen_ssl |= item.args.iter().any(|a| a == "ssl");
                     if let Some(addr) = item.arg(0) {
                         let addr = if addr.contains(':') {
                             addr.to_string()
@@ -432,9 +454,62 @@ impl Converter {
                     }
                 }
                 "ssl_preread" => {}
+                "proxy_protocol" => send_pp = item.arg(0) == Some("on"),
+                "allow" => extra.allowed_ips.extend(item.arg(0).map(String::from)),
+                "deny" => extra.denied_ips.extend(item.arg(0).map(String::from)),
+                "limit_conn" => extra.limit_conn = item.arg(1).and_then(|v| v.parse().ok()),
+                "proxy_upload_rate" => {
+                    extra.upload_rate = item.arg(0).and_then(parse_size).unwrap_or(0)
+                }
+                "proxy_download_rate" => {
+                    extra.download_rate = item.arg(0).and_then(parse_size).unwrap_or(0)
+                }
+                "return" => extra.return_text = item.arg(0).map(String::from),
+                "pass" => extra.pass = item.arg(0).map(String::from),
+                "ssl_certificate" => ssl_cert = item.arg(0).map(String::from),
+                "ssl_certificate_key" => ssl_key = item.arg(0).map(String::from),
+                "ssl_protocols"
+                | "ssl_ciphers"
+                | "ssl_session_cache"
+                | "ssl_session_timeout"
+                | "ssl_prefer_server_ciphers"
+                | "ssl_handshake_timeout" => {}
+                "proxy_ssl" => proxy_ssl = item.arg(0) == Some("on"),
+                "proxy_ssl_verify" => up_tls.verify = item.arg(0) == Some("on"),
+                "proxy_ssl_name" => up_tls.settings.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_trusted_certificate" => {
+                    up_tls.settings.trusted_ca = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_certificate" => {
+                    up_tls.settings.client_cert = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_certificate_key" => {
+                    up_tls.settings.client_key = item.arg(0).map(String::from)
+                }
+                "proxy_ssl_server_name"
+                | "proxy_ssl_protocols"
+                | "proxy_ssl_ciphers"
+                | "proxy_ssl_session_reuse" => {}
                 _ => self.note_unsupported(item),
             }
         }
+        if listen_ssl {
+            if let (Some(cert_path), Some(key_path)) = (ssl_cert, ssl_key) {
+                extra.tls = Some(crate::config::StreamTlsConfig {
+                    cert_path,
+                    key_path,
+                });
+            }
+        }
+        if proxy_ssl {
+            extra.upstream_tls = Some(up_tls);
+        }
+        let no_upstream = extra.return_text.is_some() || extra.pass.is_some();
+        let pass = match pass {
+            Some(p) => Some(p),
+            None if no_upstream => Some(String::new()),
+            None => None,
+        };
         let (Some((listen, protocol)), Some(pass)) = (listen, pass) else {
             self.report.unsupported(
                 &self.file,
@@ -456,7 +531,9 @@ impl Converter {
                 .cloned()
                 .unwrap_or_default()
         };
-        let upstream = if self.config.upstreams.contains_key(&pass) {
+        let upstream = if no_upstream && pass.is_empty() {
+            String::new()
+        } else if self.config.upstreams.contains_key(&pass) {
             pass
         } else {
             let name = format!("stream-{}", port);
@@ -478,6 +555,7 @@ impl Converter {
                     verify_tls: true,
                     hash_key: None,
                     sticky: None,
+                    tls: None,
                 },
             );
             name
@@ -490,8 +568,38 @@ impl Converter {
             connect_timeout_ms,
             idle_timeout_ms,
             sni_routes,
+            accept_proxy_protocol: accept_pp,
+            send_proxy_protocol: send_pp,
+            ..extra
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
+    }
+
+    /// `http://upstream_name/uri` → `<first target>/uri`; plain URLs as they are.
+    fn resolve_pass_url(&self, pass: &str) -> Option<String> {
+        let rest = pass
+            .strip_prefix("http://")
+            .or_else(|| pass.strip_prefix("https://"))?;
+        // A trailing $request_uri is what Ferrix sends anyway.
+        let rest = rest.strip_suffix("$request_uri").unwrap_or(rest);
+        if rest.contains('$') {
+            return None;
+        }
+        let (host, uri) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        Some(
+            match self
+                .config
+                .upstreams
+                .get(host)
+                .and_then(|u| u.targets.first())
+            {
+                Some(t) => format!("{}{}", t.url.trim_end_matches('/'), uri),
+                None => pass.to_string(),
+            },
+        )
     }
 
     fn convert_rewrite(&mut self, d: &Directive) -> Option<crate::config::RewriteRule> {
@@ -623,6 +731,51 @@ impl Converter {
         self.converted(d, "virou http.variables");
     }
 
+    /// http2_* / http3_* limits (http or server level, global in Ferrix).
+    fn apply_protocol_limit(&mut self, d: &Directive) -> bool {
+        let size = d
+            .arg(0)
+            .and_then(parse_size)
+            .map(|v| v.min(u32::MAX as u64) as u32);
+        let num = d.arg(0).and_then(|v| v.parse::<u32>().ok());
+        let h = &mut self.config.http;
+        match d.name.as_str() {
+            "http2_max_concurrent_streams" => h.http2.max_concurrent_streams = num,
+            "http2_max_header_size" | "http2_max_field_size" => h.http2.max_header_list_size = size,
+            "http2_recv_buffer_size" | "http2_body_preread_size" => {
+                h.http2.initial_stream_window = size
+            }
+            "http2_chunk_size" => h.http2.max_frame_size = size,
+            "http3_max_concurrent_streams" => h.http3.max_concurrent_streams = num,
+            "http3_stream_buffer_size" => h.http3.stream_buffer_size = size,
+            "http2_idle_timeout" | "http2_recv_timeout" => {
+                if let Some(ms) = d.arg(0).and_then(parse_time_ms) {
+                    h.keepalive_timeout_ms = ms;
+                }
+            }
+            "http2_max_requests"
+            | "http2_pool_size"
+            | "http2_streams_index_size"
+            | "http2_push"
+            | "http2_push_preload"
+            | "http2_max_concurrent_pushes"
+            | "http3_hq"
+            | "quic_gso"
+            | "quic_retry"
+            | "quic_host_key"
+            | "quic_active_connection_id_limit" => {
+                self.converted(
+                    d,
+                    "detalhe interno do protocolo; o Ferrix usa o padrão do hyper/quinn",
+                );
+                return true;
+            }
+            _ => return false,
+        }
+        self.converted(d, "virou http.http2 / http.http3");
+        true
+    }
+
     fn converted(&mut self, d: &Directive, msg: &str) {
         self.report.note(
             NoteLevel::Converted,
@@ -639,7 +792,73 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            n if n.starts_with("http2_") || n.starts_with("http3_") || n.starts_with("quic_") => {
+                if !self.apply_protocol_limit(d) {
+                    self.note_unsupported(d);
+                }
+            }
             "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "json_set" => match (d.arg(0), d.arg(1), d.arg(2)) {
+                (Some(name), Some(source), Some(path)) => {
+                    self.config.http.variables.insert(
+                        name.trim_start_matches('$').to_string(),
+                        crate::config::VariableDef::Json {
+                            source: source.to_string(),
+                            path: path.to_string(),
+                        },
+                    );
+                    self.converted(d, "virou uma variável json em http.variables");
+                }
+                _ => self.note_unsupported(d),
+            },
+            "json_max_depth" => {}
+            "geoip_country" | "geoip_city" | "geoip_org" | "geoip2" => {
+                let Some(path) = d.arg(0) else { return };
+                if path.ends_with(".dat") {
+                    self.report.unsupported(
+                        &self.file,
+                        d.line,
+                        &d.name,
+                        &d.source(),
+                        "o Ferrix lê bases MaxMind .mmdb (GeoLite2); baixe a versão .mmdb e use http.geoip",
+                    );
+                    return;
+                }
+                let g = self.config.http.geoip.get_or_insert_with(Default::default);
+                let lower = path.to_ascii_lowercase();
+                if d.name == "geoip_org" || lower.contains("asn") {
+                    g.asn_db = Some(path.to_string());
+                } else if d.name == "geoip_city" || lower.contains("city") {
+                    g.city_db = Some(path.to_string());
+                } else {
+                    g.country_db = Some(path.to_string());
+                }
+                self.converted(
+                    d,
+                    "virou http.geoip; use as variáveis $geoip_country_code, $geoip_city etc.",
+                );
+            }
+            "proxy_cache_use_stale"
+            | "proxy_cache_lock"
+            | "proxy_cache_lock_timeout"
+            | "proxy_cache_revalidate"
+            | "proxy_cache_background_update" => {
+                self.apply_cache_tuning(d);
+            }
+            "merge_slashes"
+            | "absolute_redirect"
+            | "port_in_redirect"
+            | "server_name_in_redirect" => {
+                let on = d.arg(0) == Some("on");
+                let h = &mut self.config.http;
+                match d.name.as_str() {
+                    "merge_slashes" => h.merge_slashes = on,
+                    "absolute_redirect" => h.absolute_redirect = on,
+                    "port_in_redirect" => h.port_in_redirect = on,
+                    _ => h.server_name_in_redirect = on,
+                }
+                self.converted(d, "virou uma opção global em http");
+            }
             "log_format" => {
                 let args: Vec<&str> = d
                     .args
@@ -888,6 +1107,7 @@ impl Converter {
                     }
                 }
                 "least_conn" => algorithm = Some(LoadBalanceAlgorithm::LeastConn),
+                "least_time" => algorithm = Some(LoadBalanceAlgorithm::LeastTime),
                 "ip_hash" => algorithm = Some(LoadBalanceAlgorithm::IpHash),
                 "random" => algorithm = Some(LoadBalanceAlgorithm::Random),
                 "hash" => {
@@ -956,6 +1176,7 @@ impl Converter {
                 verify_tls: true,
                 hash_key,
                 sticky,
+                tls: None,
             },
         );
     }
@@ -1013,6 +1234,12 @@ impl Converter {
     }
 
     fn convert_server(&mut self, d: &Directive) {
+        let tuning_outside = self.cache_tuning.clone();
+        self.convert_server_inner(d);
+        self.cache_tuning = tuning_outside;
+    }
+
+    fn convert_server_inner(&mut self, d: &Directive) {
         let Some(block) = &d.block else { return };
 
         (
@@ -1049,6 +1276,9 @@ impl Converter {
         let mut saw_ssl_listen = false;
         let mut ssl_cert: Option<String> = None;
         let mut ssl_key: Option<String> = None;
+        let mut client_verify = crate::config::ClientVerify::Off;
+        let mut client_ca: Option<String> = None;
+        let mut ocsp_file: Option<String> = None;
 
         let mut server_gzip: Option<bool> = None;
         let mut error_pages: Vec<&Directive> = Vec::new();
@@ -1062,6 +1292,27 @@ impl Converter {
                 "listen" => saw_ssl_listen |= self.apply_listen(item, &mut vhost),
                 "ssl_certificate" => ssl_cert = item.arg(0).map(|s| s.to_string()),
                 "ssl_certificate_key" => ssl_key = item.arg(0).map(|s| s.to_string()),
+                "ssl_verify_client" => {
+                    client_verify = match item.arg(0) {
+                        Some("on") => crate::config::ClientVerify::On,
+                        Some("optional") | Some("optional_no_ca") => {
+                            crate::config::ClientVerify::Optional
+                        }
+                        _ => crate::config::ClientVerify::Off,
+                    };
+                    self.converted(item, "virou tls.verify_client");
+                }
+                "ssl_stapling_file" => ocsp_file = item.arg(0).map(String::from),
+                "ssl_stapling" | "ssl_stapling_verify" => self.converted(
+                    item,
+                    "o Ferrix grampeia a resposta OCSP de tls.ocsp_file (ssl_stapling_file); \
+                     não busca no responder sozinho",
+                ),
+                "ssl_client_certificate" | "ssl_trusted_certificate" => {
+                    if item.name == "ssl_client_certificate" || client_ca.is_none() {
+                        client_ca = item.arg(0).map(String::from);
+                    }
+                }
                 "if" => {
                     certbot_redirect = self.try_convert_certbot_https_redirect(item);
                     if certbot_redirect.is_none() {
@@ -1085,6 +1336,17 @@ impl Converter {
                         self.converted(item, "virou um set no vhost");
                     }
                 }
+                "proxy_cache_use_stale"
+                | "proxy_cache_lock"
+                | "proxy_cache_lock_timeout"
+                | "proxy_cache_revalidate"
+                | "proxy_cache_background_update" => {
+                    self.apply_cache_tuning(item);
+                }
+                n if (n.starts_with("http2_")
+                    || n.starts_with("http3_")
+                    || n.starts_with("quic_"))
+                    && self.apply_protocol_limit(item) => {}
                 "server_name" => {
                     vhost.server_names.extend(item.args.iter().cloned());
                 }
@@ -1209,6 +1471,9 @@ impl Converter {
                     cert_path,
                     key_path,
                     acme: false,
+                    verify_client: client_verify,
+                    client_ca: client_ca.clone(),
+                    ocsp_file: ocsp_file.clone(),
                 });
                 if saw_ssl_listen {
                     self.report.note(
@@ -1241,8 +1506,36 @@ impl Converter {
             _ => {}
         }
 
+        self.internal_locations = block
+            .iter()
+            .filter(|l| l.name == "location")
+            .filter_map(|l| {
+                let path = l.args.last()?.clone();
+                let pass = l
+                    .block
+                    .iter()
+                    .flatten()
+                    .find(|d| d.name == "proxy_pass")?
+                    .arg(0)?;
+                Some((path, self.resolve_pass_url(pass)?))
+            })
+            .collect();
+
         for item in block {
             if item.name == "location" {
+                let is_internal = item.block.iter().flatten().any(|d| d.name == "internal");
+                if is_internal
+                    && item
+                        .args
+                        .last()
+                        .is_some_and(|p| self.internal_locations.contains_key(p))
+                {
+                    self.converted(
+                        item,
+                        "location interna: usada por auth_request/mirror, não vira rota pública",
+                    );
+                    continue;
+                }
                 (
                     self.cache_enabled,
                     self.cache_valid_secs,
@@ -1251,9 +1544,16 @@ impl Converter {
                     self.cache_bypass_query,
                 ) = server_cache_state.clone();
 
+                let tuning = self.cache_tuning.clone();
+                for d in item.block.iter().flatten() {
+                    if d.name.starts_with("proxy_cache_") {
+                        self.apply_cache_tuning(d);
+                    }
+                }
                 if let Some(route) = self.convert_location(item, server_root.as_deref()) {
                     vhost.routes.push(route);
                 }
+                self.cache_tuning = tuning;
             }
         }
 
@@ -1300,6 +1600,17 @@ impl Converter {
         for arg in &d.args {
             match arg.as_str() {
                 "ssl" => saw_ssl = true,
+                "proxy_protocol" => {
+                    self.config.http.proxy_protocol = true;
+                    self.report.note(
+                        NoteLevel::Converted,
+                        &self.file,
+                        d.line,
+                        "listen proxy_protocol",
+                        &d.source(),
+                        "virou http.proxy_protocol (vale para todas as portas HTTP do Ferrix)",
+                    );
+                }
                 "quic" | "http3" => self.report.unsupported(
                     &self.file,
                     d.line,
@@ -1612,7 +1923,31 @@ impl Converter {
             bypass_headers: self.cache_bypass_headers.clone(),
             bypass_cookies: self.cache_bypass_cookies.clone(),
             bypass_query_params: self.cache_bypass_query.clone(),
+            use_stale: self.cache_tuning.use_stale.clone(),
+            stale_keep_secs: self.cache_tuning.stale_keep_secs,
+            lock: self.cache_tuning.lock,
+            lock_timeout_ms: self.cache_tuning.lock_timeout_ms,
+            revalidate: self.cache_tuning.revalidate,
+            background_update: self.cache_tuning.background_update,
         })
+    }
+
+    /// Returns true when `d` was a cache-tuning directive.
+    fn apply_cache_tuning(&mut self, d: &Directive) -> bool {
+        let on = d.arg(0) == Some("on");
+        let t = &mut self.cache_tuning;
+        match d.name.as_str() {
+            "proxy_cache_use_stale" => {
+                t.use_stale = d.args.iter().filter(|a| *a != "off").cloned().collect()
+            }
+            "proxy_cache_lock" => t.lock = on,
+            "proxy_cache_lock_timeout" => t.lock_timeout_ms = d.arg(0).and_then(parse_time_ms),
+            "proxy_cache_revalidate" => t.revalidate = on,
+            "proxy_cache_background_update" => t.background_update = on,
+            _ => return false,
+        }
+        self.converted(d, "virou uma opção do cache da rota");
+        true
     }
 
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
@@ -1643,6 +1978,8 @@ impl Converter {
             return route.static_root.is_some().then_some(route);
         };
 
+        let mut upstream_tls = crate::config::UpstreamTlsConfig::default();
+        let mut upstream_verify: Option<bool> = None;
         let mut has_target = false;
         let mut auth_realm: Option<String> = None;
 
@@ -1658,6 +1995,133 @@ impl Converter {
                 "proxy_pass" => {
                     if self.apply_proxy_pass(item, &mut route) {
                         has_target = true;
+                    }
+                }
+                "auth_request" => match item.arg(0) {
+                    Some("off") => route.auth_request = None,
+                    Some(path) => match self.internal_locations.get(path) {
+                        Some(url) => {
+                            route.auth_request = Some(crate::config::AuthRequestConfig {
+                                url: url.clone(),
+                                ..Default::default()
+                            });
+                            self.converted(item, "virou route.auth_request");
+                        }
+                        None => self.report.unsupported(
+                            &self.file,
+                            item.line,
+                            "auth_request",
+                            &item.source(),
+                            "a location de autenticação não tem um proxy_pass que o Ferrix consiga seguir",
+                        ),
+                    },
+                    None => self.note_unsupported(item),
+                },
+                "auth_request_set" => {
+                    // auth_request_set $x $upstream_http_x_user; → copy X-User.
+                    if let Some(h) = item.arg(1).and_then(|v| v.strip_prefix("$upstream_http_")) {
+                        route
+                            .auth_request
+                            .get_or_insert_with(Default::default)
+                            .set_headers
+                            .push(h.replace('_', "-"));
+                    }
+                }
+                "mirror" => match item.arg(0) {
+                    Some("off") | None => {}
+                    Some(path) => match self.internal_locations.get(path) {
+                        Some(url) => {
+                            // The mirror location's proxy_pass usually ends in $request_uri;
+                            // Ferrix appends the request URI itself.
+                            let base = url
+                                .split('$')
+                                .next()
+                                .unwrap_or(url)
+                                .trim_end_matches('/')
+                                .to_string();
+                            route.mirror.push(base);
+                            self.converted(item, "virou route.mirror");
+                        }
+                        None => self.report.unsupported(
+                            &self.file,
+                            item.line,
+                            "mirror",
+                            &item.source(),
+                            "a location de espelho não tem um proxy_pass que o Ferrix consiga seguir",
+                        ),
+                    },
+                },
+                "mirror_request_body" => {}
+                "limit_rate" | "limit_rate_after" => {
+                    if let Some(v) = item.arg(0).and_then(parse_size) {
+                        if item.name == "limit_rate" {
+                            route.limit_rate = v;
+                        } else {
+                            route.limit_rate_after = v;
+                        }
+                    }
+                }
+                "proxy_cache_use_stale"
+                | "proxy_cache_lock"
+                | "proxy_cache_lock_timeout"
+                | "proxy_cache_revalidate"
+                | "proxy_cache_background_update" => {}
+                "proxy_ssl_certificate" => upstream_tls.client_cert = item.arg(0).map(String::from),
+                "proxy_ssl_certificate_key" => upstream_tls.client_key = item.arg(0).map(String::from),
+                "proxy_ssl_trusted_certificate" => upstream_tls.trusted_ca = item.arg(0).map(String::from),
+                "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
+                "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
+                "proxy_intercept_errors" => {
+                    route.proxy_intercept_errors = item.arg(0) == Some("on")
+                }
+                "limit_except" => {
+                    let allow = item
+                        .block
+                        .iter()
+                        .flatten()
+                        .filter(|d| d.name == "allow")
+                        .filter_map(|d| d.arg(0).map(String::from))
+                        .collect();
+                    for d in item.block.iter().flatten() {
+                        if !matches!(d.name.as_str(), "allow" | "deny") {
+                            self.note_unsupported(d);
+                        }
+                    }
+                    route.limit_except = Some(crate::config::LimitExceptConfig {
+                        methods: item.args.iter().map(|m| m.to_ascii_uppercase()).collect(),
+                        allow,
+                    });
+                    self.converted(
+                        item,
+                        "virou route.limit_except (outros métodos recebem 403)",
+                    );
+                }
+                "proxy_redirect" => match (item.arg(0), item.arg(1)) {
+                    (Some("off"), _) => route.proxy_redirect.clear(),
+                    (Some("default"), _) => {
+                        route.proxy_redirect.push(["default".into(), String::new()])
+                    }
+                    (Some(from), Some(to)) => route.proxy_redirect.push([from.into(), to.into()]),
+                    _ => self.note_unsupported(item),
+                },
+                "proxy_cookie_path" | "proxy_cookie_domain" => match (item.arg(0), item.arg(1)) {
+                    (Some("off"), _) => {}
+                    (Some(from), Some(to)) => {
+                        let list = if item.name == "proxy_cookie_path" {
+                            &mut route.proxy_cookie_path
+                        } else {
+                            &mut route.proxy_cookie_domain
+                        };
+                        list.push([from.into(), to.into()]);
+                    }
+                    _ => self.note_unsupported(item),
+                },
+                "proxy_cookie_flags" => {
+                    if let Some(name) = item.arg(0).filter(|n| *n != "off") {
+                        route
+                            .proxy_cookie_flags
+                            .push([name.into(), item.args[1..].join(" ")]);
                     }
                 }
                 "fastcgi_pass" | "scgi_pass" | "uwsgi_pass" => {
@@ -1739,6 +2203,89 @@ impl Converter {
                 }
                 "ssi" => route.ssi = item.arg(0) == Some("on"),
                 "ssi_types" => route.ssi_types = item.args.clone(),
+                "empty_gif" => {
+                    route.empty_gif = true;
+                    // A target that validates on its own; empty_gif answers first.
+                    route.target_type = RouteTargetType::Return;
+                    route.redirect_code = Some(200);
+                    has_target = true;
+                }
+                "random_index" => route.random_index = item.arg(0) == Some("on"),
+                "userid" => {
+                    if item.arg(0) == Some("on") {
+                        route.userid.get_or_insert_with(Default::default);
+                    } else {
+                        route.userid = None;
+                    }
+                }
+                "userid_name" | "userid_domain" | "userid_path" | "userid_expires" | "userid_flags" => {
+                    let u = route.userid.get_or_insert_with(Default::default);
+                    let v = item.args.join(" ");
+                    match item.name.as_str() {
+                        "userid_name" => u.name = Some(v),
+                        "userid_domain" => u.domain = Some(v).filter(|d| d != "none"),
+                        "userid_path" => u.path = Some(v),
+                        "userid_flags" => u.flags = Some(v).filter(|f| f != "off"),
+                        _ => {
+                            u.expires_secs = match v.as_str() {
+                                "max" => Some(10 * 365 * 86_400),
+                                "off" => None,
+                                t => parse_time_ms(t).map(|ms| ms / 1000),
+                            }
+                        }
+                    }
+                }
+                "userid_service" | "userid_p3p" | "userid_mark" => {}
+                "add_before_body" => route.add_before_body = item.arg(0).map(String::from),
+                "add_after_body" => route.add_after_body = item.arg(0).map(String::from),
+                "addition_types" => route.addition_types = item.args.clone(),
+                "gunzip" => route.gunzip = item.arg(0) == Some("on"),
+                "charset" => route.charset = item.arg(0).filter(|c| *c != "off").map(String::from),
+                "source_charset" => route.source_charset = item.arg(0).map(String::from),
+                "override_charset" => route.override_charset = item.arg(0) == Some("on"),
+                "charset_types" => route.charset_types = item.args.clone(),
+                "charset_map" => self.report.unsupported(
+                    &self.file,
+                    item.line,
+                    "charset_map",
+                    &item.source(),
+                    "o Ferrix usa as tabelas padrão do WHATWG (encoding_rs); mapas próprios não existem",
+                ),
+                "memcached_pass" => {
+                    let m = route.memcached.get_or_insert_with(Default::default);
+                    m.pass = item.arg(0).unwrap_or("").to_string();
+                    route.target_type = RouteTargetType::Memcached;
+                    has_target = true;
+                    self.converted(item, "virou target_type: memcached (miss = 404)");
+                }
+                "memcached_gzip_flag" => {
+                    route.memcached.get_or_insert_with(Default::default).gzip_flag =
+                        item.arg(0).and_then(|v| v.parse().ok());
+                }
+                "memcached_connect_timeout" | "memcached_read_timeout" => {
+                    let v = item.arg(0).and_then(parse_time_ms);
+                    if item.name == "memcached_connect_timeout" {
+                        route.proxy_connect_timeout_ms = v;
+                    } else {
+                        route.proxy_read_timeout_ms = v;
+                    }
+                }
+                "memcached_buffer_size" | "memcached_send_timeout" | "memcached_bind" | "memcached_socket_keepalive" => {}
+                "tunnel_pass" => {
+                    route.tunnel.get_or_insert_with(Default::default).pass =
+                        item.arg(0).map(String::from);
+                    route.target_type = RouteTargetType::Return;
+                    route.redirect_code = Some(405);
+                    has_target = true;
+                    self.converted(item, "virou route.tunnel (CONNECT); outros métodos recebem 405");
+                }
+                "tunnel_connect_timeout" => route.proxy_connect_timeout_ms = item.arg(0).and_then(parse_time_ms),
+                "tunnel_read_timeout" => {
+                    route.tunnel.get_or_insert_with(Default::default).idle_timeout_ms =
+                        item.arg(0).and_then(parse_time_ms)
+                }
+                "tunnel_send_timeout" | "tunnel_buffer_size" | "tunnel_bind" | "tunnel_socket_keepalive"
+                | "tunnel_next_upstream" | "tunnel_next_upstream_tries" | "tunnel_next_upstream_timeout" => {}
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");
@@ -1842,7 +2389,12 @@ impl Converter {
                 }
                 "set" => {
                     if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
-                        route.set.push((k.to_string(), v.to_string()));
+                        if k == "$memcached_key" {
+                            route.memcached.get_or_insert_with(Default::default).key =
+                                Some(v.to_string());
+                        } else {
+                            route.set.push((k.to_string(), v.to_string()));
+                        }
                         self.converted(item, "virou route.set");
                     }
                 }
@@ -1977,6 +2529,23 @@ impl Converter {
                 "proxy_cache_valid" => cache_valid.push(item),
                 "proxy_cache_bypass" => cache_bypass.push(item),
                 _ => self.note_unsupported(item),
+            }
+        }
+
+        if upstream_tls != crate::config::UpstreamTlsConfig::default() || upstream_verify.is_some()
+        {
+            if let Some(up) = route
+                .upstream_name
+                .as_ref()
+                .and_then(|n| self.config.upstreams.get_mut(n))
+            {
+                if let Some(v) = upstream_verify {
+                    up.verify_tls = v;
+                }
+                if upstream_tls != crate::config::UpstreamTlsConfig::default() {
+                    up.tls = Some(upstream_tls);
+                }
+                self.converted(d, "proxy_ssl_* virou upstreams.<nome>.tls");
             }
         }
 
@@ -2128,6 +2697,7 @@ impl Converter {
                 verify_tls: true,
                 hash_key: None,
                 sticky: None,
+                tls: None,
             },
         );
         name
@@ -3023,6 +3593,47 @@ mod tests {
         assert_eq!(c.pass, "unix:/run/php/php-fpm.sock");
         assert_eq!(route.static_root.as_deref(), Some("/var/www"));
         assert!(c.params.contains_key("SCRIPT_FILENAME"));
+    }
+
+    #[test]
+    fn limit_except_and_intercept_errors_are_converted() {
+        let r = convert(
+            r#"http { upstream b { server 10.0.0.1; } server { listen 80; location / {
+                proxy_pass http://b; proxy_intercept_errors on;
+                limit_except GET { allow 10.0.0.0/8; deny all; }
+            } } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.proxy_intercept_errors);
+        let le = route.limit_except.as_ref().unwrap();
+        assert_eq!(le.methods, vec!["GET"]);
+        assert_eq!(le.allow, vec!["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn auth_request_and_mirror_follow_internal_locations() {
+        let r = convert(
+            r#"http {
+                upstream auth { server 10.0.0.9:9000; }
+                upstream app { server 10.0.0.1; }
+                server { listen 80;
+                    location = /_auth { internal; proxy_pass http://auth/check; }
+                    location = /_mirror { internal; proxy_pass http://10.0.0.7:8080$request_uri; }
+                    location / {
+                        auth_request /_auth;
+                        auth_request_set $user $upstream_http_x_user;
+                        mirror /_mirror;
+                        proxy_pass http://app;
+                    }
+                }
+            }"#,
+        );
+        let routes = &r.config.vhosts[0].routes;
+        assert_eq!(routes.len(), 1, "internal locations are not public routes");
+        let ar = routes[0].auth_request.as_ref().unwrap();
+        assert_eq!(ar.url, "http://10.0.0.9:9000/check");
+        assert_eq!(ar.set_headers, vec!["x-user"]);
+        assert_eq!(routes[0].mirror, vec!["http://10.0.0.7:8080"]);
     }
 
     #[test]

@@ -32,6 +32,9 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      - name: Generate test TLS certificates
+        run: core/tests/fixtures/tls/gerar.sh
+
       - name: Check code formatting
         run: cargo fmt --all -- --check
 

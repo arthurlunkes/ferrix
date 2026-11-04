@@ -214,7 +214,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ferrix-ssi-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("inc")).unwrap();
         std::fs::write(root.join("inc/h.html"), "<h1><!--# echo var=\"t\" --></h1>").unwrap();
-        let defs = HashMap::new();
+        let http = crate::config::HttpConfig::default();
         let h = HeaderMap::new();
         let mut ctx = Ctx {
             method: &Method::GET,
@@ -222,9 +222,10 @@ mod tests {
             headers: &h,
             client_ip: "127.0.0.1".parse().unwrap(),
             is_tls: false,
-            defs: &defs,
+            http: &http,
             set: HashMap::new(),
             captures: vec![],
+            client_cert: None,
         };
         let page = r#"<!--# set var="t" value="Hi <b>" --><!--# include virtual="/inc/h.html" -->
 <!--# if expr="$arg_x = 1" -->one<!--# elif expr="$arg_x" -->other<!--# else -->none<!--# endif -->

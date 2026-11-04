@@ -136,7 +136,7 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 1,
 
-        expected_unsupported: &["proxy_cache_lock", "proxy_cache_key", "proxy_no_cache"],
+        expected_unsupported: &["proxy_cache_key", "proxy_no_cache"],
     },
     ExampleExpectation {
         dir_contains: "12-compressao_estaticos_spa",
@@ -156,7 +156,7 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 0,
 
-        expected_unsupported: &["ssl_client_certificate"],
+        expected_unsupported: &[],
     },
     ExampleExpectation {
         dir_contains: "15-canary_blue_green",

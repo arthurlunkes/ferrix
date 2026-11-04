@@ -197,7 +197,7 @@ pub async fn connect(
     target: &Target<'_>,
     pool_key: &str,
     connect_timeout: Duration,
-    tls: Option<(&TlsConnector, bool)>,
+    tls: Option<(&TlsConnector, bool, Option<&str>)>,
 ) -> Result<Conn, H1Error> {
     let tcp = crate::event::clock::timeout(
         connect_timeout,
@@ -210,9 +210,10 @@ pub async fn connect(
 
     let (stream, insecure) = match (target.tls, tls) {
         (false, _) => (Stream::Plain(tcp), false),
-        (true, Some((connector, insecure))) => {
-            let name = rustls::pki_types::ServerName::try_from(target.host.to_owned())
-                .map_err(|_| H1Error::Protocol("invalid TLS server name"))?;
+        (true, Some((connector, insecure, sni))) => {
+            let name =
+                rustls::pki_types::ServerName::try_from(sni.unwrap_or(target.host).to_owned())
+                    .map_err(|_| H1Error::Protocol("invalid TLS server name"))?;
             let tls = crate::event::clock::timeout(connect_timeout, connector.connect(name, tcp))
                 .await
                 .map_err(|_| H1Error::ConnectTimeout)?
@@ -901,6 +902,35 @@ impl HttpBody for H1Body {
 
 pub fn tls_connector(verify: bool) -> TlsConnector {
     tls_connector_alpn(verify, b"http/1.1")
+}
+
+/// No-verify (or default-roots) connector that also presents a client certificate.
+pub fn tls_connector_with_client_auth(
+    verify: bool,
+    auth: super::tls_client::ClientAuth,
+) -> TlsConnector {
+    let builder = rustls::ClientConfig::builder();
+    let builder = if verify {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        builder.with_root_certificates(roots)
+    } else {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify::new()))
+    };
+    let mut config = match auth {
+        Some((certs, key)) => match builder.with_client_auth_cert(certs, key) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "invalid upstream client certificate");
+                return tls_connector(verify);
+            }
+        },
+        None => builder.with_no_client_auth(),
+    };
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    TlsConnector::from(Arc::new(config))
 }
 
 pub fn tls_connector_alpn(verify: bool, alpn: &[u8]) -> TlsConnector {

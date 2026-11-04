@@ -925,7 +925,7 @@ async fn run_server(args: Args) -> Result<(), String> {
                                 let mut ports: Vec<u16> = c.vhosts.iter().map(|v| v.listen_port).collect();
                                 ports.sort_unstable();
                                 ports.dedup();
-                                (c.http.listen.clone(), c.http.protocols.clone(), ports, c.http.worker_threads, c.admin.listen.clone())
+                                (c.http.listen.clone(), c.http.protocols.clone(), ports, c.http.worker_threads, c.admin.listen.clone(), (c.http.http2.clone(), c.http.http3.clone(), c.http.proxy_protocol))
                             };
                             let needs_restart = listeners(&old) != listeners(&new_cfg);
                             store.apply(new_cfg);

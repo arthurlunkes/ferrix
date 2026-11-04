@@ -96,7 +96,8 @@ impl ProxyEngine {
                     .unwrap_or(http.proxy_read_timeout_ms),
             ),
             upstream_cfg.verify_tls,
-        );
+        )
+        .with_tls(upstream_cfg.tls.as_ref());
 
         let attempt_deadline = next_upstream
             .timeout_ms
@@ -113,7 +114,8 @@ impl ProxyEngine {
             parts.headers.insert(n, v);
         }
         let headers = &parts.headers;
-        let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn;
+        let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn
+            || upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime;
 
         let mut last_error: Option<String> = None;
 
@@ -166,6 +168,9 @@ impl ProxyEngine {
 
                     self.health_checker
                         .mark_success(upstream_name, &target.url, elapsed_ms);
+                    if upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime {
+                        self.pool_manager.record_latency(&target.url, elapsed_ms);
+                    }
 
                     let target_index = upstream_cfg
                         .targets
@@ -176,6 +181,17 @@ impl ProxyEngine {
                         upstream_res,
                         compiled.target_header(upstream_name, target_index),
                     );
+                    if route.proxy_intercept_errors && resp.status().as_u16() >= 400 {
+                        resp.extensions_mut()
+                            .insert(super::filters::error_page::InterceptErrors);
+                    }
+                    if super::filters::upstream_headers::needed(route) {
+                        super::filters::upstream_headers::apply(
+                            resp.headers_mut(),
+                            route,
+                            &target.url,
+                        );
+                    }
                     if let Some(sc) = &upstream_cfg.sticky {
                         if let Some(c) =
                             super::upstream::sticky::set_cookie(sc, headers, &target.url)
@@ -319,13 +335,17 @@ fn templated_headers(
         headers: &parts.headers,
         client_ip,
         is_tls,
-        defs: &compiled.config.http.variables,
+        http: &compiled.config.http,
         set: parts
             .extensions
             .get::<super::vars::SetVars>()
             .map(|s| s.0.clone())
             .unwrap_or_default(),
         captures: Vec::new(),
+        client_cert: parts
+            .extensions
+            .get::<std::sync::Arc<crate::tls::client_cert::ClientCert>>()
+            .cloned(),
     };
     route
         .proxy_set_headers

@@ -14,6 +14,7 @@ import { Field } from "../components/ui/Field";
 import { Input, Select, Toggle } from "../components/ui/Input";
 import { KeyValueEditor } from "../components/ui/KeyValueEditor";
 import { PairListEditor, Section } from "../components/ui/ListEditors";
+import { CidrListEditor } from "../components/ui/CidrListEditor";
 
 interface Props {
   config: FerrixConfig | null;
@@ -29,6 +30,8 @@ function newVariable(type: VariableDef["type"]): VariableDef {
       return { type, source: "$http_user_agent", entries: [{ pattern: "~*bot", value: "1" }], default: "0" };
     case "geo":
       return { type, source: null, ranges: [{ network: "10.0.0.0/8", value: "lan" }], default: "wan" };
+    case "json":
+      return { type, source: "$request_body", path: ".user.id" };
     default:
       return { type: "split_clients", source: "$remote_addr", buckets: [{ percent: 10, value: "a" }, { percent: 0, value: "b" }] };
   }
@@ -51,6 +54,7 @@ const VariableCard: React.FC<{
           <option value="map">map</option>
           <option value="geo">geo</option>
           <option value="split_clients">split_clients</option>
+          <option value="json">json (json_set)</option>
         </Select>
       </Field>
       <Field label={def.type === "geo" ? "Source (empty = $remote_addr)" : "Source"} className="flex-1 min-w-[160px]">
@@ -60,7 +64,12 @@ const VariableCard: React.FC<{
           mono
         />
       </Field>
-      {def.type !== "split_clients" && (
+      {def.type === "json" && (
+        <Field label="Path" className="w-48">
+          <Input value={def.path} onChange={(e) => onChange({ ...def, path: e.target.value })} placeholder=".user.id" mono />
+        </Field>
+      )}
+      {(def.type === "map" || def.type === "geo") && (
         <Field label="Default" className="w-36">
           <Input value={def.default} onChange={(e) => onChange({ ...def, default: e.target.value })} mono />
         </Field>
@@ -206,6 +215,48 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         )}
       </Section>
 
+      <Section title="Connections and URLs">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Toggle checked={!!http.proxy_protocol} onChange={(v) => setHttp({ proxy_protocol: v })} label="PROXY protocol on HTTP listeners" description="listen ... proxy_protocol (AWS NLB, HAProxy); applies after a restart" />
+          <Toggle checked={http.merge_slashes !== false} onChange={(v) => setHttp({ merge_slashes: v })} label="merge_slashes" description="//a///b is handled as /a/b" />
+          <Toggle checked={http.absolute_redirect !== false} onChange={(v) => setHttp({ absolute_redirect: v })} label="absolute_redirect" description="Ferrix's own redirects get scheme://host" />
+          <Toggle checked={http.port_in_redirect !== false} onChange={(v) => setHttp({ port_in_redirect: v })} label="port_in_redirect" />
+          <Toggle checked={!!http.server_name_in_redirect} onChange={(v) => setHttp({ server_name_in_redirect: v })} label="server_name_in_redirect" />
+        </div>
+      </Section>
+
+      <Section
+        title="GeoIP (MaxMind .mmdb)"
+        hint="$geoip_country_code, $geoip_country_name, $geoip_city, $geoip_region, $geoip_postal_code, $geoip_latitude, $geoip_longitude, $geoip_org, $geoip_asn"
+        enabled={!!http.geoip}
+        onToggle={(on) => setHttp({ geoip: on ? { country_db: "/usr/share/GeoIP/GeoLite2-Country.mmdb", city_db: null, asn_db: null } : null })}
+      >
+        {http.geoip && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {(["country_db", "city_db", "asn_db"] as const).map((k) => (
+              <Field key={k} label={k}>
+                <Input value={http.geoip![k] ?? ""} onChange={(e) => setHttp({ geoip: { ...http.geoip!, [k]: e.target.value || null } })} mono className="text-xs" />
+              </Field>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="HTTP/2 and HTTP/3 limits" hint="Empty = default; applies after a restart">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {(["max_concurrent_streams", "max_header_list_size", "initial_stream_window", "initial_connection_window", "max_frame_size", "keepalive_interval_ms"] as const).map((k) => (
+            <Field key={k} label={`http2.${k}`}>
+              <Input type="number" value={http.http2?.[k] ?? ""} onChange={(e) => setHttp({ http2: { ...(http.http2 ?? {}), [k]: e.target.value === "" ? null : parseInt(e.target.value) } })} mono />
+            </Field>
+          ))}
+          {(["max_concurrent_streams", "stream_buffer_size", "idle_timeout_ms"] as const).map((k) => (
+            <Field key={k} label={`http3.${k}`}>
+              <Input type="number" value={http.http3?.[k] ?? ""} onChange={(e) => setHttp({ http3: { ...(http.http3 ?? {}), [k]: e.target.value === "" ? null : parseInt(e.target.value) } })} mono />
+            </Field>
+          ))}
+        </div>
+      </Section>
+
       <Section title="Variables (http.variables)" hint="Use them as $name in rewrites, if, set, proxy headers and upstream: $name">
         <div className="space-y-3">
           {Object.entries(vars).map(([name, def], i) => (
@@ -274,6 +325,37 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
               </div>
               {s.protocol === "tcp" && (
                 <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Toggle checked={!!s.accept_proxy_protocol} onChange={(v) => patchStream(i, { accept_proxy_protocol: v })} label="Clients send the PROXY protocol" />
+                    <Toggle checked={!!s.send_proxy_protocol} onChange={(v) => patchStream(i, { send_proxy_protocol: v })} label="Send the PROXY protocol upstream" />
+                    <Toggle checked={!!s.tls} onChange={(on) => patchStream(i, { tls: on ? { cert_path: "", key_path: "" } : null })} label="Terminate TLS (listen ... ssl)" />
+                    <Toggle checked={!!s.upstream_tls} onChange={(on) => patchStream(i, { upstream_tls: on ? { verify: true } : null })} label="TLS to the upstream (proxy_ssl)" />
+                  </div>
+                  {s.tls && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <Field label="Certificate (PEM)"><Input value={s.tls.cert_path} onChange={(e) => patchStream(i, { tls: { ...s.tls!, cert_path: e.target.value } })} mono className="text-xs" /></Field>
+                      <Field label="Key (PEM)"><Input value={s.tls.key_path} onChange={(e) => patchStream(i, { tls: { ...s.tls!, key_path: e.target.value } })} mono className="text-xs" /></Field>
+                    </div>
+                  )}
+                  {s.upstream_tls && (
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+                      <Toggle checked={s.upstream_tls.verify} onChange={(v) => patchStream(i, { upstream_tls: { ...s.upstream_tls!, verify: v } })} label="Verify" />
+                      {(["server_name", "trusted_ca", "client_cert", "client_key"] as const).map((k) => (
+                        <Field key={k} label={k}><Input value={s.upstream_tls![k] ?? ""} onChange={(e) => patchStream(i, { upstream_tls: { ...s.upstream_tls!, [k]: e.target.value || null } })} mono className="text-xs" /></Field>
+                      ))}
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <Field label="Max conns per IP"><Input type="number" value={s.limit_conn ?? ""} onChange={(e) => patchStream(i, { limit_conn: e.target.value ? parseInt(e.target.value) : null })} mono /></Field>
+                    <Field label="Upload rate (B/s)"><Input type="number" value={s.upload_rate ?? 0} onChange={(e) => patchStream(i, { upload_rate: parseInt(e.target.value) || 0 })} mono /></Field>
+                    <Field label="Download rate (B/s)"><Input type="number" value={s.download_rate ?? 0} onChange={(e) => patchStream(i, { download_rate: parseInt(e.target.value) || 0 })} mono /></Field>
+                    <Field label="Return text" hint="answer and close"><Input value={s.return_text ?? ""} onChange={(e) => patchStream(i, { return_text: e.target.value || null })} mono className="text-xs" /></Field>
+                    <Field label="Pass to" hint="local host:port"><Input value={s.pass ?? ""} onChange={(e) => patchStream(i, { pass: e.target.value || null })} mono className="text-xs" /></Field>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div><span className="block text-xs font-medium text-content-secondary mb-1">Allowed IPs</span><CidrListEditor value={s.allowed_ips ?? []} onChange={(v) => patchStream(i, { allowed_ips: v })} /></div>
+                    <div><span className="block text-xs font-medium text-content-secondary mb-1">Denied IPs</span><CidrListEditor value={s.denied_ips ?? []} onChange={(v) => patchStream(i, { denied_ips: v })} /></div>
+                  </div>
                   <Toggle
                     checked={Object.keys(s.sni_routes ?? {}).length > 0}
                     onChange={(on) => patchStream(i, { sni_routes: on ? { default: s.upstream } : {} })}

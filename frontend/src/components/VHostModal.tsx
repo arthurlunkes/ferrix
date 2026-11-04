@@ -315,6 +315,7 @@ const RouteCard: React.FC<{
             <option value="redirect">HTTP redirect</option>
             <option value="return">Fixed response (return)</option>
             <option value="cgi">FastCGI / SCGI / uwsgi</option>
+            <option value="memcached">memcached</option>
           </Select>
         </Field>
       </div>
@@ -651,6 +652,8 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
     { id: "security", label: "Security" },
     { id: "limits", label: "Limits" },
     { id: "rewrite", label: "Rewrite" },
+    { id: "tls", label: "TLS" },
+    { id: "errors", label: "Error pages" },
   ];
 
   return (
@@ -822,6 +825,62 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
             </div>
           </div>
         )}
+        {tab === "tls" && (
+          <div className="space-y-4">
+            <Toggle
+              checked={!!formData.tls}
+              onChange={(on) => setFormData({ ...formData, tls: on ? { cert_path: "", key_path: "", acme: false, verify_client: "off" } : null })}
+              label="HTTPS on this virtual host"
+              description="Several hosts on one port are chosen by SNI"
+            />
+            {formData.tls && (() => {
+              const t = formData.tls!;
+              const set = (p: Partial<typeof t>) => setFormData({ ...formData, tls: { ...t, ...p } });
+              return (
+                <>
+                  <Toggle checked={t.acme} onChange={(v) => set({ acme: v })} label="Automatic certificate (Let's Encrypt)" />
+                  {!t.acme && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <Field label="Certificate (PEM)"><Input value={t.cert_path} onChange={(e) => set({ cert_path: e.target.value })} mono className="text-xs" /></Field>
+                      <Field label="Private key (PEM)"><Input value={t.key_path} onChange={(e) => set({ key_path: e.target.value })} mono className="text-xs" /></Field>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <Field label="Client certificates (ssl_verify_client)" hint="Changes apply after a restart">
+                      <Select value={t.verify_client ?? "off"} onChange={(e) => set({ verify_client: e.target.value as any })}>
+                        <option value="off">off</option>
+                        <option value="on">on (required, 400 otherwise)</option>
+                        <option value="optional">optional</option>
+                      </Select>
+                    </Field>
+                    <Field label="Client CA (PEM)" hint="ssl_client_certificate">
+                      <Input value={t.client_ca ?? ""} onChange={(e) => set({ client_ca: e.target.value || null })} mono className="text-xs" />
+                    </Field>
+                    <Field label="OCSP response file" hint="ssl_stapling_file (DER)">
+                      <Input value={t.ocsp_file ?? ""} onChange={(e) => set({ ocsp_file: e.target.value || null })} mono className="text-xs" />
+                    </Field>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {tab === "errors" && (
+          <div>
+            <p className="text-xs text-content-muted mb-3">
+              Status code (404) or class (5xx) → HTML file. Backend errors use them only with proxy_intercept_errors.
+            </p>
+            <KeyValueEditor
+              value={formData.error_pages ?? {}}
+              onChange={(v) => setFormData({ ...formData, error_pages: v })}
+              keyPlaceholder="404"
+              valuePlaceholder="/var/www/errors/404.html"
+              addLabel="Add error page"
+            />
+          </div>
+        )}
+
         {tab === "rewrite" && (
           <div className="space-y-6">
             <p className="text-xs text-content-muted">

@@ -37,7 +37,7 @@ pub enum StreamProtocol {
     Udp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamConfig {
     pub id: String,
     pub listen: String,
@@ -53,6 +53,55 @@ pub struct StreamConfig {
     /// (exact, `*.suffix` or `default`) → upstream. Empty = always `upstream`.
     #[serde(default)]
     pub sni_routes: HashMap<String, String>,
+    /// Clients come with a PROXY protocol header (nginx `listen ... proxy_protocol`).
+    #[serde(default)]
+    pub accept_proxy_protocol: bool,
+    /// Send a PROXY protocol v1 header to the upstream (nginx `proxy_protocol on`).
+    #[serde(default)]
+    pub send_proxy_protocol: bool,
+
+    /// nginx stream `listen ... ssl` + `ssl_certificate`: terminate TLS here.
+    #[serde(default)]
+    pub tls: Option<StreamTlsConfig>,
+    /// nginx stream `proxy_ssl on` (+ `proxy_ssl_*`): TLS towards the upstream.
+    #[serde(default)]
+    pub upstream_tls: Option<StreamUpstreamTls>,
+    /// nginx stream `allow` / `deny`.
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub denied_ips: Vec<String>,
+    /// nginx stream `limit_conn`: max simultaneous connections per client IP.
+    #[serde(default)]
+    pub limit_conn: Option<u32>,
+    /// nginx `proxy_upload_rate` (client → upstream), bytes/s; 0 = off.
+    #[serde(default)]
+    pub upload_rate: u64,
+    /// nginx `proxy_download_rate` (upstream → client), bytes/s; 0 = off.
+    #[serde(default)]
+    pub download_rate: u64,
+    /// nginx stream `return`: send this text and close (no upstream).
+    #[serde(default)]
+    pub return_text: Option<String>,
+    /// nginx stream `pass`: hand the connection to this local address (e.g. an
+    /// HTTP listener of Ferrix) instead of an upstream.
+    #[serde(default)]
+    pub pass: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamTlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamUpstreamTls {
+    /// nginx `proxy_ssl_verify` (default on here; nginx defaults to off).
+    #[serde(default = "default_true")]
+    pub verify: bool,
+    #[serde(flatten)]
+    pub settings: UpstreamTlsConfig,
 }
 
 fn default_stream_connect_timeout_ms() -> u64 {
@@ -228,6 +277,35 @@ pub struct HttpConfig {
     #[serde(default)]
     pub access_log: Option<AccessLogConfig>,
 
+    /// nginx `listen ... proxy_protocol`: every HTTP(S) connection starts with a
+    /// PROXY protocol v1/v2 header carrying the real client address.
+    #[serde(default)]
+    pub proxy_protocol: bool,
+
+    /// nginx `http2_*` limits.
+    #[serde(default)]
+    pub http2: Http2Limits,
+    /// nginx `http3_*` / `quic_*` limits.
+    #[serde(default)]
+    pub http3: Http3Limits,
+
+    /// nginx `merge_slashes`: `//a///b` is matched as `/a/b`.
+    #[serde(default = "default_true")]
+    pub merge_slashes: bool,
+    /// nginx `absolute_redirect`: Ferrix's own relative redirects get scheme://host.
+    #[serde(default = "default_true")]
+    pub absolute_redirect: bool,
+    /// nginx `port_in_redirect`: keep the port of the Host header in those redirects.
+    #[serde(default = "default_true")]
+    pub port_in_redirect: bool,
+    /// nginx `server_name_in_redirect`: use the vhost's first server name instead of Host.
+    #[serde(default)]
+    pub server_name_in_redirect: bool,
+
+    /// nginx geoip: MaxMind `.mmdb` databases behind the `$geoip_*` variables.
+    #[serde(default)]
+    pub geoip: Option<GeoIpConfig>,
+
     /// nginx `map` / `geo` / `split_clients`: named variables (without `$`).
     #[serde(default)]
     pub variables: HashMap<String, VariableDef>,
@@ -256,6 +334,9 @@ pub enum VariableDef {
         source: String,
         buckets: Vec<SplitBucket>,
     },
+    /// nginx `json_set $name $source path`: a value from the JSON in `source`
+    /// (`$request_body`, `$http_x`, `$arg_x`...). Path: `.a.b[0].c`.
+    Json { source: String, path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +393,56 @@ pub struct ConditionConfig {
     pub return_value: Option<String>,
     #[serde(default)]
     pub rewrite: Option<RewriteRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Http2Limits {
+    /// nginx `http2_max_concurrent_streams` (default 128).
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+    /// nginx `http2_max_header_size` / `large_client_header_buffers`: max
+    /// decoded header list in bytes.
+    #[serde(default)]
+    pub max_header_list_size: Option<u32>,
+    /// nginx `http2_recv_buffer_size` / `http2_body_preread_size`: per-stream
+    /// receive window in bytes.
+    #[serde(default)]
+    pub initial_stream_window: Option<u32>,
+    /// Connection receive window in bytes.
+    #[serde(default)]
+    pub initial_connection_window: Option<u32>,
+    /// nginx `http2_chunk_size`: max DATA frame payload (16384–16777215).
+    #[serde(default)]
+    pub max_frame_size: Option<u32>,
+    /// PING interval keeping idle connections checked, in ms (off by default).
+    #[serde(default)]
+    pub keepalive_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Http3Limits {
+    /// nginx `http3_max_concurrent_streams` (default 128).
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+    /// nginx `http3_stream_buffer_size`: per-stream receive window in bytes.
+    #[serde(default)]
+    pub stream_buffer_size: Option<u32>,
+    /// QUIC idle timeout in ms (default: `keepalive_timeout_ms`).
+    #[serde(default)]
+    pub idle_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GeoIpConfig {
+    /// GeoLite2/GeoIP2 Country or City database (country, continent).
+    #[serde(default)]
+    pub country_db: Option<String>,
+    /// GeoLite2/GeoIP2 City database (city, region, postal code, location).
+    #[serde(default)]
+    pub city_db: Option<String>,
+    /// GeoLite2 ASN database (`$geoip_org`, `$geoip_asn`).
+    #[serde(default)]
+    pub asn_db: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -540,6 +671,14 @@ impl Default for HttpConfig {
             protocols: default_protocols(),
             access_log: None,
             variables: HashMap::new(),
+            proxy_protocol: false,
+            geoip: None,
+            http2: Http2Limits::default(),
+            http3: Http3Limits::default(),
+            merge_slashes: true,
+            absolute_redirect: true,
+            port_in_redirect: true,
+            server_name_in_redirect: false,
         }
     }
 }
@@ -574,6 +713,8 @@ pub enum LoadBalanceAlgorithm {
     IpHash,
     Random,
     ConsistentHash,
+    /// nginx `least_time header`: lowest average response time × active connections.
+    LeastTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -646,9 +787,29 @@ pub struct UpstreamConfig {
     #[serde(default)]
     pub hash_key: Option<String>,
 
+    /// nginx `proxy_ssl_*`: client certificate, trusted CA and name for TLS targets.
+    #[serde(default)]
+    pub tls: Option<UpstreamTlsConfig>,
+
     /// nginx `sticky cookie`: keep each client on the same target.
     #[serde(default)]
     pub sticky: Option<StickyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UpstreamTlsConfig {
+    /// PEM certificate chain presented to the backend (mTLS).
+    #[serde(default)]
+    pub client_cert: Option<String>,
+    #[serde(default)]
+    pub client_key: Option<String>,
+    /// PEM CA bundle that backend certificates must chain to (instead of the
+    /// public web roots). Only used when `verify_tls` is on.
+    #[serde(default)]
+    pub trusted_ca: Option<String>,
+    /// Name used for SNI and certificate checks instead of the target host.
+    #[serde(default)]
+    pub server_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -720,6 +881,28 @@ pub struct TlsConfig {
 
     #[serde(default)]
     pub acme: bool,
+
+    /// nginx `ssl_verify_client`.
+    #[serde(default)]
+    pub verify_client: ClientVerify,
+    /// nginx `ssl_client_certificate`: PEM CA bundle for client certificates.
+    #[serde(default)]
+    pub client_ca: Option<String>,
+    /// nginx `ssl_stapling_file`: DER OCSP response stapled to the handshake
+    /// (re-read on every config reload).
+    #[serde(default)]
+    pub ocsp_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientVerify {
+    #[default]
+    Off,
+    /// A valid certificate is required (400 otherwise, like nginx).
+    On,
+    /// Checked when sent; `$ssl_client_verify` tells which.
+    Optional,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -786,6 +969,24 @@ pub enum RouteTargetType {
 
     /// nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (see `cgi`).
     Cgi,
+
+    /// nginx `memcached_pass` (see `memcached`).
+    Memcached,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemcachedConfig {
+    /// `host:port`.
+    pub pass: String,
+    /// nginx `$memcached_key` (default `$uri`; variables allowed).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Content-Type of hits (default `text/html`).
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// nginx `memcached_gzip_flag`: values with this flag bit are sent as gzip.
+    #[serde(default)]
+    pub gzip_flag: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -839,6 +1040,53 @@ impl Default for ImageFilterConfig {
             buffer_bytes: default_image_buffer(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LimitExceptConfig {
+    pub methods: Vec<String>,
+    /// IPs/CIDRs that may use any method (the `allow` lines inside the block).
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserIdConfig {
+    /// Cookie name (default `uid`).
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Max-Age in seconds; empty = session cookie.
+    #[serde(default)]
+    pub expires_secs: Option<u64>,
+    /// Extra attributes, e.g. `Secure HttpOnly SameSite=Lax` (nginx `userid_flags`).
+    #[serde(default)]
+    pub flags: Option<String>,
+}
+
+impl UserIdConfig {
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("uid")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunnelConfig {
+    /// Fixed `host:port` for every CONNECT (nginx `tunnel_pass host:port`);
+    /// empty = the host:port the client asks for.
+    #[serde(default)]
+    pub pass: Option<String>,
+    /// Ports clients may CONNECT to (default 443 only).
+    #[serde(default)]
+    pub allowed_ports: Vec<u16>,
+    /// Hosts clients may CONNECT to (`*.example.com` allowed); empty = any.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub idle_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -959,6 +1207,32 @@ pub struct CacheConfig {
 
     #[serde(default)]
     pub bypass_query_params: Vec<String>,
+
+    /// nginx `proxy_cache_use_stale`: error, timeout, updating, http_500,
+    /// http_502, http_503, http_504, http_403, http_404, http_429.
+    #[serde(default)]
+    pub use_stale: Vec<String>,
+    /// How long an expired entry is kept for `use_stale` / `revalidate` (default 1 day).
+    #[serde(default = "default_stale_keep_secs")]
+    pub stale_keep_secs: u64,
+    /// nginx `proxy_cache_lock`: one request fills a missing entry, the others wait.
+    #[serde(default)]
+    pub lock: bool,
+    /// nginx `proxy_cache_lock_timeout` (default 5 s).
+    #[serde(default)]
+    pub lock_timeout_ms: Option<u64>,
+    /// nginx `proxy_cache_revalidate`: refresh expired entries with
+    /// If-None-Match / If-Modified-Since.
+    #[serde(default)]
+    pub revalidate: bool,
+    /// nginx `proxy_cache_background_update`: serve stale and refresh in the
+    /// background (needs `updating` in `use_stale`).
+    #[serde(default)]
+    pub background_update: bool,
+}
+
+fn default_stale_keep_secs() -> u64 {
+    86_400
 }
 
 fn default_cache_valid_secs() -> u64 {
@@ -972,6 +1246,12 @@ impl Default for CacheConfig {
             bypass_headers: Vec::new(),
             bypass_cookies: Vec::new(),
             bypass_query_params: Vec::new(),
+            use_stale: Vec::new(),
+            stale_keep_secs: default_stale_keep_secs(),
+            lock: false,
+            lock_timeout_ms: None,
+            revalidate: false,
+            background_update: false,
         }
     }
 }
@@ -1096,6 +1376,79 @@ pub struct RouteRule {
     /// FastCGI / SCGI / uwsgi settings for `target_type: cgi`.
     #[serde(default)]
     pub cgi: Option<CgiConfig>,
+
+    /// nginx `proxy_redirect from to` (`default`, prefix or `~regex`).
+    #[serde(default)]
+    pub proxy_redirect: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_path from to`.
+    #[serde(default)]
+    pub proxy_cookie_path: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_domain from to`.
+    #[serde(default)]
+    pub proxy_cookie_domain: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_flags <cookie|~regex|*> "<flags>"`.
+    #[serde(default)]
+    pub proxy_cookie_flags: Vec<[String; 2]>,
+
+    /// nginx `proxy_intercept_errors on`: backend 4xx/5xx use the vhost error pages.
+    #[serde(default)]
+    pub proxy_intercept_errors: bool,
+    /// nginx `limit_except`: methods allowed for everyone (GET implies HEAD).
+    #[serde(default)]
+    pub limit_except: Option<LimitExceptConfig>,
+
+    /// nginx `limit_rate`: max bytes/s for each response body (0 = off).
+    #[serde(default)]
+    pub limit_rate: u64,
+    /// nginx `limit_rate_after`: bytes sent at full speed first.
+    #[serde(default)]
+    pub limit_rate_after: u64,
+
+    /// nginx `empty_gif`: answer with a 1×1 transparent GIF.
+    #[serde(default)]
+    pub empty_gif: bool,
+    /// nginx `random_index`: a directory request serves a random file from it.
+    #[serde(default)]
+    pub random_index: bool,
+
+    /// nginx `userid on`: visitor id cookie.
+    #[serde(default)]
+    pub userid: Option<UserIdConfig>,
+
+    /// nginx `add_before_body`: URI (served by this vhost) or URL put before text/html bodies.
+    #[serde(default)]
+    pub add_before_body: Option<String>,
+    /// nginx `add_after_body`.
+    #[serde(default)]
+    pub add_after_body: Option<String>,
+    /// nginx `addition_types`: extra MIME types besides text/html.
+    #[serde(default)]
+    pub addition_types: Vec<String>,
+
+    /// nginx `gunzip on`: decompress gzip responses for clients without gzip.
+    #[serde(default)]
+    pub gunzip: bool,
+
+    /// nginx `charset`: charset declared (and converted to) for text responses.
+    #[serde(default)]
+    pub charset: Option<String>,
+    /// nginx `source_charset`: charset the bodies are written in.
+    #[serde(default)]
+    pub source_charset: Option<String>,
+    /// nginx `override_charset on`: convert even when the response declares one.
+    #[serde(default)]
+    pub override_charset: bool,
+    /// nginx `charset_types` (text/html, text/plain, text/xml, JS and RSS are always on).
+    #[serde(default)]
+    pub charset_types: Vec<String>,
+
+    /// Settings for `target_type: memcached`.
+    #[serde(default)]
+    pub memcached: Option<MemcachedConfig>,
+
+    /// nginx `tunnel_pass`: CONNECT forward proxy on this route.
+    #[serde(default)]
+    pub tunnel: Option<TunnelConfig>,
 
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
@@ -1228,6 +1581,27 @@ impl Default for RouteRule {
             flv: false,
             dav: None,
             cgi: None,
+            proxy_redirect: Vec::new(),
+            proxy_cookie_path: Vec::new(),
+            proxy_cookie_domain: Vec::new(),
+            proxy_cookie_flags: Vec::new(),
+            proxy_intercept_errors: false,
+            limit_except: None,
+            limit_rate: 0,
+            limit_rate_after: 0,
+            empty_gif: false,
+            random_index: false,
+            userid: None,
+            add_before_body: None,
+            add_after_body: None,
+            addition_types: Vec::new(),
+            gunzip: false,
+            charset: None,
+            source_charset: None,
+            override_charset: false,
+            charset_types: Vec::new(),
+            memcached: None,
+            tunnel: None,
             grpc: false,
         }
     }
@@ -1270,6 +1644,7 @@ impl Default for FerrixConfig {
                 verify_tls: true,
                 hash_key: None,
                 sticky: None,
+                tls: None,
             },
         );
 

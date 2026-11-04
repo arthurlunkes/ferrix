@@ -100,6 +100,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
               <option value="least_conn">Least Connections</option>
               <option value="ip_hash">IP Hash (sticky session)</option>
               <option value="random">Random</option>
+              <option value="least_time">Least time (fastest response)</option>
               <option value="consistent_hash">Consistent hash (hash key)</option>
             </Select>
           </Field>
@@ -165,6 +166,28 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
           label="Verify backend TLS certificate"
           description="Disable only for backends with self-signed certificates on trusted networks"
         />
+
+        <div className="space-y-3">
+          <Toggle
+            checked={!!formData.tls}
+            onChange={(on) => setFormData({ ...formData, tls: on ? { client_cert: null, client_key: null, trusted_ca: null, server_name: null } : null })}
+            label="Backend TLS settings (proxy_ssl_*)"
+            description="Client certificate (mTLS), private CA and SNI name for https:// servers"
+          />
+          {formData.tls && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {(["client_cert", "client_key", "trusted_ca", "server_name"] as const).map((k) => (
+                <Field key={k} label={k}>
+                  <Input
+                    value={formData.tls![k] ?? ""}
+                    onChange={(e) => setFormData({ ...formData, tls: { ...formData.tls!, [k]: e.target.value || null } })}
+                    mono
+                  />
+                </Field>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="border-t border-border-subtle pt-5">
           <div className="flex items-center justify-between mb-3">

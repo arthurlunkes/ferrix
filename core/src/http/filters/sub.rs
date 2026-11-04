@@ -30,6 +30,51 @@ fn applies(cfg: &SubFilterConfig, resp: &Response<Body>) -> bool {
             .any(|t| t == "*" || t.eq_ignore_ascii_case(mime))
 }
 
+/// Uncompressed text/html (or one of `types`, `*` = all) with a known type.
+pub fn is_text(resp: &Response<Body>, types: &[String]) -> bool {
+    if resp.headers().contains_key(header::CONTENT_ENCODING) {
+        return false;
+    }
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let mime = ct.split(';').next().unwrap_or("").trim();
+    mime.eq_ignore_ascii_case("text/html")
+        || (!mime.is_empty()
+            && types
+                .iter()
+                .any(|t| t == "*" || t.eq_ignore_ascii_case(mime)))
+}
+
+/// nginx addition filter: `before` + body + `after`.
+pub async fn wrap_body(
+    resp: Response<Body>,
+    before: Option<axum::body::Bytes>,
+    after: Option<axum::body::Bytes>,
+) -> Response<Body> {
+    if before.is_none() && after.is_none() {
+        return resp;
+    }
+    let (mut parts, body) = resp.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    let mut out = Vec::with_capacity(bytes.len() + 256);
+    out.extend_from_slice(before.as_deref().unwrap_or_default());
+    out.extend_from_slice(&bytes);
+    out.extend_from_slice(after.as_deref().unwrap_or_default());
+    for h in [header::ETAG, header::LAST_MODIFIED, header::ACCEPT_RANGES] {
+        parts.headers.remove(h);
+    }
+    parts.extensions.remove::<crate::http::server::SendFile>();
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(out.len()));
+    Response::from_parts(parts, Body::from(out))
+}
+
 pub fn replace(cfg: &SubFilterConfig, text: &str) -> String {
     let mut out = text.to_string();
     for [from, to] in &cfg.replacements {

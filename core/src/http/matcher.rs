@@ -178,8 +178,12 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
             .upstream_name
             .as_ref()
             .and_then(|n| config.upstreams.get(n))
-            .is_some_and(|u| u.algorithm != LoadBalanceAlgorithm::ConsistentHash)
+            .is_some_and(|u| {
+                u.algorithm != LoadBalanceAlgorithm::ConsistentHash && u.sticky.is_none()
+            })
         && vhost.allowed_ips.is_empty()
+        && vhost.conditions.is_empty()
+        && vhost.rewrites.is_empty()
         && vhost.denied_ips.is_empty()
         && vhost.basic_auth.is_none()
         && vhost.limit_conn.is_none()
@@ -197,6 +201,39 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
         && route.cors.is_none()
         && !route.compression.unwrap_or(http.compression.enabled)
         && !http.request_id
+        && http.access_log.is_none()
+        && !route_needs_full_path(route)
+}
+
+/// Route features the raw fast path does not implement. Any of them sends the
+/// request through the full pipeline — skipping one could, for example, bypass
+/// `auth_request` or `secure_link`.
+fn route_needs_full_path(route: &RouteRule) -> bool {
+    !route.valid_referers.is_empty()
+        || route.auth_request.is_some()
+        || !route.mirror.is_empty()
+        || route.secure_link.is_some()
+        || route.sub_filter.is_some()
+        || !route.set.is_empty()
+        || !route.conditions.is_empty()
+        || !route.rewrites.is_empty()
+        || route.grpc
+        || route.ssi
+        || route.image_filter.is_some()
+        || route
+            .upstream_name
+            .as_deref()
+            .is_some_and(|n| n.starts_with('$'))
+        || crate::http::filters::upstream_headers::needed(route)
+        || route.proxy_intercept_errors
+        || route.limit_except.is_some()
+        || route.limit_rate > 0
+        || route.empty_gif
+        || route.userid.is_some()
+        || route.add_before_body.is_some()
+        || route.add_after_body.is_some()
+        || route.gunzip
+        || route.charset.is_some()
 }
 
 #[derive(Debug)]
@@ -218,6 +255,8 @@ pub struct CompiledConfig {
     rings: crate::fasthash::FastMap<String, HashRing>,
     target_headers: crate::fasthash::FastMap<String, Vec<Option<HeaderValue>>>,
     pub server_header: HeaderValue,
+    /// Some json_set reads `$request_body`, so bodies are buffered for it.
+    pub buffers_body_for_vars: bool,
 }
 
 impl CompiledConfig {
@@ -278,6 +317,9 @@ impl CompiledConfig {
         } else {
             HeaderValue::from_static("ferrix")
         };
+        let buffers_body_for_vars = config.http.variables.values().any(|v| {
+            matches!(v, crate::config::VariableDef::Json { source, .. } if source.contains("$request_body"))
+        });
         Self {
             config,
             real_ip,
@@ -285,6 +327,7 @@ impl CompiledConfig {
             rings,
             target_headers,
             server_header,
+            buffers_body_for_vars,
         }
     }
 
@@ -556,6 +599,37 @@ mod tests {
                 .id
                 .as_str()
         })
+    }
+
+    #[test]
+    fn route_features_disable_the_raw_fast_path() {
+        let plain = |r: RouteRule| {
+            let mut r = r;
+            r.upstream_name = Some("default_backend".into());
+            r.websocket_enabled = false;
+            compiled(vec![vhost("v", &["*"], vec![r])]).plain_proxy(0, 0)
+        };
+        let base = route("r", "/", RouteMatchType::Prefix);
+        assert!(plain(base.clone()), "a bare proxy route uses the fast path");
+        let mut r = base.clone();
+        r.auth_request = Some(AuthRequestConfig::default());
+        assert!(!plain(r));
+        let mut r = base.clone();
+        r.secure_link = Some(SecureLinkConfig::default());
+        assert!(!plain(r));
+        let mut r = base.clone();
+        r.valid_referers = vec!["none".into()];
+        assert!(!plain(r));
+        let mut r = base.clone();
+        r.rewrites = vec![RewriteRule {
+            pattern: "^/a".into(),
+            replacement: "/b".into(),
+            flag: RewriteFlag::None,
+        }];
+        assert!(!plain(r));
+        let mut r = base;
+        r.mirror = vec!["http://m".into()];
+        assert!(!plain(r));
     }
 
     #[test]

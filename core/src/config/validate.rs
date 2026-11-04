@@ -156,6 +156,14 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
         validate_vhost_routes(cfg, vhost, &base, &mut report);
 
         if let Some(tls) = &vhost.tls {
+            if tls.verify_client != crate::config::ClientVerify::Off
+                && tls.client_ca.as_deref().unwrap_or("").trim().is_empty()
+            {
+                report.error(
+                    format!("{}.tls.client_ca", base),
+                    "verify_client precisa de client_ca (o CA que assina os certificados dos clientes)",
+                );
+            }
             if tls.acme && !cfg!(feature = "acme") {
                 report.error(
                     format!("{}.tls.acme", base),
@@ -195,7 +203,8 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
                 format!("'{}' não é um endereço host:porta válido", st.listen),
             );
         }
-        if !cfg.upstreams.contains_key(&st.upstream) {
+        let no_upstream_needed = st.return_text.is_some() || st.pass.is_some();
+        if !no_upstream_needed && !cfg.upstreams.contains_key(&st.upstream) {
             report.error(
                 format!("{}.upstream", base),
                 format!("o upstream '{}' não existe", st.upstream),
@@ -519,6 +528,18 @@ fn validate_vhost_routes(
                             format!("{} não é um código de redirecionamento (300–399)", code),
                         );
                     }
+                }
+            }
+            RouteTargetType::Memcached => {
+                if route
+                    .memcached
+                    .as_ref()
+                    .is_none_or(|m| m.pass.trim().is_empty())
+                {
+                    report.error(
+                        format!("{}.memcached.pass", rpath),
+                        "rota memcached sem endereço (memcached.pass)",
+                    );
                 }
             }
             RouteTargetType::Cgi => {
