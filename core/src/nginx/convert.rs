@@ -412,9 +412,12 @@ impl Converter {
         let mut pass: Option<String> = None;
         let mut connect_timeout_ms = 5_000;
         let mut idle_timeout_ms = 600_000;
+        let mut accept_pp = false;
+        let mut send_pp = false;
         for item in block {
             match item.name.as_str() {
                 "listen" => {
+                    accept_pp |= item.args.iter().any(|a| a == "proxy_protocol");
                     if let Some(addr) = item.arg(0) {
                         let addr = if addr.contains(':') {
                             addr.to_string()
@@ -441,6 +444,7 @@ impl Converter {
                     }
                 }
                 "ssl_preread" => {}
+                "proxy_protocol" => send_pp = item.arg(0) == Some("on"),
                 _ => self.note_unsupported(item),
             }
         }
@@ -499,6 +503,8 @@ impl Converter {
             connect_timeout_ms,
             idle_timeout_ms,
             sni_routes,
+            accept_proxy_protocol: accept_pp,
+            send_proxy_protocol: send_pp,
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
     }
@@ -1406,6 +1412,17 @@ impl Converter {
         for arg in &d.args {
             match arg.as_str() {
                 "ssl" => saw_ssl = true,
+                "proxy_protocol" => {
+                    self.config.http.proxy_protocol = true;
+                    self.report.note(
+                        NoteLevel::Converted,
+                        &self.file,
+                        d.line,
+                        "listen proxy_protocol",
+                        &d.source(),
+                        "virou http.proxy_protocol (vale para todas as portas HTTP do Ferrix)",
+                    );
+                }
                 "quic" | "http3" => self.report.unsupported(
                     &self.file,
                     d.line,

@@ -111,7 +111,7 @@ pub async fn serve(
             continue;
         }
         warned = false;
-        let (tcp, addr) = match listener.accept().await {
+        let (mut tcp, mut addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
                 warn!(port, error = %e, "accept failed");
@@ -128,8 +128,20 @@ pub async fn serve(
         let tls = tls.clone();
         let fast = fast.clone();
         let alt_svc = alt_svc.clone();
+        let proxy_protocol = http.proxy_protocol;
+        let header_timeout = fast.header_timeout;
         tokio::spawn(async move {
             let _slot = slot;
+            if proxy_protocol {
+                match crate::net::proxy_protocol::read(&mut tcp, header_timeout).await {
+                    Ok(Some(real)) => addr = real,
+                    Ok(None) => {}
+                    Err(e) => {
+                        debug!(%addr, error = %e, "PROXY protocol header rejected");
+                        return;
+                    }
+                }
+            }
             let conn = match tls {
                 None if !http1 => Conn::Plain(tcp, axum::body::Bytes::new()),
                 None => {

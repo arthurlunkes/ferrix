@@ -73,6 +73,16 @@ async fn handle_tcp(
     addr: SocketAddr,
 ) -> Result<(), String> {
     let connect_timeout = Duration::from_millis(stream.connect_timeout_ms);
+    let mut client = client;
+    let mut addr = addr;
+    if stream.accept_proxy_protocol {
+        if let Some(real) = crate::net::proxy_protocol::read(&mut client, connect_timeout)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            addr = real;
+        }
+    }
     let upstream_name = if stream.sni_routes.is_empty() {
         stream.upstream.clone()
     } else {
@@ -85,8 +95,17 @@ async fn handle_tcp(
     for target in targets_for(engine, &upstream_name, addr) {
         let dest = target_addr(&target.url);
         match tokio::time::timeout(connect_timeout, TcpStream::connect(dest)).await {
-            Ok(Ok(upstream)) => {
+            Ok(Ok(mut upstream)) => {
                 let _ = upstream.set_nodelay(true);
+                if stream.send_proxy_protocol {
+                    let local = client.local_addr().unwrap_or(addr);
+                    if let Err(e) =
+                        crate::net::proxy_protocol::write(&mut upstream, addr, local).await
+                    {
+                        last_err = format!("{}: {}", dest, e);
+                        continue;
+                    }
+                }
                 engine
                     .health_checker
                     .mark_success(&upstream_name, &target.url, 0.0);

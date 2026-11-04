@@ -506,3 +506,9 @@ cache:
 ```
 
 `x-cache-status` shows `HIT`, `MISS`, `STALE`, `UPDATING` or `REVALIDATED`.
+
+### PROXY protocol
+
+- `http.proxy_protocol: true` (nginx `listen ... proxy_protocol`): every HTTP/HTTPS connection must start with a PROXY protocol v1 or v2 header (AWS NLB, HAProxy, ...); its source address becomes the client IP. Connections without it are closed.
+- `streams[].accept_proxy_protocol: true`: the same for a TCP stream.
+- `streams[].send_proxy_protocol: true` (nginx `proxy_protocol on`): send a v1 header with the client address to the upstream.

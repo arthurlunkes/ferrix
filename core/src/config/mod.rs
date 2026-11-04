@@ -53,6 +53,12 @@ pub struct StreamConfig {
     /// (exact, `*.suffix` or `default`) → upstream. Empty = always `upstream`.
     #[serde(default)]
     pub sni_routes: HashMap<String, String>,
+    /// Clients come with a PROXY protocol header (nginx `listen ... proxy_protocol`).
+    #[serde(default)]
+    pub accept_proxy_protocol: bool,
+    /// Send a PROXY protocol v1 header to the upstream (nginx `proxy_protocol on`).
+    #[serde(default)]
+    pub send_proxy_protocol: bool,
 }
 
 fn default_stream_connect_timeout_ms() -> u64 {
@@ -227,6 +233,11 @@ pub struct HttpConfig {
     /// nginx `access_log <path> <format>`: log every request to a file.
     #[serde(default)]
     pub access_log: Option<AccessLogConfig>,
+
+    /// nginx `listen ... proxy_protocol`: every HTTP(S) connection starts with a
+    /// PROXY protocol v1/v2 header carrying the real client address.
+    #[serde(default)]
+    pub proxy_protocol: bool,
 
     /// nginx `merge_slashes`: `//a///b` is matched as `/a/b`.
     #[serde(default = "default_true")]
@@ -553,6 +564,7 @@ impl Default for HttpConfig {
             protocols: default_protocols(),
             access_log: None,
             variables: HashMap::new(),
+            proxy_protocol: false,
             merge_slashes: true,
             absolute_redirect: true,
             port_in_redirect: true,
