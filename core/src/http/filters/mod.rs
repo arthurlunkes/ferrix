@@ -1,3 +1,4 @@
+pub mod charset;
 pub mod compress;
 pub mod cors;
 pub mod error_page;

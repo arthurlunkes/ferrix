@@ -1285,6 +1285,19 @@ pub struct RouteRule {
     #[serde(default)]
     pub gunzip: bool,
 
+    /// nginx `charset`: charset declared (and converted to) for text responses.
+    #[serde(default)]
+    pub charset: Option<String>,
+    /// nginx `source_charset`: charset the bodies are written in.
+    #[serde(default)]
+    pub source_charset: Option<String>,
+    /// nginx `override_charset on`: convert even when the response declares one.
+    #[serde(default)]
+    pub override_charset: bool,
+    /// nginx `charset_types` (text/html, text/plain, text/xml, JS and RSS are always on).
+    #[serde(default)]
+    pub charset_types: Vec<String>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1431,6 +1444,10 @@ impl Default for RouteRule {
             add_after_body: None,
             addition_types: Vec::new(),
             gunzip: false,
+            charset: None,
+            source_charset: None,
+            override_charset: false,
+            charset_types: Vec::new(),
             grpc: false,
         }
     }

@@ -2081,6 +2081,17 @@ impl Converter {
                 "add_after_body" => route.add_after_body = item.arg(0).map(String::from),
                 "addition_types" => route.addition_types = item.args.clone(),
                 "gunzip" => route.gunzip = item.arg(0) == Some("on"),
+                "charset" => route.charset = item.arg(0).filter(|c| *c != "off").map(String::from),
+                "source_charset" => route.source_charset = item.arg(0).map(String::from),
+                "override_charset" => route.override_charset = item.arg(0) == Some("on"),
+                "charset_types" => route.charset_types = item.args.clone(),
+                "charset_map" => self.report.unsupported(
+                    &self.file,
+                    item.line,
+                    "charset_map",
+                    &item.source(),
+                    "o Ferrix usa as tabelas padrão do WHATWG (encoding_rs); mapas próprios não existem",
+                ),
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");

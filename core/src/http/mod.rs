@@ -1140,6 +1140,12 @@ impl ProxyEngine {
             resp
         };
 
+        let resp = if route.charset.is_some() {
+            Box::pin(filters::charset::apply(route, resp)).await
+        } else {
+            resp
+        };
+
         let resp = match &route.sub_filter {
             Some(cfg) => Box::pin(filters::sub::apply(cfg, resp)).await,
             None => resp,

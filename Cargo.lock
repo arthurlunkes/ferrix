@@ -567,6 +567,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "encoding_rs",
  "futures-util",
  "h3",
  "h3-quinn",
