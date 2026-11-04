@@ -629,6 +629,10 @@ impl ProxyEngine {
                     }
                     None => self.pool_manager.select_targets(upstream_cfg, client_ip),
                 };
+                let mut targets = targets;
+                if let Some(sc) = &upstream_cfg.sticky {
+                    upstream::sticky::prefer(&mut targets, &parts.headers, sc);
+                }
                 if targets.is_empty() {
                     return (
                         StatusCode::BAD_GATEWAY,

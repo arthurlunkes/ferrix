@@ -370,3 +370,13 @@ http:
 ```
 
 Variables: `$remote_addr $remote_user $time_local $time_iso8601 $msec $request $request_method $request_uri $uri $args $status $body_bytes_sent $request_time $host $http_host $http_referer $http_user_agent $upstream_addr $scheme $request_id`.
+
+### Sticky sessions (`upstreams.<name>.sticky`)
+
+nginx `sticky cookie srv_id expires=1h path=/`. The cookie stores a hash of the target, never its address.
+
+```yaml
+upstreams:
+  app:
+    sticky: { cookie: srv_id, path: /, max_age_secs: 3600 }
+```

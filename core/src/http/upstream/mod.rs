@@ -1,6 +1,7 @@
 pub mod balancer;
 pub mod h1;
 pub mod hash;
+pub mod sticky;
 
 use crate::event::clock::CoarseSleep;
 use axum::body::{Body, Bytes};

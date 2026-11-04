@@ -554,6 +554,25 @@ pub struct UpstreamConfig {
 
     #[serde(default)]
     pub hash_key: Option<String>,
+
+    /// nginx `sticky cookie`: keep each client on the same target.
+    #[serde(default)]
+    pub sticky: Option<StickyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StickyConfig {
+    pub cookie: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_age_secs: Option<u64>,
+}
+
+impl StickyConfig {
+    pub fn path(&self) -> &str {
+        self.path.as_deref().unwrap_or("/")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1011,6 +1030,7 @@ impl Default for FerrixConfig {
                 }),
                 verify_tls: true,
                 hash_key: None,
+                sticky: None,
             },
         );
 
