@@ -9,6 +9,7 @@ pub mod h3;
 pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
+pub mod mirror;
 mod proxy;
 mod raw_proxy;
 pub mod realip;
@@ -478,6 +479,10 @@ impl ProxyEngine {
                 }
                 auth_request::Outcome::Deny(resp) => return resp,
             }
+        }
+
+        for base in &route.mirror {
+            mirror::spawn(base, req.method(), req.uri(), req.headers());
         }
 
         let _route_conn_guard = match &route.limit_conn {
