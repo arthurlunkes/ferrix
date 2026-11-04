@@ -48,6 +48,11 @@ pub struct StreamConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_stream_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
+
+    /// nginx `ssl_preread on` + `map $ssl_preread_server_name`: TLS server name
+    /// (exact, `*.suffix` or `default`) → upstream. Empty = always `upstream`.
+    #[serde(default)]
+    pub sni_routes: HashMap<String, String>,
 }
 
 fn default_stream_connect_timeout_ms() -> u64 {
