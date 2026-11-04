@@ -98,10 +98,14 @@ install_deb_file() {
 install_rpm() {
     file="ferrix-${VERSION}-1.${RPM_ARCH}.rpm"
     download "$file"
+    if ! { fetch "$SITE/apt/ferrix-archive-keyring.asc" "$TMP/ferrix.asc" &&
+        $SUDO rpm --import "$TMP/ferrix.asc"; }; then
+        say "Could not import the Ferrix signing key"
+    fi
     if have dnf; then
         $SUDO dnf install -y "$TMP/$file"
     elif have zypper; then
-        $SUDO zypper --non-interactive install --allow-unsigned-rpm "$TMP/$file"
+        $SUDO zypper --non-interactive install "$TMP/$file"
     else
         $SUDO yum install -y "$TMP/$file"
     fi

@@ -61,3 +61,7 @@ overrides:
   archlinux:
     depends:
       - shadow
+
+rpm:
+  signature:
+    key_file: ${NFPM_SIGNING_KEY_FILE}

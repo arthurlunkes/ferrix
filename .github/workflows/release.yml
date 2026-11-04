@@ -208,7 +208,13 @@ jobs:
 
       - name: Build the packages
         shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
         run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/signing.asc"
+            export NFPM_SIGNING_KEY_FILE="$RUNNER_TEMP/signing.asc"
+          fi
           VERSION="${{ needs.check-version.outputs.version }}"
           TAG="${{ needs.check-version.outputs.tag_name }}"
           mkdir -p dist
@@ -222,6 +228,7 @@ jobs:
               VERSION="$VERSION" ARCH="$ARCH" nfpm package --config packaging/nfpm.yaml --packager "$packager" --target dist/
             done
           done
+          rm -f "$RUNNER_TEMP/signing.asc"
           ls -la dist/
 
       - name: Upload the packages

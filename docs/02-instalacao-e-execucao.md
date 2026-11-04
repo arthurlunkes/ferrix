@@ -121,9 +121,10 @@ The repository is signed with the key `8D01 6191 3151 3806 7A8A  5C5B 4ABD 5DC1 
 
 ### Fedora, RHEL, openSUSE and Arch
 
-Download the package for your system from the [latest release](https://github.com/arthurlunkes/ferrix/releases/latest) and install it:
+Download the package for your system from the [latest release](https://github.com/arthurlunkes/ferrix/releases/latest) and install it. The `.rpm` is signed with the same key as the APT repository; import it first so your system can check it:
 
 ```bash
+sudo rpm --import https://arthurlunkes.github.io/ferrix/apt/ferrix-archive-keyring.asc
 sudo dnf install ./ferrix-0.2.0-1.x86_64.rpm          # Fedora / RHEL
 sudo zypper install ./ferrix-0.2.0-1.x86_64.rpm       # openSUSE
 sudo pacman -U ferrix-0.2.0-1-x86_64.pkg.tar.zst      # Arch
