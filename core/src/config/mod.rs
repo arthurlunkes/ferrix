@@ -788,6 +788,59 @@ pub enum RouteTargetType {
     Cgi,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageOp {
+    /// `image_filter test`: 415 unless JPEG/PNG/GIF/WebP.
+    Test,
+    /// `image_filter size`: JSON with width/height/type.
+    Size,
+    #[default]
+    Resize,
+    Crop,
+    /// Only `rotate` (90/180/270).
+    Rotate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageFilterConfig {
+    #[serde(default)]
+    pub op: ImageOp,
+    /// 0 = any (nginx `-`).
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    /// Applied after resize/crop (nginx `image_filter rotate`).
+    #[serde(default)]
+    pub rotate: u16,
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8,
+    /// nginx `image_filter_buffer` (default 1 MB).
+    #[serde(default = "default_image_buffer")]
+    pub buffer_bytes: u64,
+}
+
+fn default_jpeg_quality() -> u8 {
+    75
+}
+fn default_image_buffer() -> u64 {
+    1 << 20
+}
+
+impl Default for ImageFilterConfig {
+    fn default() -> Self {
+        Self {
+            op: ImageOp::Resize,
+            width: 0,
+            height: 0,
+            rotate: 0,
+            jpeg_quality: default_jpeg_quality(),
+            buffer_bytes: default_image_buffer(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DavConfig {
     /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
@@ -1022,6 +1075,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
 
+    /// nginx `image_filter` (needs the `image-filter` build feature).
+    #[serde(default)]
+    pub image_filter: Option<ImageFilterConfig>,
+
     /// nginx `ssi on`: process `<!--# ... -->` in text/html (and `ssi_types`).
     #[serde(default)]
     pub ssi: bool,
@@ -1165,6 +1222,7 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            image_filter: None,
             ssi: false,
             ssi_types: Vec::new(),
             flv: false,

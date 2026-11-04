@@ -983,6 +983,12 @@ impl ProxyEngine {
             }
         };
 
+        #[cfg(feature = "image-filter")]
+        let resp = match &route.image_filter {
+            Some(cfg) => Box::pin(filters::image::apply(cfg, resp)).await,
+            None => resp,
+        };
+
         let resp = if route.ssi && filters::ssi::applies(&resp, &route.ssi_types) {
             let mut ctx = vars::Ctx {
                 method: &ssi_method,

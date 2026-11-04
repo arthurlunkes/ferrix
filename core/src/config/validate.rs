@@ -452,6 +452,12 @@ fn validate_vhost_routes(
             );
         }
 
+        if route.image_filter.is_some() && !cfg!(feature = "image-filter") {
+            report.warn(
+                format!("{}.image_filter", rpath),
+                "este binário foi compilado sem a feature `image-filter`; o filtro será ignorado",
+            );
+        }
         match route.target_type {
             RouteTargetType::ProxyUpstream => match &route.upstream_name {
                 None => report.error(

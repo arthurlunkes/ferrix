@@ -2,6 +2,8 @@ pub mod compress;
 pub mod cors;
 pub mod error_page;
 pub mod headers;
+#[cfg(feature = "image-filter")]
+pub mod image;
 pub mod request_id;
 pub mod ssi;
 pub mod sub;

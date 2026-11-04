@@ -461,3 +461,17 @@ routes:
     dav: { methods: [PUT, DELETE, MKCOL, COPY, MOVE], create_full_put_path: true, access: 0o644 }
     basic_auth: { username: admin, password: "$2b$..." }
 ```
+
+### Image filter (`image_filter`, build feature `image-filter`)
+
+nginx `image_filter resize|crop|rotate|size|test`, for JPEG, PNG, GIF and WebP, on static or proxied responses. Not in the default build (it adds image codecs): `cargo build --release --features image-filter`. Work runs on a blocking thread.
+
+```yaml
+routes:
+  - id: thumbs
+    path_prefix: /thumbs/
+    target_type: static_files
+    static_root: /srv/images
+    strip_prefix: true
+    image_filter: { op: resize, width: 300, height: 0, jpeg_quality: 80, buffer_bytes: 5242880 }
+```
