@@ -507,6 +507,15 @@ fn validate_vhost_routes(
                     }
                 }
             }
+            RouteTargetType::Return => {
+                let code = route.redirect_code.unwrap_or(200);
+                if !(200..600).contains(&code) {
+                    report.error(
+                        format!("{}.redirect_code", rpath),
+                        format!("{} não é um código HTTP válido", code),
+                    );
+                }
+            }
         }
 
         if let Some(rl) = &route.rate_limit {

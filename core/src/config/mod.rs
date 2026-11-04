@@ -650,6 +650,9 @@ pub enum RouteTargetType {
     ProxyUpstream,
     StaticFiles,
     Redirect,
+
+    /// nginx `return <code> [text]` with a non-3xx code.
+    Return,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -772,6 +775,9 @@ pub struct RouteRule {
     pub redirect_url: Option<String>,
     #[serde(default = "default_redirect_code")]
     pub redirect_code: Option<u16>,
+    /// Body of a `return` route (`$scheme`, `$host`, `$request_uri` are expanded).
+    #[serde(default)]
+    pub return_body: Option<String>,
     #[serde(default = "default_true")]
     pub websocket_enabled: bool,
     #[serde(default)]
@@ -864,6 +870,7 @@ impl Default for RouteRule {
             autoindex: false,
             redirect_url: None,
             redirect_code: None,
+            return_body: None,
             websocket_enabled: true,
             proxy_set_headers: HashMap::new(),
             add_headers: HashMap::new(),

@@ -1438,9 +1438,10 @@ impl Converter {
                 }
                 "return" => {
                     if let Some(r) = self.convert_return(item) {
-                        route.target_type = RouteTargetType::Redirect;
+                        route.target_type = r.target_type;
                         route.redirect_url = r.redirect_url;
                         route.redirect_code = r.redirect_code;
+                        route.return_body = r.return_body;
                         has_target = true;
                     }
                 }
@@ -1710,17 +1711,13 @@ impl Converter {
             });
         }
 
-        self.report.unsupported(
-            &self.file,
-            d.line,
-            "return",
-            &d.source(),
-            format!(
-                "responder {} com corpo fixo não existe no Ferrix; só redirecionamentos 3xx",
-                code
-            ),
-        );
-        None
+        Some(RouteRule {
+            id: self.next_route_id(),
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(code),
+            return_body: target.map(|t| t.to_string()),
+            ..Default::default()
+        })
     }
 
     fn parse_limit_req(&mut self, d: &Directive) -> Option<RateLimitConfig> {
@@ -2452,14 +2449,13 @@ mod tests {
     }
 
     #[test]
-    fn return_with_a_body_is_reported() {
+    fn return_with_a_body_becomes_a_return_route() {
         let r =
             convert(r#"http { server { listen 80; location /ok { return 200 "tudo certo"; } } }"#);
-        assert!(r
-            .report
-            .notes
-            .iter()
-            .any(|n| n.directive == "return" && n.reason.contains("corpo fixo")));
+        let route = first_route(&r);
+        assert_eq!(route.target_type, RouteTargetType::Return);
+        assert_eq!(route.redirect_code, Some(200));
+        assert_eq!(route.return_body.as_deref(), Some("tudo certo"));
     }
 
     #[test]
