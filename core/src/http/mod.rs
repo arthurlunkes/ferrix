@@ -14,6 +14,7 @@ mod proxy;
 mod raw_proxy;
 pub mod realip;
 pub mod referer;
+pub mod secure_link;
 pub mod server;
 pub mod static_files;
 pub mod upstream;
@@ -466,6 +467,26 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok());
             if !referer::is_valid(&route.valid_referers, referer, &vhost.server_names) {
                 return (StatusCode::FORBIDDEN, "403 Forbidden - Invalid Referer").into_response();
+            }
+        }
+
+        if let Some(cfg) = &route.secure_link {
+            let host = req
+                .headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .split(':')
+                .next()
+                .unwrap_or("");
+            match secure_link::check(cfg, req.uri(), client_ip, host) {
+                secure_link::Check::Ok => {}
+                secure_link::Check::Invalid => {
+                    return (StatusCode::FORBIDDEN, "403 Forbidden").into_response()
+                }
+                secure_link::Check::Expired => {
+                    return (StatusCode::GONE, "410 Gone - Link expired").into_response()
+                }
             }
         }
 
