@@ -66,6 +66,10 @@ struct Converter {
 
     stream_maps: HashMap<String, HashMap<String, String>>,
 
+    /// Per server: location path → full backend URL of its proxy_pass
+    /// (targets for `auth_request` / `mirror`).
+    internal_locations: HashMap<String, String>,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -99,6 +103,7 @@ impl Converter {
             http_headers: HashMap::new(),
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
+            internal_locations: HashMap::new(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -492,6 +497,33 @@ impl Converter {
             sni_routes,
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
+    }
+
+    /// `http://upstream_name/uri` → `<first target>/uri`; plain URLs as they are.
+    fn resolve_pass_url(&self, pass: &str) -> Option<String> {
+        let rest = pass
+            .strip_prefix("http://")
+            .or_else(|| pass.strip_prefix("https://"))?;
+        // A trailing $request_uri is what Ferrix sends anyway.
+        let rest = rest.strip_suffix("$request_uri").unwrap_or(rest);
+        if rest.contains('$') {
+            return None;
+        }
+        let (host, uri) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        Some(
+            match self
+                .config
+                .upstreams
+                .get(host)
+                .and_then(|u| u.targets.first())
+            {
+                Some(t) => format!("{}{}", t.url.trim_end_matches('/'), uri),
+                None => pass.to_string(),
+            },
+        )
     }
 
     fn convert_rewrite(&mut self, d: &Directive) -> Option<crate::config::RewriteRule> {
@@ -1256,8 +1288,36 @@ impl Converter {
             _ => {}
         }
 
+        self.internal_locations = block
+            .iter()
+            .filter(|l| l.name == "location")
+            .filter_map(|l| {
+                let path = l.args.last()?.clone();
+                let pass = l
+                    .block
+                    .iter()
+                    .flatten()
+                    .find(|d| d.name == "proxy_pass")?
+                    .arg(0)?;
+                Some((path, self.resolve_pass_url(pass)?))
+            })
+            .collect();
+
         for item in block {
             if item.name == "location" {
+                let is_internal = item.block.iter().flatten().any(|d| d.name == "internal");
+                if is_internal
+                    && item
+                        .args
+                        .last()
+                        .is_some_and(|p| self.internal_locations.contains_key(p))
+                {
+                    self.converted(
+                        item,
+                        "location interna: usada por auth_request/mirror, não vira rota pública",
+                    );
+                    continue;
+                }
                 (
                     self.cache_enabled,
                     self.cache_valid_secs,
@@ -1675,6 +1735,61 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "auth_request" => match item.arg(0) {
+                    Some("off") => route.auth_request = None,
+                    Some(path) => match self.internal_locations.get(path) {
+                        Some(url) => {
+                            route.auth_request = Some(crate::config::AuthRequestConfig {
+                                url: url.clone(),
+                                ..Default::default()
+                            });
+                            self.converted(item, "virou route.auth_request");
+                        }
+                        None => self.report.unsupported(
+                            &self.file,
+                            item.line,
+                            "auth_request",
+                            &item.source(),
+                            "a location de autenticação não tem um proxy_pass que o Ferrix consiga seguir",
+                        ),
+                    },
+                    None => self.note_unsupported(item),
+                },
+                "auth_request_set" => {
+                    // auth_request_set $x $upstream_http_x_user; → copy X-User.
+                    if let Some(h) = item.arg(1).and_then(|v| v.strip_prefix("$upstream_http_")) {
+                        route
+                            .auth_request
+                            .get_or_insert_with(Default::default)
+                            .set_headers
+                            .push(h.replace('_', "-"));
+                    }
+                }
+                "mirror" => match item.arg(0) {
+                    Some("off") | None => {}
+                    Some(path) => match self.internal_locations.get(path) {
+                        Some(url) => {
+                            // The mirror location's proxy_pass usually ends in $request_uri;
+                            // Ferrix appends the request URI itself.
+                            let base = url
+                                .split('$')
+                                .next()
+                                .unwrap_or(url)
+                                .trim_end_matches('/')
+                                .to_string();
+                            route.mirror.push(base);
+                            self.converted(item, "virou route.mirror");
+                        }
+                        None => self.report.unsupported(
+                            &self.file,
+                            item.line,
+                            "mirror",
+                            &item.source(),
+                            "a location de espelho não tem um proxy_pass que o Ferrix consiga seguir",
+                        ),
+                    },
+                },
+                "mirror_request_body" => {}
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }
@@ -3105,6 +3220,32 @@ mod tests {
         let le = route.limit_except.as_ref().unwrap();
         assert_eq!(le.methods, vec!["GET"]);
         assert_eq!(le.allow, vec!["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn auth_request_and_mirror_follow_internal_locations() {
+        let r = convert(
+            r#"http {
+                upstream auth { server 10.0.0.9:9000; }
+                upstream app { server 10.0.0.1; }
+                server { listen 80;
+                    location = /_auth { internal; proxy_pass http://auth/check; }
+                    location = /_mirror { internal; proxy_pass http://10.0.0.7:8080$request_uri; }
+                    location / {
+                        auth_request /_auth;
+                        auth_request_set $user $upstream_http_x_user;
+                        mirror /_mirror;
+                        proxy_pass http://app;
+                    }
+                }
+            }"#,
+        );
+        let routes = &r.config.vhosts[0].routes;
+        assert_eq!(routes.len(), 1, "internal locations are not public routes");
+        let ar = routes[0].auth_request.as_ref().unwrap();
+        assert_eq!(ar.url, "http://10.0.0.9:9000/check");
+        assert_eq!(ar.set_headers, vec!["x-user"]);
+        assert_eq!(routes[0].mirror, vec!["http://10.0.0.7:8080"]);
     }
 
     #[test]
