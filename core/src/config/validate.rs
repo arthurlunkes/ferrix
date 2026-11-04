@@ -458,6 +458,14 @@ fn validate_vhost_routes(
                     format!("{}.upstream_name", rpath),
                     "rota de proxy sem upstream definido",
                 ),
+                Some(name) if name.starts_with('$') => {
+                    if !cfg.http.variables.contains_key(&name[1..]) {
+                        report.error(
+                            format!("{}.upstream_name", rpath),
+                            format!("a variável '{}' não está em http.variables", name),
+                        );
+                    }
+                }
                 Some(name) if !cfg.upstreams.contains_key(name) => report.error(
                     format!("{}.upstream_name", rpath),
                     format!("o upstream '{}' não existe na configuração", name),

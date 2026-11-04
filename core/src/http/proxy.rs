@@ -107,7 +107,11 @@ impl ProxyEngine {
             RequestBody::Streaming(b) => (None, Some(b)),
         };
 
+        let templated = templated_headers(&parts, route, client_ip, is_tls, compiled);
         prepare_forwarded_headers(&mut parts.headers, route, client_ip, is_tls);
+        for (n, v) in templated {
+            parts.headers.insert(n, v);
+        }
         let headers = &parts.headers;
         let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn;
 
@@ -288,6 +292,51 @@ pub(super) fn prepare_forwarded_headers(
             headers.insert(name, value);
         }
     }
+}
+
+/// `proxy_set_header` values with variables beyond the four handled inline
+/// (`$host`, `$remote_addr`, `$proxy_add_x_forwarded_for`, `$scheme`).
+fn templated_headers(
+    parts: &axum::http::request::Parts,
+    route: &RouteRule,
+    client_ip: IpAddr,
+    is_tls: bool,
+    compiled: &CompiledConfig,
+) -> Vec<(HeaderName, HeaderValue)> {
+    let complex = |v: &str| {
+        v.contains('$')
+            && !matches!(
+                v,
+                "$host" | "$remote_addr" | "$proxy_add_x_forwarded_for" | "$scheme"
+            )
+    };
+    if !route.proxy_set_headers.values().any(|v| complex(v)) {
+        return Vec::new();
+    }
+    let ctx = super::vars::Ctx {
+        method: &parts.method,
+        uri: parts.uri.clone(),
+        headers: &parts.headers,
+        client_ip,
+        is_tls,
+        defs: &compiled.config.http.variables,
+        set: parts
+            .extensions
+            .get::<super::vars::SetVars>()
+            .map(|s| s.0.clone())
+            .unwrap_or_default(),
+        captures: Vec::new(),
+    };
+    route
+        .proxy_set_headers
+        .iter()
+        .filter(|(_, v)| complex(v))
+        .filter_map(|(k, v)| {
+            let n = HeaderName::from_bytes(k.as_bytes()).ok()?;
+            let v = HeaderValue::from_str(&ctx.expand(v)).ok()?;
+            Some((n, v))
+        })
+        .collect()
 }
 
 pub(super) fn scheme_str(is_tls: bool) -> &'static str {

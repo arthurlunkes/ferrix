@@ -18,6 +18,7 @@ pub mod secure_link;
 pub mod server;
 pub mod static_files;
 pub mod upstream;
+pub mod vars;
 pub mod websocket;
 
 use axum::body::{Body, Bytes};
@@ -405,6 +406,69 @@ impl ProxyEngine {
             .await
     }
 
+    /// nginx rewrite phase: server-level then route-level `if`/`set`/`rewrite`,
+    /// re-matching routes after `rewrite ... last` (at most 10 times, like nginx).
+    fn rewrite_phase(
+        &self,
+        compiled: &CompiledConfig,
+        vhost_index: usize,
+        vhost: &VirtualHost,
+        is_tls: bool,
+        client_ip: IpAddr,
+        req: &mut Request,
+    ) -> Result<(), Box<Response>> {
+        let (uri, set) = {
+            let mut ctx = vars::Ctx {
+                method: req.method(),
+                uri: req.uri().clone(),
+                headers: req.headers(),
+                client_ip,
+                is_tls,
+                defs: &compiled.config.http.variables,
+                set: std::collections::HashMap::new(),
+                captures: Vec::new(),
+            };
+            let mut phase =
+                vars::run_route_phase(&mut ctx, &vhost.conditions, &[], &vhost.rewrites, None);
+            for _ in 0..10 {
+                if let vars::Phase::Return {
+                    code,
+                    location_or_body,
+                } = phase
+                {
+                    return Err(Box::new(phase_response(code, location_or_body)));
+                }
+                let Some(m) = compiled.match_route(vhost_index, ctx.uri.path()) else {
+                    break;
+                };
+                let route = &vhost.routes[m.route_index];
+                phase = vars::run_route_phase(
+                    &mut ctx,
+                    &route.conditions,
+                    &route.set,
+                    &route.rewrites,
+                    route.static_root.as_deref(),
+                );
+                if !matches!(phase, vars::Phase::Rematch) {
+                    if let vars::Phase::Return {
+                        code,
+                        location_or_body,
+                    } = phase
+                    {
+                        return Err(Box::new(phase_response(code, location_or_body)));
+                    }
+                    break;
+                }
+            }
+            (ctx.uri, ctx.set)
+        };
+        *req.uri_mut() = uri;
+        if !set.is_empty() {
+            req.extensions_mut().insert(vars::SetVars(set));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn process_vhost_routes(
         &self,
@@ -416,6 +480,14 @@ impl ProxyEngine {
         req: Request,
         is_ws: bool,
     ) -> Response {
+        let mut req = req;
+        if compiled.has_rewrite_phase(vhost_index) {
+            if let Err(resp) =
+                self.rewrite_phase(compiled, vhost_index, vhost, is_tls, client_ip, &mut req)
+            {
+                return *resp;
+            }
+        }
         let req_path = req.uri().path().to_string();
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
@@ -613,6 +685,29 @@ impl ProxyEngine {
                         .into_response();
                 };
 
+                // `$var`: upstream chosen at runtime by a map/split_clients variable.
+                let dynamic_name;
+                let upstream_name = if let Some(var) = upstream_name.strip_prefix('$') {
+                    let ctx = vars::Ctx {
+                        method: &parts.method,
+                        uri: parts.uri.clone(),
+                        headers: &parts.headers,
+                        client_ip,
+                        is_tls,
+                        defs: &compiled.config.http.variables,
+                        set: parts
+                            .extensions
+                            .get::<vars::SetVars>()
+                            .map(|s| s.0.clone())
+                            .unwrap_or_default(),
+                        captures: Vec::new(),
+                    };
+                    dynamic_name = ctx.var(var);
+                    &dynamic_name
+                } else {
+                    upstream_name
+                };
+
                 let Some(upstream_cfg) = compiled.config.upstreams.get(upstream_name) else {
                     return (
                         StatusCode::BAD_GATEWAY,
@@ -724,6 +819,19 @@ impl ProxyEngine {
         }
 
         resp
+    }
+}
+
+fn phase_response(code: u16, value: String) -> Response {
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_redirection() {
+        let mut r = (status, "").into_response();
+        if let Ok(v) = HeaderValue::from_str(&value) {
+            r.headers_mut().insert(header::LOCATION, v);
+        }
+        r
+    } else {
+        (status, value).into_response()
     }
 }
 

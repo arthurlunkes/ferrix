@@ -163,7 +163,7 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 2,
 
-        expected_unsupported: &["split_clients", "map"],
+        expected_unsupported: &["proxy_pass"],
     },
     ExampleExpectation {
         dir_contains: "19-waf_modsecurity",

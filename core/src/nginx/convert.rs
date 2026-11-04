@@ -322,6 +322,8 @@ impl Converter {
                 tls: None,
                 routes: Vec::new(),
                 error_pages: Default::default(),
+                conditions: Vec::new(),
+                rewrites: Vec::new(),
             });
         }
 
@@ -492,6 +494,135 @@ impl Converter {
         self.converted(d, "virou um proxy TCP/UDP em streams");
     }
 
+    fn convert_rewrite(&mut self, d: &Directive) -> Option<crate::config::RewriteRule> {
+        use crate::config::RewriteFlag;
+        let (Some(pattern), Some(replacement)) = (d.arg(0), d.arg(1)) else {
+            self.note_unsupported(d);
+            return None;
+        };
+        let flag = match d.arg(2) {
+            Some("last") => RewriteFlag::Last,
+            Some("break") => RewriteFlag::Break,
+            Some("redirect") => RewriteFlag::Redirect,
+            Some("permanent") => RewriteFlag::Permanent,
+            _ => RewriteFlag::None,
+        };
+        self.converted(d, "virou uma regra de rewrite");
+        Some(crate::config::RewriteRule {
+            pattern: pattern.to_string(),
+            replacement: replacement.to_string(),
+            flag,
+        })
+    }
+
+    fn convert_if(&mut self, d: &Directive) -> Option<crate::config::ConditionConfig> {
+        let raw = d.args.join(" ");
+        let condition = raw
+            .trim()
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(raw.trim())
+            .trim()
+            .to_string();
+        let mut c = crate::config::ConditionConfig {
+            condition,
+            ..Default::default()
+        };
+        for inner in d.block.iter().flatten() {
+            match inner.name.as_str() {
+                "set" => {
+                    if let (Some(k), Some(v)) = (inner.arg(0), inner.arg(1)) {
+                        c.set.push((k.to_string(), v.to_string()));
+                    }
+                }
+                "rewrite" => c.rewrite = self.convert_rewrite(inner),
+                "return" => {
+                    let first = inner.arg(0).unwrap_or("");
+                    if let Ok(code) = first.parse::<u16>() {
+                        c.return_code = Some(code);
+                        c.return_value = inner.arg(1).map(String::from);
+                    } else {
+                        c.return_code = Some(302);
+                        c.return_value = Some(first.to_string());
+                    }
+                }
+                _ => self.note_unsupported(inner),
+            }
+        }
+        self.converted(d, "virou uma condição (if)");
+        Some(c)
+    }
+
+    /// `map`, `geo` and `split_clients` at http level → `http.variables`.
+    fn convert_variable(&mut self, d: &Directive) {
+        use crate::config::{GeoRange, MapEntry, SplitBucket, VariableDef};
+        let entries = d.block.as_deref().unwrap_or(&[]);
+        let (source, name) = match (d.name.as_str(), d.args.len()) {
+            ("geo", 1) => (None, d.arg(0)),
+            (_, _) => (d.arg(0).map(String::from), d.arg(1)),
+        };
+        let Some(name) = name.map(|n| n.trim_start_matches('$').to_string()) else {
+            self.note_unsupported(d);
+            return;
+        };
+        let def = match d.name.as_str() {
+            "map" => {
+                let mut out = Vec::new();
+                let mut default = String::new();
+                for e in entries {
+                    let v = e.arg(0).unwrap_or("").to_string();
+                    match e.name.as_str() {
+                        "default" => default = v,
+                        "hostnames" | "volatile" => {}
+                        n => out.push(MapEntry {
+                            pattern: n.to_string(),
+                            value: v,
+                        }),
+                    }
+                }
+                VariableDef::Map {
+                    source: source.unwrap_or_default(),
+                    entries: out,
+                    default,
+                }
+            }
+            "geo" => {
+                let mut ranges = Vec::new();
+                let mut default = String::new();
+                for e in entries {
+                    let v = e.arg(0).unwrap_or("").to_string();
+                    match e.name.as_str() {
+                        "default" => default = v,
+                        "ranges" | "proxy" | "proxy_recursive" | "delete" | "include" => {
+                            self.note_unsupported(e)
+                        }
+                        n => ranges.push(GeoRange {
+                            network: n.to_string(),
+                            value: v,
+                        }),
+                    }
+                }
+                VariableDef::Geo {
+                    source,
+                    ranges,
+                    default,
+                }
+            }
+            _ => VariableDef::SplitClients {
+                source: source.unwrap_or_default(),
+                buckets: entries
+                    .iter()
+                    .map(|e| SplitBucket {
+                        percent: e.name.trim_end_matches('%').parse().unwrap_or(0.0),
+                        value: e.arg(0).unwrap_or("").to_string(),
+                    })
+                    .collect(),
+            },
+        };
+        self.config.http.variables.insert(name, def);
+        self.converted(d, "virou http.variables");
+    }
+
     fn converted(&mut self, d: &Directive, msg: &str) {
         self.report.note(
             NoteLevel::Converted,
@@ -508,6 +639,7 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            "map" | "geo" | "split_clients" => self.convert_variable(d),
             "log_format" => {
                 let args: Vec<&str> = d
                     .args
@@ -907,6 +1039,8 @@ impl Converter {
             tls: None,
             routes: Vec::new(),
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         };
 
         let mut server_root: Option<String> = None;
@@ -931,7 +1065,24 @@ impl Converter {
                 "if" => {
                     certbot_redirect = self.try_convert_certbot_https_redirect(item);
                     if certbot_redirect.is_none() {
-                        self.note_unsupported(item);
+                        if let Some(c) = self.convert_if(item) {
+                            vhost.conditions.push(c);
+                        }
+                    }
+                }
+                "rewrite" => {
+                    if let Some(r) = self.convert_rewrite(item) {
+                        vhost.rewrites.push(r);
+                    }
+                }
+                "set" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        vhost.conditions.push(crate::config::ConditionConfig {
+                            condition: "1".into(),
+                            set: vec![(k.to_string(), v.to_string())],
+                            ..Default::default()
+                        });
+                        self.converted(item, "virou um set no vhost");
                     }
                 }
                 "server_name" => {
@@ -1526,6 +1677,22 @@ impl Converter {
                         route.target_type = RouteTargetType::StaticFiles;
                     }
                 }
+                "if" => {
+                    if let Some(c) = self.convert_if(item) {
+                        route.conditions.push(c);
+                    }
+                }
+                "rewrite" => {
+                    if let Some(r) = self.convert_rewrite(item) {
+                        route.rewrites.push(r);
+                    }
+                }
+                "set" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        route.set.push((k.to_string(), v.to_string()));
+                        self.converted(item, "virou route.set");
+                    }
+                }
                 "secure_link" => {
                     // `secure_link $arg_md5,$arg_expires;`
                     let a = item.arg(0).unwrap_or("");
@@ -1698,6 +1865,21 @@ impl Converter {
     fn apply_proxy_pass(&mut self, d: &Directive, route: &mut RouteRule) -> bool {
         let Some(raw) = d.arg(0) else { return false };
 
+        if let Some(var) = raw
+            .strip_prefix("http://")
+            .or_else(|| raw.strip_prefix("https://"))
+            .filter(|v| {
+                v.starts_with('$')
+                    && v[1..]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        {
+            route.target_type = RouteTargetType::ProxyUpstream;
+            route.upstream_name = Some(var.to_string());
+            self.converted(d, "upstream escolhido em runtime pela variável");
+            return true;
+        }
         if raw.contains('$') {
             self.report.unsupported(
                 &self.file,
@@ -2097,20 +2279,11 @@ fn reason_for(name: &str) -> String {
         n if n.starts_with("fastcgi") || n.starts_with("uwsgi") || n.starts_with("scgi") => {
             "o Ferrix só fala HTTP com o backend"
         }
-        "map" => "escolher destino por variável não existe no Ferrix; crie rotas explícitas",
 
         "include" => {
             "não é seguido ao colar texto na tela; use 'ferrix import --from arquivo.conf' na \
              máquina onde os arquivos estão, que resolve os includes automaticamente"
         }
-        "split_clients" => {
-            "sorteio de canário por variável não existe; distribua com pesos no upstream"
-        }
-        "geo" => "classificação de IP em variável não existe; use as listas de allow/deny",
-        "rewrite" => "reescrita por expressão regular não existe; use uma rota de redirect",
-        "if" => "blocos condicionais não existem no Ferrix",
-        "set" => "variáveis definidas na configuração não existem no Ferrix",
-        "auth_request" => "autenticação delegada a um subrequest não existe no Ferrix",
         "error_page" => "só páginas em arquivo (error_page 404 /404.html) são convertidas",
         "stub_status" => "use /api/metrics e o painel do Ferrix",
         "access_log" | "error_log" | "log_format" => {
@@ -2619,6 +2792,47 @@ mod tests {
     }
 
     #[test]
+    fn map_if_set_and_rewrite_are_converted() {
+        let r = convert(
+            r#"http {
+                map $http_user_agent $bot { default 0; ~*bot 1; }
+                geo $lan { default no; 10.0.0.0/8 yes; }
+                split_clients "${remote_addr}" $ab { 20% a; * b; }
+                server {
+                    listen 80;
+                    rewrite ^/old/(.*)$ /new/$1 permanent;
+                    location / {
+                        if ($bot) { return 403; }
+                        set $x 1;
+                        rewrite ^/a/(.*)$ /b/$1 last;
+                        root /srv;
+                    }
+                }
+            }"#,
+        );
+        let vars = &r.config.http.variables;
+        assert!(matches!(
+            vars.get("bot"),
+            Some(crate::config::VariableDef::Map { .. })
+        ));
+        assert!(matches!(
+            vars.get("lan"),
+            Some(crate::config::VariableDef::Geo { .. })
+        ));
+        assert!(matches!(
+            vars.get("ab"),
+            Some(crate::config::VariableDef::SplitClients { .. })
+        ));
+        let v = &r.config.vhosts[0];
+        assert_eq!(v.rewrites[0].flag, crate::config::RewriteFlag::Permanent);
+        let route = first_route(&r);
+        assert_eq!(route.conditions[0].condition, "$bot");
+        assert_eq!(route.conditions[0].return_code, Some(403));
+        assert_eq!(route.set[0], ("$x".to_string(), "1".to_string()));
+        assert_eq!(route.rewrites[0].replacement, "/b/$1");
+    }
+
+    #[test]
     fn websocket_headers_enable_the_tunnel() {
         let r = convert(
             r#"http {
@@ -2866,31 +3080,6 @@ mod tests {
         assert!(!names.contains(&"gzip".to_string()));
         assert!(r.config.http.compression.enabled);
         assert!(names.contains(&"proxy_no_cache".to_string()));
-    }
-
-    #[test]
-    fn map_and_split_clients_get_specific_explanations() {
-        let r = convert(
-            r#"http {
-                map $a $b { default x; }
-                split_clients "$request_id" $s { 10% v2; * v1; }
-                server { listen 80; location / { proxy_pass http://a:1; } }
-            }"#,
-        );
-        let map_note = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "map")
-            .unwrap();
-        assert!(map_note.reason.contains("rotas explícitas"));
-        let split = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "split_clients")
-            .unwrap();
-        assert!(split.reason.contains("pesos"));
     }
 
     #[test]
