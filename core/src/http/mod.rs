@@ -777,6 +777,13 @@ impl ProxyEngine {
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
                 };
+                if route.flv {
+                    if let Some(r) =
+                        Box::pin(static_files::flv(root_dir, file_path, parts.uri.query())).await
+                    {
+                        return r;
+                    }
+                }
                 match Box::pin(StaticFileServer::serve_file(
                     root_dir,
                     file_path,
