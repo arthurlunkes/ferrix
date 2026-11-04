@@ -2077,6 +2077,9 @@ impl Converter {
                     }
                 }
                 "userid_service" | "userid_p3p" | "userid_mark" => {}
+                "add_before_body" => route.add_before_body = item.arg(0).map(String::from),
+                "add_after_body" => route.add_after_body = item.arg(0).map(String::from),
+                "addition_types" => route.addition_types = item.args.clone(),
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");

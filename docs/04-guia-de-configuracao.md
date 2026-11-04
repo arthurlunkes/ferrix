@@ -118,6 +118,7 @@ websocket_enabled: false
 - `empty_gif: true`: nginx `empty_gif`, answers a 1×1 transparent GIF (tracking pixels).
 - `random_index: true`: nginx `random_index`, a request for a directory serves a random visible file from it.
 - `userid: { name: uid, domain, path: /, expires_secs: 31536000, flags: "Secure HttpOnly" }`: nginx `userid on`, a visitor-id cookie set on the first response (and added to that request so the backend sees it).
+- `add_before_body: /header.html`, `add_after_body: /footer.html`, `addition_types`: nginx addition filter; the URI is fetched as a subrequest from the same vhost (or a full URL) and wrapped around text/html bodies.
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route

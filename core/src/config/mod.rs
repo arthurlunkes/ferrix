@@ -1271,6 +1271,16 @@ pub struct RouteRule {
     #[serde(default)]
     pub userid: Option<UserIdConfig>,
 
+    /// nginx `add_before_body`: URI (served by this vhost) or URL put before text/html bodies.
+    #[serde(default)]
+    pub add_before_body: Option<String>,
+    /// nginx `add_after_body`.
+    #[serde(default)]
+    pub add_after_body: Option<String>,
+    /// nginx `addition_types`: extra MIME types besides text/html.
+    #[serde(default)]
+    pub addition_types: Vec<String>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1413,6 +1423,9 @@ impl Default for RouteRule {
             empty_gif: false,
             random_index: false,
             userid: None,
+            add_before_body: None,
+            add_after_body: None,
+            addition_types: Vec::new(),
             grpc: false,
         }
     }

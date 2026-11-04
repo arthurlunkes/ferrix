@@ -510,6 +510,65 @@ impl ProxyEngine {
         (StatusCode::BAD_GATEWAY, format!("502 Bad Gateway - {last}")).into_response()
     }
 
+    /// nginx-style subrequest: `uri` is either a full URL (fetched directly)
+    /// or a path served by this same vhost. Returns the 2xx body.
+    #[allow(clippy::too_many_arguments)]
+    async fn subrequest(
+        &self,
+        compiled: &CompiledConfig,
+        vhost_index: usize,
+        vhost: &VirtualHost,
+        is_tls: bool,
+        client_ip: IpAddr,
+        uri: &str,
+        mut headers: HeaderMap,
+    ) -> Option<Bytes> {
+        for h in [
+            header::RANGE,
+            header::ACCEPT_ENCODING,
+            header::IF_NONE_MATCH,
+            header::IF_MODIFIED_SINCE,
+            header::CONTENT_LENGTH,
+            header::TRANSFER_ENCODING,
+        ] {
+            headers.remove(h);
+        }
+        let resp = if uri.starts_with("http://") || uri.starts_with("https://") {
+            let host_at = uri.find("://").map(|i| i + 3).unwrap_or(0);
+            let (base, path) = match uri[host_at..].find('/') {
+                Some(i) => (&uri[..host_at + i], &uri[host_at + i..]),
+                None => (uri, "/"),
+            };
+            headers.remove(header::HOST);
+            UpstreamClient::new(Duration::from_secs(5), Duration::from_secs(10), true)
+                .send(&Method::GET, base, path, &headers, OutgoingBody::Empty)
+                .await
+                .ok()?
+        } else {
+            let mut req = Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .body(Body::empty())
+                .ok()?;
+            *req.headers_mut() = headers;
+            req.extensions_mut().insert(Subrequest);
+            Box::pin(self.process_vhost_routes(
+                compiled,
+                vhost_index,
+                vhost,
+                is_tls,
+                client_ip,
+                req,
+                false,
+            ))
+            .await
+        };
+        if !resp.status().is_success() {
+            return None;
+        }
+        axum::body::to_bytes(resp.into_body(), 4 << 20).await.ok()
+    }
+
     /// nginx rewrite phase: server-level then route-level `if`/`set`/`rewrite`,
     /// re-matching routes after `rewrite ... last` (at most 10 times, like nginx).
     fn rewrite_phase(
@@ -743,6 +802,13 @@ impl ProxyEngine {
             )
         } else {
             (axum::http::Uri::default(), Method::GET, HeaderMap::new())
+        };
+        let has_addition = (route.add_before_body.is_some() || route.add_after_body.is_some())
+            && req.extensions().get::<Subrequest>().is_none();
+        let addition_headers = if has_addition {
+            req.headers().clone()
+        } else {
+            HeaderMap::new()
         };
         let (mut parts, body) = req.into_parts();
         let userid_cookie = route
@@ -1072,6 +1138,30 @@ impl ProxyEngine {
             None => resp,
         };
 
+        let resp = if has_addition && filters::sub::is_text(&resp, &route.addition_types) {
+            let fetch = |uri: Option<String>| {
+                let headers = addition_headers.clone();
+                async move {
+                    let uri = uri?;
+                    Box::pin(self.subrequest(
+                        compiled,
+                        vhost_index,
+                        vhost,
+                        is_tls,
+                        client_ip,
+                        &uri,
+                        headers,
+                    ))
+                    .await
+                }
+            };
+            let before = fetch(route.add_before_body.clone()).await;
+            let after = fetch(route.add_after_body.clone()).await;
+            Box::pin(filters::sub::wrap_body(resp, before, after)).await
+        } else {
+            resp
+        };
+
         let mut resp = filters::run(
             compiled,
             vhost_index,
@@ -1175,6 +1265,10 @@ fn absolutize_redirect(
     resp
 }
 
+/// Marks an internal subrequest (no addition filter on it, no recursion).
+#[derive(Clone, Copy)]
+struct Subrequest;
+
 fn phase_response(code: u16, value: String) -> Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     if status.is_redirection() {
@@ -1270,6 +1364,42 @@ fn limit_response(status: u16, what: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn addition_wraps_html_with_subrequests() {
+        use crate::config::{FerrixConfig, RouteRule, RouteTargetType};
+        let dir = std::env::temp_dir().join(format!("ferrix-add-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("page.html"), "<p>body</p>").unwrap();
+        std::fs::write(dir.join("head.html"), "<h1>top</h1>").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "s".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::StaticFiles,
+            static_root: Some(dir.to_string_lossy().into()),
+            add_before_body: Some("/head.html".into()),
+            add_after_body: Some("/missing.html".into()),
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let req = Request::builder()
+            .uri("/page.html")
+            .header("host", "x")
+            .body(Body::empty())
+            .unwrap();
+        let r = engine
+            .handle_request(port, false, "127.0.0.1:1".parse().unwrap(), req)
+            .await;
+        let b = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(&b[..], b"<h1>top</h1><p>body</p>");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn merges_slashes_keeping_the_query() {
