@@ -888,6 +888,7 @@ impl Converter {
                     }
                 }
                 "least_conn" => algorithm = Some(LoadBalanceAlgorithm::LeastConn),
+                "least_time" => algorithm = Some(LoadBalanceAlgorithm::LeastTime),
                 "ip_hash" => algorithm = Some(LoadBalanceAlgorithm::IpHash),
                 "random" => algorithm = Some(LoadBalanceAlgorithm::Random),
                 "hash" => {

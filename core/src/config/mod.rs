@@ -574,6 +574,8 @@ pub enum LoadBalanceAlgorithm {
     IpHash,
     Random,
     ConsistentHash,
+    /// nginx `least_time header`: lowest average response time × active connections.
+    LeastTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

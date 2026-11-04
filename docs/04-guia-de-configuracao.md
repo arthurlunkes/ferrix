@@ -478,3 +478,7 @@ routes:
     strip_prefix: true
     image_filter: { op: resize, width: 300, height: 0, jpeg_quality: 80, buffer_bytes: 5242880 }
 ```
+
+### `least_time` balancing
+
+`algorithm: least_time` (nginx `least_time header`): each target keeps a moving average of its response time; the pool picks the lowest `average × (active connections + 1)`. Targets not measured yet are tried first.

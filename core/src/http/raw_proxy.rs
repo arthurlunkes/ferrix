@@ -128,7 +128,8 @@ impl ProxyEngine {
         let attempt_deadline = next_upstream
             .timeout_ms
             .map(|ms| crate::event::clock::now() + Duration::from_millis(ms));
-        let track_conns = upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn;
+        let track_conns = upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn
+            || upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime;
         let target_path = target_path(route, path);
         let encode = |authority: &str, req: &mut Vec<u8>| {
             encode_request(req, head, method, &target_path, authority, client_ip)
@@ -170,6 +171,9 @@ impl ProxyEngine {
                     }
                     self.health_checker
                         .mark_success(upstream_name, &target.url, elapsed_ms);
+                    if upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime {
+                        self.pool_manager.record_latency(&target.url, elapsed_ms);
+                    }
 
                     let target_index = upstream
                         .targets

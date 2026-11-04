@@ -66,6 +66,7 @@ export type LoadBalanceAlgorithm =
   | "least_conn"
   | "ip_hash"
   | "consistent_hash"
+  | "least_time"
   | "random";
 
 export interface UpstreamConfig {

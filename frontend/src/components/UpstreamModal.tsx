@@ -100,6 +100,7 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
               <option value="least_conn">Least Connections</option>
               <option value="ip_hash">IP Hash (sticky session)</option>
               <option value="random">Random</option>
+              <option value="least_time">Least time (fastest response)</option>
               <option value="consistent_hash">Consistent hash (hash key)</option>
             </Select>
           </Field>

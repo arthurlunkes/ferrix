@@ -113,7 +113,8 @@ impl ProxyEngine {
             parts.headers.insert(n, v);
         }
         let headers = &parts.headers;
-        let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn;
+        let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn
+            || upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime;
 
         let mut last_error: Option<String> = None;
 
@@ -166,6 +167,9 @@ impl ProxyEngine {
 
                     self.health_checker
                         .mark_success(upstream_name, &target.url, elapsed_ms);
+                    if upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime {
+                        self.pool_manager.record_latency(&target.url, elapsed_ms);
+                    }
 
                     let target_index = upstream_cfg
                         .targets
