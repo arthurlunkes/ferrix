@@ -64,10 +64,24 @@ pub async fn serve(
             .auto_date_header(false)
             .keep_alive(http.keepalive_timeout_ms > 0)
             .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
+        let l = &http.http2;
         b.http2()
             .timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
-            .keep_alive_interval(None);
+            .keep_alive_interval(l.keepalive_interval_ms.map(Duration::from_millis))
+            .max_concurrent_streams(l.max_concurrent_streams.unwrap_or(128));
+        if let Some(v) = l.max_header_list_size {
+            b.http2().max_header_list_size(v);
+        }
+        if let Some(v) = l.initial_stream_window {
+            b.http2().initial_stream_window_size(v);
+        }
+        if let Some(v) = l.initial_connection_window {
+            b.http2().initial_connection_window_size(v);
+        }
+        if let Some(v) = l.max_frame_size {
+            b.http2().max_frame_size(v.clamp(16_384, 16_777_215));
+        }
         if !http.serves(HttpProtocol::Http2) {
             b = b.http1_only();
         } else if !http1 {

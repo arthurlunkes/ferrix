@@ -731,6 +731,51 @@ impl Converter {
         self.converted(d, "virou http.variables");
     }
 
+    /// http2_* / http3_* limits (http or server level, global in Ferrix).
+    fn apply_protocol_limit(&mut self, d: &Directive) -> bool {
+        let size = d
+            .arg(0)
+            .and_then(parse_size)
+            .map(|v| v.min(u32::MAX as u64) as u32);
+        let num = d.arg(0).and_then(|v| v.parse::<u32>().ok());
+        let h = &mut self.config.http;
+        match d.name.as_str() {
+            "http2_max_concurrent_streams" => h.http2.max_concurrent_streams = num,
+            "http2_max_header_size" | "http2_max_field_size" => h.http2.max_header_list_size = size,
+            "http2_recv_buffer_size" | "http2_body_preread_size" => {
+                h.http2.initial_stream_window = size
+            }
+            "http2_chunk_size" => h.http2.max_frame_size = size,
+            "http3_max_concurrent_streams" => h.http3.max_concurrent_streams = num,
+            "http3_stream_buffer_size" => h.http3.stream_buffer_size = size,
+            "http2_idle_timeout" | "http2_recv_timeout" => {
+                if let Some(ms) = d.arg(0).and_then(parse_time_ms) {
+                    h.keepalive_timeout_ms = ms;
+                }
+            }
+            "http2_max_requests"
+            | "http2_pool_size"
+            | "http2_streams_index_size"
+            | "http2_push"
+            | "http2_push_preload"
+            | "http2_max_concurrent_pushes"
+            | "http3_hq"
+            | "quic_gso"
+            | "quic_retry"
+            | "quic_host_key"
+            | "quic_active_connection_id_limit" => {
+                self.converted(
+                    d,
+                    "detalhe interno do protocolo; o Ferrix usa o padrão do hyper/quinn",
+                );
+                return true;
+            }
+            _ => return false,
+        }
+        self.converted(d, "virou http.http2 / http.http3");
+        true
+    }
+
     fn converted(&mut self, d: &Directive, msg: &str) {
         self.report.note(
             NoteLevel::Converted,
@@ -747,6 +792,11 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            n if n.starts_with("http2_") || n.starts_with("http3_") || n.starts_with("quic_") => {
+                if !self.apply_protocol_limit(d) {
+                    self.note_unsupported(d);
+                }
+            }
             "map" | "geo" | "split_clients" => self.convert_variable(d),
             "json_set" => match (d.arg(0), d.arg(1), d.arg(2)) {
                 (Some(name), Some(source), Some(path)) => {
@@ -1293,6 +1343,10 @@ impl Converter {
                 | "proxy_cache_background_update" => {
                     self.apply_cache_tuning(item);
                 }
+                n if (n.starts_with("http2_")
+                    || n.starts_with("http3_")
+                    || n.starts_with("quic_"))
+                    && self.apply_protocol_limit(item) => {}
                 "server_name" => {
                     vhost.server_names.extend(item.args.iter().cloned());
                 }

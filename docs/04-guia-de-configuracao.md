@@ -617,3 +617,22 @@ streams:
     listen: 0.0.0.0:8443
     pass: 127.0.0.1:443             # stream pass: hand the connection to a local listener
 ```
+
+### HTTP/2 and HTTP/3 limits
+
+```yaml
+http:
+  http2:
+    max_concurrent_streams: 128      # http2_max_concurrent_streams
+    max_header_list_size: 65536      # http2_max_header_size
+    initial_stream_window: 65535     # http2_recv_buffer_size / http2_body_preread_size
+    initial_connection_window: 1048576
+    max_frame_size: 16384            # http2_chunk_size
+    keepalive_interval_ms: 30000     # PING idle connections
+  http3:
+    max_concurrent_streams: 128      # http3_max_concurrent_streams
+    stream_buffer_size: 65536        # http3_stream_buffer_size
+    idle_timeout_ms: 75000
+```
+
+They apply after a restart (the reload warns about it).

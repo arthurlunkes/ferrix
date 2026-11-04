@@ -282,6 +282,13 @@ pub struct HttpConfig {
     #[serde(default)]
     pub proxy_protocol: bool,
 
+    /// nginx `http2_*` limits.
+    #[serde(default)]
+    pub http2: Http2Limits,
+    /// nginx `http3_*` / `quic_*` limits.
+    #[serde(default)]
+    pub http3: Http3Limits,
+
     /// nginx `merge_slashes`: `//a///b` is matched as `/a/b`.
     #[serde(default = "default_true")]
     pub merge_slashes: bool,
@@ -386,6 +393,43 @@ pub struct ConditionConfig {
     pub return_value: Option<String>,
     #[serde(default)]
     pub rewrite: Option<RewriteRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Http2Limits {
+    /// nginx `http2_max_concurrent_streams` (default 128).
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+    /// nginx `http2_max_header_size` / `large_client_header_buffers`: max
+    /// decoded header list in bytes.
+    #[serde(default)]
+    pub max_header_list_size: Option<u32>,
+    /// nginx `http2_recv_buffer_size` / `http2_body_preread_size`: per-stream
+    /// receive window in bytes.
+    #[serde(default)]
+    pub initial_stream_window: Option<u32>,
+    /// Connection receive window in bytes.
+    #[serde(default)]
+    pub initial_connection_window: Option<u32>,
+    /// nginx `http2_chunk_size`: max DATA frame payload (16384–16777215).
+    #[serde(default)]
+    pub max_frame_size: Option<u32>,
+    /// PING interval keeping idle connections checked, in ms (off by default).
+    #[serde(default)]
+    pub keepalive_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Http3Limits {
+    /// nginx `http3_max_concurrent_streams` (default 128).
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+    /// nginx `http3_stream_buffer_size`: per-stream receive window in bytes.
+    #[serde(default)]
+    pub stream_buffer_size: Option<u32>,
+    /// QUIC idle timeout in ms (default: `keepalive_timeout_ms`).
+    #[serde(default)]
+    pub idle_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -629,6 +673,8 @@ impl Default for HttpConfig {
             variables: HashMap::new(),
             proxy_protocol: false,
             geoip: None,
+            http2: Http2Limits::default(),
+            http3: Http3Limits::default(),
             merge_slashes: true,
             absolute_redirect: true,
             port_in_redirect: true,

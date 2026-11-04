@@ -453,7 +453,9 @@ mod tests {
         tokio::spawn(async move {
             let (c, _) = front.accept().await.unwrap();
             let u = TcpStream::connect(echo_addr).await.unwrap();
-            pipe(Box::new(c), Box::new(u), Duration::from_secs(5), (0, 0)).await.unwrap();
+            pipe(Box::new(c), Box::new(u), Duration::from_secs(5), (0, 0))
+                .await
+                .unwrap();
         });
         let mut client = TcpStream::connect(front_addr).await.unwrap();
         client.write_all(b"hello").await.unwrap();
