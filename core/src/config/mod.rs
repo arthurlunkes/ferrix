@@ -218,6 +218,18 @@ pub struct HttpConfig {
 
     #[serde(default = "default_protocols")]
     pub protocols: Vec<HttpProtocol>,
+
+    /// nginx `access_log <path> <format>`: log every request to a file.
+    #[serde(default)]
+    pub access_log: Option<AccessLogConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccessLogConfig {
+    pub path: String,
+    /// nginx `log_format` string, or `combined` (default).
+    #[serde(default)]
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +448,7 @@ impl Default for HttpConfig {
             static_cache: StaticCacheConfig::default(),
             request_id: false,
             protocols: default_protocols(),
+            access_log: None,
         }
     }
 }

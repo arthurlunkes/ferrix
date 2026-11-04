@@ -62,6 +62,8 @@ struct Converter {
 
     http_headers: HashMap<String, String>,
 
+    log_formats: HashMap<String, String>,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -93,6 +95,7 @@ impl Converter {
             synthetic_upstreams: 0,
             route_seq: 0,
             http_headers: HashMap::new(),
+            log_formats: HashMap::new(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -471,6 +474,45 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            "log_format" => {
+                let args: Vec<&str> = d
+                    .args
+                    .iter()
+                    .skip(1)
+                    .map(|s| s.as_str())
+                    .filter(|a| !a.starts_with("escape="))
+                    .collect();
+                if let Some(name) = d.arg(0) {
+                    self.log_formats.insert(name.to_string(), args.concat());
+                    self.converted(d, "guardado para o access_log que usar este nome");
+                }
+            }
+            "access_log" => match d.arg(0) {
+                Some("off") => self.converted(d, "sem log em arquivo"),
+                Some(path) if !path.starts_with("syslog:") => {
+                    let name = d.arg(1).unwrap_or("combined");
+                    let format = if name == "combined" {
+                        "combined".to_string()
+                    } else if let Some(f) = self.log_formats.get(name) {
+                        f.clone()
+                    } else {
+                        self.report.unsupported(
+                            &self.file,
+                            d.line,
+                            "access_log",
+                            &d.source(),
+                            format!("log_format '{}' não foi definido antes", name),
+                        );
+                        return;
+                    };
+                    self.config.http.access_log = Some(crate::config::AccessLogConfig {
+                        path: path.to_string(),
+                        format,
+                    });
+                    self.converted(d, "virou http.access_log");
+                }
+                _ => self.note_unsupported(d),
+            },
             "server_tokens" => {
                 self.config.http.server_tokens = d.arg(0) != Some("off");
                 self.converted(d, "virou http.server_tokens");
@@ -2456,6 +2498,20 @@ mod tests {
         assert_eq!(route.target_type, RouteTargetType::Return);
         assert_eq!(route.redirect_code, Some(200));
         assert_eq!(route.return_body.as_deref(), Some("tudo certo"));
+    }
+
+    #[test]
+    fn http_access_log_with_a_named_format_is_converted() {
+        let r = convert(
+            r#"http {
+                log_format main '$remote_addr ' '"$request" $status';
+                access_log /var/log/ferrix/access.log main;
+                server { listen 80; location / { root /srv; } }
+            }"#,
+        );
+        let al = r.config.http.access_log.as_ref().unwrap();
+        assert_eq!(al.path, "/var/log/ferrix/access.log");
+        assert_eq!(al.format, "$remote_addr \"$request\" $status");
     }
 
     #[test]
