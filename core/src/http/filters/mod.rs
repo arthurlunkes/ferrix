@@ -7,6 +7,7 @@ pub mod image;
 pub mod request_id;
 pub mod ssi;
 pub mod sub;
+pub mod upstream_headers;
 
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method};

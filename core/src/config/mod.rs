@@ -1097,6 +1097,19 @@ pub struct RouteRule {
     #[serde(default)]
     pub cgi: Option<CgiConfig>,
 
+    /// nginx `proxy_redirect from to` (`default`, prefix or `~regex`).
+    #[serde(default)]
+    pub proxy_redirect: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_path from to`.
+    #[serde(default)]
+    pub proxy_cookie_path: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_domain from to`.
+    #[serde(default)]
+    pub proxy_cookie_domain: Vec<[String; 2]>,
+    /// nginx `proxy_cookie_flags <cookie|~regex|*> "<flags>"`.
+    #[serde(default)]
+    pub proxy_cookie_flags: Vec<[String; 2]>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1228,6 +1241,10 @@ impl Default for RouteRule {
             flv: false,
             dav: None,
             cgi: None,
+            proxy_redirect: Vec::new(),
+            proxy_cookie_path: Vec::new(),
+            proxy_cookie_domain: Vec::new(),
+            proxy_cookie_flags: Vec::new(),
             grpc: false,
         }
     }

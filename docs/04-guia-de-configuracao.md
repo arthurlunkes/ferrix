@@ -110,6 +110,7 @@ websocket_enabled: false
 - `mirror: [http://shadow:8080]`: sends a copy of each request (method, URI, headers; no body, like `mirror_request_body off`) and ignores the response.
 - `secure_link: { md5, hash_arg, expires_arg }`: nginx `secure_link`/`secure_link_md5` (base64url MD5). Wrong hash = 403, expired = 410.
 - `sub_filter: { replacements: [[from, to]], once, types }`: nginx `sub_filter` on text/html (plus `types`); uncompressed bodies up to 8 MB.
+- `proxy_redirect: [[from, to]]` (`default`, prefix or `~regex` with `$1`), `proxy_cookie_path` / `proxy_cookie_domain: [[from, to]]`, `proxy_cookie_flags: [[cookie|~regex|*, "secure httponly samesite=strict nosecure ..."]]`: nginx rewrites of `Location`/`Refresh` and `Set-Cookie` from the backend.
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 

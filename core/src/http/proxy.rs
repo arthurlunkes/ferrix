@@ -176,6 +176,13 @@ impl ProxyEngine {
                         upstream_res,
                         compiled.target_header(upstream_name, target_index),
                     );
+                    if super::filters::upstream_headers::needed(route) {
+                        super::filters::upstream_headers::apply(
+                            resp.headers_mut(),
+                            route,
+                            &target.url,
+                        );
+                    }
                     if let Some(sc) = &upstream_cfg.sticky {
                         if let Some(c) =
                             super::upstream::sticky::set_cookie(sc, headers, &target.url)

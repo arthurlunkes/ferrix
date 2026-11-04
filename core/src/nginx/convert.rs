@@ -1660,6 +1660,33 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "proxy_redirect" => match (item.arg(0), item.arg(1)) {
+                    (Some("off"), _) => route.proxy_redirect.clear(),
+                    (Some("default"), _) => {
+                        route.proxy_redirect.push(["default".into(), String::new()])
+                    }
+                    (Some(from), Some(to)) => route.proxy_redirect.push([from.into(), to.into()]),
+                    _ => self.note_unsupported(item),
+                },
+                "proxy_cookie_path" | "proxy_cookie_domain" => match (item.arg(0), item.arg(1)) {
+                    (Some("off"), _) => {}
+                    (Some(from), Some(to)) => {
+                        let list = if item.name == "proxy_cookie_path" {
+                            &mut route.proxy_cookie_path
+                        } else {
+                            &mut route.proxy_cookie_domain
+                        };
+                        list.push([from.into(), to.into()]);
+                    }
+                    _ => self.note_unsupported(item),
+                },
+                "proxy_cookie_flags" => {
+                    if let Some(name) = item.arg(0).filter(|n| *n != "off") {
+                        route
+                            .proxy_cookie_flags
+                            .push([name.into(), item.args[1..].join(" ")]);
+                    }
+                }
                 "fastcgi_pass" | "scgi_pass" | "uwsgi_pass" => {
                     use crate::config::CgiProtocol;
                     let protocol = match item.name.as_str() {

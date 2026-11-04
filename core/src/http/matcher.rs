@@ -224,6 +224,7 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
             .upstream_name
             .as_deref()
             .is_some_and(|n| n.starts_with('$'))
+        || crate::http::filters::upstream_headers::needed(route)
 }
 
 #[derive(Debug)]
