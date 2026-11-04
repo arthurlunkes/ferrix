@@ -920,8 +920,19 @@ async fn run_server(args: Args) -> Result<(), String> {
                     Ok(ConfigLoad::Loaded(new_cfg)) | Ok(ConfigLoad::Created { config: new_cfg, .. }) => {
                         let report = validate(&new_cfg);
                         if report.is_valid() {
+                            let old = store.config();
+                            let listeners = |c: &FerrixConfig| {
+                                let mut ports: Vec<u16> = c.vhosts.iter().map(|v| v.listen_port).collect();
+                                ports.sort_unstable();
+                                ports.dedup();
+                                (c.http.listen.clone(), c.http.protocols.clone(), ports, c.http.worker_threads, c.admin.listen.clone())
+                            };
+                            let needs_restart = listeners(&old) != listeners(&new_cfg);
                             store.apply(new_cfg);
                             info!("✔ Configuration reloaded successfully!");
+                            if needs_restart {
+                                warn!("Listen addresses, ports, protocols or worker threads changed: they only take effect after a restart (`systemctl restart ferrix` or `ferrix restart`).");
+                            }
                         } else {
                             warn!("New configuration has validation errors; keeping current config.");
                         }
