@@ -107,6 +107,7 @@ websocket_enabled: false
 - `target_type: return` + `redirect_code` + `return_body`: fixed response (nginx `return 200 "ok"`). `$scheme`, `$host` and `$request_uri` are expanded.
 - `valid_referers`: list like nginx (`none`, `blocked`, `server_names`, `*.ex.com`, `ex.*`, `ex.com/path`, `~regex`). Other Referers get 403 (the nginx `if ($invalid_referer) { return 403; }` pattern).
 - `auth_request: { url, set_headers, timeout_ms }`: asks `url` (GET, original headers + `X-Original-URI`/`X-Original-Method`) before serving. 2xx passes and copies `set_headers` to the backend request; 401/403 go to the client; anything else is 500.
+- `mirror: [http://shadow:8080]`: sends a copy of each request (method, URI, headers; no body, like `mirror_request_body off`) and ignores the response.
 
 ### 3. HTTP Redirect Route
 

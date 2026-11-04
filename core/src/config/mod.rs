@@ -840,6 +840,10 @@ pub struct RouteRule {
     /// nginx `auth_request`: subrequest to an auth service before serving.
     #[serde(default)]
     pub auth_request: Option<AuthRequestConfig>,
+
+    /// nginx `mirror`: base URLs (`http://host:port`) that get a copy of each request.
+    #[serde(default)]
+    pub mirror: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -922,6 +926,7 @@ impl Default for RouteRule {
             cors: None,
             valid_referers: Vec::new(),
             auth_request: None,
+            mirror: Vec::new(),
         }
     }
 }
