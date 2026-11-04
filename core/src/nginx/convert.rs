@@ -1691,6 +1691,42 @@ impl Converter {
                     route.cgi.get_or_insert_with(Default::default).index =
                         item.arg(0).map(String::from);
                 }
+                "dav_methods" => {
+                    let methods: Vec<String> = item
+                        .args
+                        .iter()
+                        .filter(|a| *a != "off")
+                        .map(|a| a.to_ascii_uppercase())
+                        .collect();
+                    if !methods.is_empty() {
+                        route.dav.get_or_insert_with(Default::default).methods = methods;
+                    }
+                }
+                "create_full_put_path" => {
+                    route
+                        .dav
+                        .get_or_insert_with(Default::default)
+                        .create_full_put_path = item.arg(0) == Some("on");
+                }
+                "dav_access" => {
+                    // `user:rw group:r all:r` → 0o644
+                    let mut mode = 0u32;
+                    for a in &item.args {
+                        let (who, perm) = a.split_once(':').unwrap_or(("", ""));
+                        let bits = perm.chars().fold(0, |b, c| match c {
+                            'r' => b | 4,
+                            'w' => b | 2,
+                            _ => b,
+                        });
+                        mode |= match who {
+                            "user" => bits << 6,
+                            "group" => bits << 3,
+                            "all" => bits | (bits << 3),
+                            _ => 0,
+                        };
+                    }
+                    route.dav.get_or_insert_with(Default::default).access = Some(mode);
+                }
                 "fastcgi_split_path_info" => self.converted(
                     item,
                     "o Ferrix separa SCRIPT_NAME/PATH_INFO em .php/, .py/ e .cgi/",

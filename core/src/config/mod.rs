@@ -788,6 +788,19 @@ pub enum RouteTargetType {
     Cgi,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DavConfig {
+    /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// nginx `create_full_put_path`.
+    #[serde(default)]
+    pub create_full_put_path: bool,
+    /// File mode for PUT (nginx `dav_access`), e.g. 0o644.
+    #[serde(default)]
+    pub access: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CgiProtocol {
@@ -1009,6 +1022,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
 
+    /// nginx `dav_methods` on a static route.
+    #[serde(default)]
+    pub dav: Option<DavConfig>,
+
     /// FastCGI / SCGI / uwsgi settings for `target_type: cgi`.
     #[serde(default)]
     pub cgi: Option<CgiConfig>,
@@ -1138,6 +1155,7 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            dav: None,
             cgi: None,
             grpc: false,
         }

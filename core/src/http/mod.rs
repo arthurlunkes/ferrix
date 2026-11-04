@@ -2,6 +2,7 @@ pub mod access;
 pub mod access_log;
 pub mod auth_request;
 pub mod cache;
+pub mod dav;
 pub mod default_page;
 pub mod filters;
 #[cfg(feature = "http3")]
@@ -734,6 +735,32 @@ impl ProxyEngine {
                     HeaderValue::from_static("text/plain; charset=utf-8"),
                 );
                 r
+            }
+            RouteTargetType::StaticFiles
+                if route
+                    .dav
+                    .as_ref()
+                    .is_some_and(|d| dav::handles(d, &parts.method)) =>
+            {
+                let root_dir = route.static_root.as_deref().unwrap_or("./public");
+                let path = if route.strip_prefix {
+                    req_path
+                        .strip_prefix(&route.path_prefix)
+                        .unwrap_or(&req_path)
+                } else {
+                    &req_path
+                };
+                let dav_cfg = route.dav.as_ref().expect("checked above");
+                Box::pin(dav::handle(
+                    dav_cfg,
+                    root_dir,
+                    path,
+                    &parts.method,
+                    &parts.headers,
+                    body,
+                    compiled.config.http.client_max_body_size,
+                ))
+                .await
             }
             RouteTargetType::StaticFiles => {
                 let root_dir = route.static_root.as_deref().unwrap_or("./public");
