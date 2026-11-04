@@ -1,5 +1,6 @@
 pub mod access;
 pub mod access_log;
+pub mod auth_request;
 pub mod cache;
 pub mod default_page;
 pub mod filters;
@@ -464,6 +465,18 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok());
             if !referer::is_valid(&route.valid_referers, referer, &vhost.server_names) {
                 return (StatusCode::FORBIDDEN, "403 Forbidden - Invalid Referer").into_response();
+            }
+        }
+
+        let mut req = req;
+        if let Some(cfg) = &route.auth_request {
+            match auth_request::check(cfg, req.method(), req.uri(), req.headers()).await {
+                auth_request::Outcome::Allow(pass) => {
+                    for (n, v) in pass {
+                        req.headers_mut().insert(n, v);
+                    }
+                }
+                auth_request::Outcome::Deny(resp) => return resp,
             }
         }
 

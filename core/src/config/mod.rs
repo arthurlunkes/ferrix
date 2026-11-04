@@ -836,6 +836,21 @@ pub struct RouteRule {
     /// nginx `valid_referers`: when non-empty, other Referers get 403.
     #[serde(default)]
     pub valid_referers: Vec<String>,
+
+    /// nginx `auth_request`: subrequest to an auth service before serving.
+    #[serde(default)]
+    pub auth_request: Option<AuthRequestConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthRequestConfig {
+    /// Full URL of the auth endpoint, e.g. `http://auth:9000/check`.
+    pub url: String,
+    /// Auth-response headers copied to the proxied request (nginx `auth_request_set`).
+    #[serde(default)]
+    pub set_headers: Vec<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -906,6 +921,7 @@ impl Default for RouteRule {
             compression: None,
             cors: None,
             valid_referers: Vec::new(),
+            auth_request: None,
         }
     }
 }
