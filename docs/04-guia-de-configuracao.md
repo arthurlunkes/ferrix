@@ -392,3 +392,28 @@ streams:
     upstream: web
     sni_routes: { api.example.com: api, "*.example.com": web, default: web }
 ```
+
+### Variables, `if`, `set` and `rewrite`
+
+nginx `map`, `geo` and `split_clients` become `http.variables`; `set`, `if` and `rewrite` exist per route (and `conditions`/`rewrites` per vhost, run before route matching). Variables work in `rewrite` targets, `if` returns, `proxy_set_headers` values and `upstream_name: $var`.
+
+```yaml
+http:
+  variables:
+    is_bot:  { type: map, source: $http_user_agent, entries: [{ pattern: "~*bot", value: "1" }], default: "0" }
+    network: { type: geo, ranges: [{ network: 10.0.0.0/8, value: lan }], default: wan }
+    canary:  { type: split_clients, source: $remote_addr, buckets: [{ percent: 10, value: app_v2 }, { percent: 0, value: app_v1 }] }
+vhosts:
+  - id: site
+    rewrites: [{ pattern: "^/old/(.*)$", replacement: "/new/$1", flag: permanent }]
+    routes:
+      - id: app
+        path_prefix: /
+        target_type: proxy_upstream
+        upstream_name: $canary
+        conditions: [{ condition: "$is_bot", return_code: 403 }]
+        set: [["$tier", "$network"]]
+        proxy_set_headers: { X-Tier: $tier }
+```
+
+Built-ins: `$uri $request_uri $args $arg_* $http_* $cookie_* $host $remote_addr $scheme $https $request_method $content_type $content_length $1..$9`. `if` operators: `= != ~ ~* !~ !~* -f !-f -d !-d -e !-e`. Rewrite flags: `last` (re-match routes, up to 10 times), `break`, `redirect`, `permanent`. `split_clients` hashes with Ferrix's own hash, so buckets keep their sizes but not nginx's exact client assignment.

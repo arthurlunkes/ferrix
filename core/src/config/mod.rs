@@ -227,6 +227,91 @@ pub struct HttpConfig {
     /// nginx `access_log <path> <format>`: log every request to a file.
     #[serde(default)]
     pub access_log: Option<AccessLogConfig>,
+
+    /// nginx `map` / `geo` / `split_clients`: named variables (without `$`).
+    #[serde(default)]
+    pub variables: HashMap<String, VariableDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VariableDef {
+    Map {
+        source: String,
+        #[serde(default)]
+        entries: Vec<MapEntry>,
+        #[serde(default)]
+        default: String,
+    },
+    Geo {
+        /// Defaults to `$remote_addr`.
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        ranges: Vec<GeoRange>,
+        #[serde(default)]
+        default: String,
+    },
+    SplitClients {
+        source: String,
+        buckets: Vec<SplitBucket>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapEntry {
+    /// Exact value, `~regex` or `~*regex`.
+    pub pattern: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoRange {
+    pub network: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitBucket {
+    /// Percentage; `0` marks the `*` bucket (the rest).
+    pub percent: f64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RewriteFlag {
+    /// No flag: keep applying the next rewrites.
+    #[default]
+    None,
+    Last,
+    Break,
+    Redirect,
+    Permanent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewriteRule {
+    pub pattern: String,
+    pub replacement: String,
+    #[serde(default)]
+    pub flag: RewriteFlag,
+}
+
+/// nginx `if (condition) { set ...; rewrite ...; return ...; }`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConditionConfig {
+    /// e.g. `$http_user_agent ~* bot`, `$arg_debug`, `!-f $request_filename`.
+    pub condition: String,
+    #[serde(default)]
+    pub set: Vec<(String, String)>,
+    #[serde(default)]
+    pub return_code: Option<u16>,
+    /// Redirect URL for 3xx, body otherwise.
+    #[serde(default)]
+    pub return_value: Option<String>,
+    #[serde(default)]
+    pub rewrite: Option<RewriteRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -454,6 +539,7 @@ impl Default for HttpConfig {
             request_id: false,
             protocols: default_protocols(),
             access_log: None,
+            variables: HashMap::new(),
         }
     }
 }
@@ -611,6 +697,13 @@ pub struct VirtualHost {
 
     #[serde(default)]
     pub error_pages: HashMap<String, String>,
+
+    /// Server-level nginx `if` blocks (run before route matching).
+    #[serde(default)]
+    pub conditions: Vec<ConditionConfig>,
+    /// Server-level nginx `rewrite` (run before route matching).
+    #[serde(default)]
+    pub rewrites: Vec<RewriteRule>,
 }
 
 fn default_vhost_port() -> u16 {
@@ -876,6 +969,16 @@ pub struct RouteRule {
     /// nginx `sub_filter`: string replacements in text responses.
     #[serde(default)]
     pub sub_filter: Option<SubFilterConfig>,
+
+    /// nginx `set $name value` (in order).
+    #[serde(default)]
+    pub set: Vec<(String, String)>,
+    /// nginx `if` blocks.
+    #[serde(default)]
+    pub conditions: Vec<ConditionConfig>,
+    /// nginx `rewrite`.
+    #[serde(default)]
+    pub rewrites: Vec<RewriteRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -995,6 +1098,9 @@ impl Default for RouteRule {
             mirror: Vec::new(),
             secure_link: None,
             sub_filter: None,
+            set: Vec::new(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         }
     }
 }
@@ -1079,6 +1185,8 @@ impl Default for FerrixConfig {
                 ..Default::default()
             }],
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         };
 
         Self {

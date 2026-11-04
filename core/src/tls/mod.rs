@@ -69,6 +69,8 @@ mod tests {
             tls,
             routes: vec![],
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         }
     }
 

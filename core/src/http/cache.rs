@@ -462,6 +462,8 @@ mod proxy_cache_tests {
             tls: None,
             routes: Vec::new(),
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         };
         let get_x = parts_full("/x", &[("host", "a.com")]);
         let head_x = Request::builder()
