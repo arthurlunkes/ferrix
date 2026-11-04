@@ -241,6 +241,11 @@ pub async fn route_test(state: &AdminState, req: RouteTestRequest) -> impl IntoR
             .redirect_url
             .clone()
             .map(|u| format!("redirect {} to {}", route.redirect_code.unwrap_or(302), u)),
+        RouteTargetType::Return => Some(format!("return {}", route.redirect_code.unwrap_or(200))),
+        RouteTargetType::Cgi => route
+            .cgi
+            .as_ref()
+            .map(|c| format!("{:?} {}", c.protocol, c.pass)),
     };
 
     Json(RouteTestResponse {

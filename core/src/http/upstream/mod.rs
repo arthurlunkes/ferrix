@@ -1,6 +1,10 @@
 pub mod balancer;
+pub mod cgi;
+#[cfg(feature = "http2")]
+pub mod grpc;
 pub mod h1;
 pub mod hash;
+pub mod sticky;
 
 use crate::event::clock::CoarseSleep;
 use axum::body::{Body, Bytes};

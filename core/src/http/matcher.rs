@@ -206,6 +206,8 @@ struct CompiledVHost {
     routes: Vec<CompiledRoute>,
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
+    /// Some `if`/`set`/`rewrite` in this vhost or its routes.
+    has_rewrite_phase: bool,
 }
 
 #[derive(Debug)]
@@ -237,6 +239,11 @@ impl CompiledConfig {
                     .collect(),
                 allowed_ips: IpMatcher::compile(&v.allowed_ips).0,
                 denied_ips: IpMatcher::compile(&v.denied_ips).0,
+                has_rewrite_phase: !v.conditions.is_empty()
+                    || !v.rewrites.is_empty()
+                    || v.routes.iter().any(|r| {
+                        !r.conditions.is_empty() || !r.rewrites.is_empty() || !r.set.is_empty()
+                    }),
             })
             .collect();
 
@@ -294,6 +301,12 @@ impl CompiledConfig {
 
     pub fn hash_ring(&self, upstream: &str) -> Option<&HashRing> {
         self.rings.get(upstream)
+    }
+
+    pub fn has_rewrite_phase(&self, vhost_index: usize) -> bool {
+        self.vhosts
+            .get(vhost_index)
+            .is_some_and(|v| v.has_rewrite_phase)
     }
 
     pub fn vhost_acl(&self, vhost_index: usize) -> Option<(&IpMatcher, &IpMatcher)> {
@@ -524,6 +537,8 @@ mod tests {
             tls: None,
             routes,
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         }
     }
 

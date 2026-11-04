@@ -452,12 +452,26 @@ fn validate_vhost_routes(
             );
         }
 
+        if route.image_filter.is_some() && !cfg!(feature = "image-filter") {
+            report.warn(
+                format!("{}.image_filter", rpath),
+                "este binário foi compilado sem a feature `image-filter`; o filtro será ignorado",
+            );
+        }
         match route.target_type {
             RouteTargetType::ProxyUpstream => match &route.upstream_name {
                 None => report.error(
                     format!("{}.upstream_name", rpath),
                     "rota de proxy sem upstream definido",
                 ),
+                Some(name) if name.starts_with('$') => {
+                    if !cfg.http.variables.contains_key(&name[1..]) {
+                        report.error(
+                            format!("{}.upstream_name", rpath),
+                            format!("a variável '{}' não está em http.variables", name),
+                        );
+                    }
+                }
                 Some(name) if !cfg.upstreams.contains_key(name) => report.error(
                     format!("{}.upstream_name", rpath),
                     format!("o upstream '{}' não existe na configuração", name),
@@ -505,6 +519,23 @@ fn validate_vhost_routes(
                             format!("{} não é um código de redirecionamento (300–399)", code),
                         );
                     }
+                }
+            }
+            RouteTargetType::Cgi => {
+                if route.cgi.as_ref().is_none_or(|c| c.pass.trim().is_empty()) {
+                    report.error(
+                        format!("{}.cgi.pass", rpath),
+                        "rota cgi sem endereço (cgi.pass)",
+                    );
+                }
+            }
+            RouteTargetType::Return => {
+                let code = route.redirect_code.unwrap_or(200);
+                if !(200..600).contains(&code) {
+                    report.error(
+                        format!("{}.redirect_code", rpath),
+                        format!("{} não é um código HTTP válido", code),
+                    );
                 }
             }
         }

@@ -5,6 +5,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { VirtualHosts } from "./pages/VirtualHosts";
 import { LiveRequests } from "./pages/LiveRequests";
 import { Upstreams } from "./pages/Upstreams";
+import { ServerSettings } from "./pages/ServerSettings";
 import { ConfigEditor } from "./pages/ConfigEditor";
 import { ImportNginx } from "./pages/ImportNginx";
 import { AuthModal } from "./components/AuthModal";
@@ -204,6 +205,10 @@ export function App() {
                 onDeleteUpstream={handleDeleteUpstream}
               />
             }
+          />
+          <Route
+            path="/settings"
+            element={<ServerSettings config={config} onRefreshConfig={loadAllData} />}
           />
           <Route path="/import" element={<ImportNginx onApplied={loadAllData} />} />
           <Route

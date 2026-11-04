@@ -100,8 +100,63 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
               <option value="least_conn">Least Connections</option>
               <option value="ip_hash">IP Hash (sticky session)</option>
               <option value="random">Random</option>
+              <option value="consistent_hash">Consistent hash (hash key)</option>
             </Select>
           </Field>
+        </div>
+
+        {formData.algorithm === "consistent_hash" && (
+          <Field label="Hash key" hint="nginx `hash ... consistent`, e.g. $request_uri, $remote_addr, $http_x_user">
+            <Input
+              value={formData.hash_key ?? ""}
+              onChange={(e) => setFormData({ ...formData, hash_key: e.target.value || null })}
+              placeholder="$request_uri"
+              mono
+            />
+          </Field>
+        )}
+
+        <div className="space-y-3">
+          <Toggle
+            checked={!!formData.sticky}
+            onChange={(on) =>
+              setFormData({ ...formData, sticky: on ? { cookie: "srv_id", path: "/", max_age_secs: null } : null })
+            }
+            label="Sticky sessions (sticky cookie)"
+            description="Sends each client back to the server that served it, using a cookie with a hashed server id"
+          />
+          {formData.sticky && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Field label="Cookie name">
+                <Input
+                  value={formData.sticky.cookie}
+                  onChange={(e) => setFormData({ ...formData, sticky: { ...formData.sticky!, cookie: e.target.value } })}
+                  mono
+                />
+              </Field>
+              <Field label="Path">
+                <Input
+                  value={formData.sticky.path ?? ""}
+                  onChange={(e) => setFormData({ ...formData, sticky: { ...formData.sticky!, path: e.target.value || null } })}
+                  placeholder="/"
+                  mono
+                />
+              </Field>
+              <Field label="Max-Age (s)" hint="Empty = session cookie">
+                <Input
+                  type="number"
+                  value={formData.sticky.max_age_secs ?? ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      sticky: { ...formData.sticky!, max_age_secs: e.target.value ? parseInt(e.target.value) : null },
+                    })
+                  }
+                  mono
+                />
+              </Field>
+            </div>
+          )}
         </div>
 
         <Toggle

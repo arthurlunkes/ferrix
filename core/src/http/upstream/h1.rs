@@ -900,6 +900,10 @@ impl HttpBody for H1Body {
 }
 
 pub fn tls_connector(verify: bool) -> TlsConnector {
+    tls_connector_alpn(verify, b"http/1.1")
+}
+
+pub fn tls_connector_alpn(verify: bool, alpn: &[u8]) -> TlsConnector {
     let builder = rustls::ClientConfig::builder();
     let mut config = if verify {
         let mut roots = rustls::RootCertStore::empty();
@@ -911,7 +915,7 @@ pub fn tls_connector(verify: bool) -> TlsConnector {
             .with_custom_certificate_verifier(Arc::new(NoVerify::new()))
             .with_no_client_auth()
     };
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     TlsConnector::from(Arc::new(config))
 }
 

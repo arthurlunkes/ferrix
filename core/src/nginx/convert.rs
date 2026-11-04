@@ -62,6 +62,10 @@ struct Converter {
 
     http_headers: HashMap<String, String>,
 
+    log_formats: HashMap<String, String>,
+
+    stream_maps: HashMap<String, HashMap<String, String>>,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -93,6 +97,8 @@ impl Converter {
             synthetic_upstreams: 0,
             route_seq: 0,
             http_headers: HashMap::new(),
+            log_formats: HashMap::new(),
+            stream_maps: HashMap::new(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -316,6 +322,8 @@ impl Converter {
                 tls: None,
                 routes: Vec::new(),
                 error_pages: Default::default(),
+                conditions: Vec::new(),
+                rewrites: Vec::new(),
             });
         }
 
@@ -361,6 +369,24 @@ impl Converter {
         for item in block {
             match item.name.as_str() {
                 "upstream" => {}
+                "map" if item.arg(0) == Some("$ssl_preread_server_name") => {
+                    let mut m = HashMap::new();
+                    for e in item.block.iter().flatten() {
+                        if e.name == "hostnames" {
+                            continue;
+                        }
+                        if let Some(v) = e.arg(0) {
+                            m.insert(e.name.trim_start_matches('.').to_string(), v.to_string());
+                            if e.name.starts_with('.') {
+                                m.insert(format!("*{}", e.name), v.to_string());
+                            }
+                        }
+                    }
+                    if let Some(var) = item.arg(1) {
+                        self.stream_maps.insert(var.to_string(), m);
+                    }
+                    self.converted(item, "virou sni_routes no stream que usar a variável");
+                }
                 "server" => self.convert_stream_server(item),
                 "log_format" | "access_log" | "error_log" => self.converted(
                     item,
@@ -405,6 +431,7 @@ impl Converter {
                         idle_timeout_ms = v;
                     }
                 }
+                "ssl_preread" => {}
                 _ => self.note_unsupported(item),
             }
         }
@@ -419,6 +446,16 @@ impl Converter {
             return;
         };
         let port = listen.rsplit(':').next().unwrap_or("0").to_string();
+        let sni_routes = self.stream_maps.get(&pass).cloned().unwrap_or_default();
+        let pass = if sni_routes.is_empty() {
+            pass
+        } else {
+            sni_routes
+                .get("default")
+                .or_else(|| sni_routes.values().next())
+                .cloned()
+                .unwrap_or_default()
+        };
         let upstream = if self.config.upstreams.contains_key(&pass) {
             pass
         } else {
@@ -440,6 +477,7 @@ impl Converter {
                     health_check: None,
                     verify_tls: true,
                     hash_key: None,
+                    sticky: None,
                 },
             );
             name
@@ -451,8 +489,138 @@ impl Converter {
             upstream,
             connect_timeout_ms,
             idle_timeout_ms,
+            sni_routes,
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
+    }
+
+    fn convert_rewrite(&mut self, d: &Directive) -> Option<crate::config::RewriteRule> {
+        use crate::config::RewriteFlag;
+        let (Some(pattern), Some(replacement)) = (d.arg(0), d.arg(1)) else {
+            self.note_unsupported(d);
+            return None;
+        };
+        let flag = match d.arg(2) {
+            Some("last") => RewriteFlag::Last,
+            Some("break") => RewriteFlag::Break,
+            Some("redirect") => RewriteFlag::Redirect,
+            Some("permanent") => RewriteFlag::Permanent,
+            _ => RewriteFlag::None,
+        };
+        self.converted(d, "virou uma regra de rewrite");
+        Some(crate::config::RewriteRule {
+            pattern: pattern.to_string(),
+            replacement: replacement.to_string(),
+            flag,
+        })
+    }
+
+    fn convert_if(&mut self, d: &Directive) -> Option<crate::config::ConditionConfig> {
+        let raw = d.args.join(" ");
+        let condition = raw
+            .trim()
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(raw.trim())
+            .trim()
+            .to_string();
+        let mut c = crate::config::ConditionConfig {
+            condition,
+            ..Default::default()
+        };
+        for inner in d.block.iter().flatten() {
+            match inner.name.as_str() {
+                "set" => {
+                    if let (Some(k), Some(v)) = (inner.arg(0), inner.arg(1)) {
+                        c.set.push((k.to_string(), v.to_string()));
+                    }
+                }
+                "rewrite" => c.rewrite = self.convert_rewrite(inner),
+                "return" => {
+                    let first = inner.arg(0).unwrap_or("");
+                    if let Ok(code) = first.parse::<u16>() {
+                        c.return_code = Some(code);
+                        c.return_value = inner.arg(1).map(String::from);
+                    } else {
+                        c.return_code = Some(302);
+                        c.return_value = Some(first.to_string());
+                    }
+                }
+                _ => self.note_unsupported(inner),
+            }
+        }
+        self.converted(d, "virou uma condição (if)");
+        Some(c)
+    }
+
+    /// `map`, `geo` and `split_clients` at http level → `http.variables`.
+    fn convert_variable(&mut self, d: &Directive) {
+        use crate::config::{GeoRange, MapEntry, SplitBucket, VariableDef};
+        let entries = d.block.as_deref().unwrap_or(&[]);
+        let (source, name) = match (d.name.as_str(), d.args.len()) {
+            ("geo", 1) => (None, d.arg(0)),
+            (_, _) => (d.arg(0).map(String::from), d.arg(1)),
+        };
+        let Some(name) = name.map(|n| n.trim_start_matches('$').to_string()) else {
+            self.note_unsupported(d);
+            return;
+        };
+        let def = match d.name.as_str() {
+            "map" => {
+                let mut out = Vec::new();
+                let mut default = String::new();
+                for e in entries {
+                    let v = e.arg(0).unwrap_or("").to_string();
+                    match e.name.as_str() {
+                        "default" => default = v,
+                        "hostnames" | "volatile" => {}
+                        n => out.push(MapEntry {
+                            pattern: n.to_string(),
+                            value: v,
+                        }),
+                    }
+                }
+                VariableDef::Map {
+                    source: source.unwrap_or_default(),
+                    entries: out,
+                    default,
+                }
+            }
+            "geo" => {
+                let mut ranges = Vec::new();
+                let mut default = String::new();
+                for e in entries {
+                    let v = e.arg(0).unwrap_or("").to_string();
+                    match e.name.as_str() {
+                        "default" => default = v,
+                        "ranges" | "proxy" | "proxy_recursive" | "delete" | "include" => {
+                            self.note_unsupported(e)
+                        }
+                        n => ranges.push(GeoRange {
+                            network: n.to_string(),
+                            value: v,
+                        }),
+                    }
+                }
+                VariableDef::Geo {
+                    source,
+                    ranges,
+                    default,
+                }
+            }
+            _ => VariableDef::SplitClients {
+                source: source.unwrap_or_default(),
+                buckets: entries
+                    .iter()
+                    .map(|e| SplitBucket {
+                        percent: e.name.trim_end_matches('%').parse().unwrap_or(0.0),
+                        value: e.arg(0).unwrap_or("").to_string(),
+                    })
+                    .collect(),
+            },
+        };
+        self.config.http.variables.insert(name, def);
+        self.converted(d, "virou http.variables");
     }
 
     fn converted(&mut self, d: &Directive, msg: &str) {
@@ -471,6 +639,46 @@ impl Converter {
             "limit_req_zone" | "limit_conn_zone" | "upstream" => {}
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
+            "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "log_format" => {
+                let args: Vec<&str> = d
+                    .args
+                    .iter()
+                    .skip(1)
+                    .map(|s| s.as_str())
+                    .filter(|a| !a.starts_with("escape="))
+                    .collect();
+                if let Some(name) = d.arg(0) {
+                    self.log_formats.insert(name.to_string(), args.concat());
+                    self.converted(d, "guardado para o access_log que usar este nome");
+                }
+            }
+            "access_log" => match d.arg(0) {
+                Some("off") => self.converted(d, "sem log em arquivo"),
+                Some(path) if !path.starts_with("syslog:") => {
+                    let name = d.arg(1).unwrap_or("combined");
+                    let format = if name == "combined" {
+                        "combined".to_string()
+                    } else if let Some(f) = self.log_formats.get(name) {
+                        f.clone()
+                    } else {
+                        self.report.unsupported(
+                            &self.file,
+                            d.line,
+                            "access_log",
+                            &d.source(),
+                            format!("log_format '{}' não foi definido antes", name),
+                        );
+                        return;
+                    };
+                    self.config.http.access_log = Some(crate::config::AccessLogConfig {
+                        path: path.to_string(),
+                        format,
+                    });
+                    self.converted(d, "virou http.access_log");
+                }
+                _ => self.note_unsupported(d),
+            },
             "server_tokens" => {
                 self.config.http.server_tokens = d.arg(0) != Some("off");
                 self.converted(d, "virou http.server_tokens");
@@ -666,6 +874,7 @@ impl Converter {
         let mut targets = Vec::new();
         let mut algorithm = None;
         let mut hash_key: Option<String> = None;
+        let mut sticky: Option<crate::config::StickyConfig> = None;
         let mut has_weights = false;
 
         for item in block {
@@ -692,6 +901,21 @@ impl Converter {
                         &item.source(),
                         "virou consistent_hash (anel ketama) sobre a mesma chave",
                     );
+                }
+                "sticky" if item.arg(0) == Some("cookie") => {
+                    let mut sc = crate::config::StickyConfig {
+                        cookie: item.arg(1).unwrap_or("route").to_string(),
+                        ..Default::default()
+                    };
+                    for a in item.args.iter().skip(2) {
+                        if let Some(p) = a.strip_prefix("path=") {
+                            sc.path = Some(p.to_string());
+                        } else if let Some(e) = a.strip_prefix("expires=") {
+                            sc.max_age_secs = parse_time_ms(e).map(|ms| ms / 1000);
+                        }
+                    }
+                    sticky = Some(sc);
+                    self.converted(item, "virou upstream.sticky (cookie)");
                 }
                 "keepalive" => self.report.note(
                     NoteLevel::Converted,
@@ -731,6 +955,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key,
+                sticky,
             },
         );
     }
@@ -814,6 +1039,8 @@ impl Converter {
             tls: None,
             routes: Vec::new(),
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         };
 
         let mut server_root: Option<String> = None;
@@ -838,7 +1065,24 @@ impl Converter {
                 "if" => {
                     certbot_redirect = self.try_convert_certbot_https_redirect(item);
                     if certbot_redirect.is_none() {
-                        self.note_unsupported(item);
+                        if let Some(c) = self.convert_if(item) {
+                            vhost.conditions.push(c);
+                        }
+                    }
+                }
+                "rewrite" => {
+                    if let Some(r) = self.convert_rewrite(item) {
+                        vhost.rewrites.push(r);
+                    }
+                }
+                "set" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        vhost.conditions.push(crate::config::ConditionConfig {
+                            condition: "1".into(),
+                            set: vec![(k.to_string(), v.to_string())],
+                            ..Default::default()
+                        });
+                        self.converted(item, "virou um set no vhost");
                     }
                 }
                 "server_name" => {
@@ -1416,6 +1660,159 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "fastcgi_pass" | "scgi_pass" | "uwsgi_pass" => {
+                    use crate::config::CgiProtocol;
+                    let protocol = match item.name.as_str() {
+                        "scgi_pass" => CgiProtocol::Scgi,
+                        "uwsgi_pass" => CgiProtocol::Uwsgi,
+                        _ => CgiProtocol::Fastcgi,
+                    };
+                    let pass = item
+                        .arg(0)
+                        .unwrap_or("")
+                        .trim_start_matches("uwsgi://")
+                        .to_string();
+                    let c = route.cgi.get_or_insert_with(Default::default);
+                    c.protocol = protocol;
+                    c.pass = pass;
+                    has_target = true;
+                    self.converted(item, "virou target_type: cgi");
+                }
+                "fastcgi_param" | "scgi_param" | "uwsgi_param" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        route
+                            .cgi
+                            .get_or_insert_with(Default::default)
+                            .params
+                            .insert(k.to_string(), v.to_string());
+                    }
+                }
+                "fastcgi_index" => {
+                    route.cgi.get_or_insert_with(Default::default).index =
+                        item.arg(0).map(String::from);
+                }
+                "image_filter" => {
+                    use crate::config::ImageOp;
+                    let f = route.image_filter.get_or_insert_with(Default::default);
+                    let dim = |s: Option<&str>| s.and_then(|v| v.parse().ok()).unwrap_or(0);
+                    match item.arg(0) {
+                        Some("test") => f.op = ImageOp::Test,
+                        Some("size") => f.op = ImageOp::Size,
+                        Some("resize") => {
+                            f.op = ImageOp::Resize;
+                            f.width = dim(item.arg(1));
+                            f.height = dim(item.arg(2));
+                        }
+                        Some("crop") => {
+                            f.op = ImageOp::Crop;
+                            f.width = dim(item.arg(1));
+                            f.height = dim(item.arg(2));
+                        }
+                        Some("rotate") => {
+                            if f.op == ImageOp::Resize && f.width == 0 && f.height == 0 {
+                                f.op = ImageOp::Rotate;
+                            }
+                            f.rotate = dim(item.arg(1)) as u16;
+                        }
+                        _ => {}
+                    }
+                    self.converted(
+                        item,
+                        "virou route.image_filter (precisa da feature image-filter)",
+                    );
+                }
+                "image_filter_jpeg_quality" => {
+                    if let Some(q) = item.arg(0).and_then(|v| v.parse().ok()) {
+                        route
+                            .image_filter
+                            .get_or_insert_with(Default::default)
+                            .jpeg_quality = q;
+                    }
+                }
+                "image_filter_buffer" => {
+                    if let Some(b) = item.arg(0).and_then(parse_size) {
+                        route
+                            .image_filter
+                            .get_or_insert_with(Default::default)
+                            .buffer_bytes = b;
+                    }
+                }
+                "ssi" => route.ssi = item.arg(0) == Some("on"),
+                "ssi_types" => route.ssi_types = item.args.clone(),
+                "flv" => {
+                    route.flv = true;
+                    self.converted(item, "virou route.flv");
+                }
+                "dav_methods" => {
+                    let methods: Vec<String> = item
+                        .args
+                        .iter()
+                        .filter(|a| *a != "off")
+                        .map(|a| a.to_ascii_uppercase())
+                        .collect();
+                    if !methods.is_empty() {
+                        route.dav.get_or_insert_with(Default::default).methods = methods;
+                    }
+                }
+                "create_full_put_path" => {
+                    route
+                        .dav
+                        .get_or_insert_with(Default::default)
+                        .create_full_put_path = item.arg(0) == Some("on");
+                }
+                "dav_access" => {
+                    // `user:rw group:r all:r` → 0o644
+                    let mut mode = 0u32;
+                    for a in &item.args {
+                        let (who, perm) = a.split_once(':').unwrap_or(("", ""));
+                        let bits = perm.chars().fold(0, |b, c| match c {
+                            'r' => b | 4,
+                            'w' => b | 2,
+                            _ => b,
+                        });
+                        mode |= match who {
+                            "user" => bits << 6,
+                            "group" => bits << 3,
+                            "all" => bits | (bits << 3),
+                            _ => 0,
+                        };
+                    }
+                    route.dav.get_or_insert_with(Default::default).access = Some(mode);
+                }
+                "fastcgi_split_path_info" => self.converted(
+                    item,
+                    "o Ferrix separa SCRIPT_NAME/PATH_INFO em .php/, .py/ e .cgi/",
+                ),
+                "grpc_pass" => {
+                    let raw = item.arg(0).unwrap_or("");
+                    let tls = raw.starts_with("grpcs://");
+                    let as_http = format!(
+                        "{}{}",
+                        if tls { "https://" } else { "http://" },
+                        raw.trim_start_matches("grpcs://")
+                            .trim_start_matches("grpc://")
+                    );
+                    let mut d = item.clone();
+                    d.args = vec![as_http];
+                    if self.apply_proxy_pass(&d, &mut route) {
+                        route.grpc = true;
+                        route.websocket_enabled = false;
+                        if tls {
+                            if let Some(up) = route
+                                .upstream_name
+                                .as_ref()
+                                .and_then(|n| self.config.upstreams.get_mut(n))
+                            {
+                                for t in &mut up.targets {
+                                    if let Some(r) = t.url.strip_prefix("http://") {
+                                        t.url = format!("https://{r}");
+                                    }
+                                }
+                            }
+                        }
+                        has_target = true;
+                    }
+                }
                 "root" => {
                     route.target_type = RouteTargetType::StaticFiles;
                     route.static_root = item.arg(0).map(|s| s.to_string());
@@ -1433,11 +1830,68 @@ impl Converter {
                         route.target_type = RouteTargetType::StaticFiles;
                     }
                 }
+                "if" => {
+                    if let Some(c) = self.convert_if(item) {
+                        route.conditions.push(c);
+                    }
+                }
+                "rewrite" => {
+                    if let Some(r) = self.convert_rewrite(item) {
+                        route.rewrites.push(r);
+                    }
+                }
+                "set" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        route.set.push((k.to_string(), v.to_string()));
+                        self.converted(item, "virou route.set");
+                    }
+                }
+                "secure_link" => {
+                    // `secure_link $arg_md5,$arg_expires;`
+                    let a = item.arg(0).unwrap_or("");
+                    let mut parts = a.split(',').map(|p| p.trim().trim_start_matches("$arg_"));
+                    let sl = route.secure_link.get_or_insert_with(Default::default);
+                    sl.hash_arg = parts.next().filter(|s| !s.is_empty()).map(String::from);
+                    sl.expires_arg = parts.next().filter(|s| !s.is_empty()).map(String::from);
+                }
+                "secure_link_md5" => {
+                    route.secure_link.get_or_insert_with(Default::default).md5 =
+                        item.arg(0).unwrap_or("").to_string();
+                }
+                "sub_filter" => {
+                    if let (Some(from), Some(to)) = (item.arg(0), item.arg(1)) {
+                        route
+                            .sub_filter
+                            .get_or_insert_with(|| crate::config::SubFilterConfig {
+                                once: true,
+                                ..Default::default()
+                            })
+                            .replacements
+                            .push([from.to_string(), to.to_string()]);
+                    }
+                }
+                "sub_filter_once" => {
+                    if let Some(sf) = route.sub_filter.as_mut() {
+                        sf.once = item.arg(0) != Some("off");
+                    }
+                }
+                "sub_filter_types" => {
+                    if let Some(sf) = route.sub_filter.as_mut() {
+                        sf.types = item.args.clone();
+                    }
+                }
+                "valid_referers" => {
+                    route.valid_referers = item.args.clone();
+                }
+                "autoindex" => {
+                    route.autoindex = item.arg(0) == Some("on");
+                }
                 "return" => {
                     if let Some(r) = self.convert_return(item) {
-                        route.target_type = RouteTargetType::Redirect;
+                        route.target_type = r.target_type;
                         route.redirect_url = r.redirect_url;
                         route.redirect_code = r.redirect_code;
+                        route.return_body = r.return_body;
                         has_target = true;
                     }
                 }
@@ -1526,7 +1980,12 @@ impl Converter {
             }
         }
 
-        if !has_target {
+        if route.cgi.as_ref().is_some_and(|c| !c.pass.is_empty()) {
+            route.target_type = RouteTargetType::Cgi;
+            if route.static_root.is_none() {
+                route.static_root = server_root.map(|s| s.to_string());
+            }
+        } else if !has_target {
             if let Some(root) = server_root {
                 route.target_type = RouteTargetType::StaticFiles;
                 route.static_root = Some(root.to_string());
@@ -1564,6 +2023,21 @@ impl Converter {
     fn apply_proxy_pass(&mut self, d: &Directive, route: &mut RouteRule) -> bool {
         let Some(raw) = d.arg(0) else { return false };
 
+        if let Some(var) = raw
+            .strip_prefix("http://")
+            .or_else(|| raw.strip_prefix("https://"))
+            .filter(|v| {
+                v.starts_with('$')
+                    && v[1..]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        {
+            route.target_type = RouteTargetType::ProxyUpstream;
+            route.upstream_name = Some(var.to_string());
+            self.converted(d, "upstream escolhido em runtime pela variável");
+            return true;
+        }
         if raw.contains('$') {
             self.report.unsupported(
                 &self.file,
@@ -1653,6 +2127,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key: None,
+                sticky: None,
             },
         );
         name
@@ -1707,17 +2182,13 @@ impl Converter {
             });
         }
 
-        self.report.unsupported(
-            &self.file,
-            d.line,
-            "return",
-            &d.source(),
-            format!(
-                "responder {} com corpo fixo não existe no Ferrix; só redirecionamentos 3xx",
-                code
-            ),
-        );
-        None
+        Some(RouteRule {
+            id: self.next_route_id(),
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(code),
+            return_body: target.map(|t| t.to_string()),
+            ..Default::default()
+        })
     }
 
     fn parse_limit_req(&mut self, d: &Directive) -> Option<RateLimitConfig> {
@@ -1963,23 +2434,11 @@ fn reason_for(name: &str) -> String {
         n if n.starts_with("open_file_cache") => {
             "o Ferrix não mantém cache de descritores de arquivo"
         }
-        n if n.starts_with("fastcgi") || n.starts_with("uwsgi") || n.starts_with("scgi") => {
-            "o Ferrix só fala HTTP com o backend"
-        }
-        "map" => "escolher destino por variável não existe no Ferrix; crie rotas explícitas",
 
         "include" => {
             "não é seguido ao colar texto na tela; use 'ferrix import --from arquivo.conf' na \
              máquina onde os arquivos estão, que resolve os includes automaticamente"
         }
-        "split_clients" => {
-            "sorteio de canário por variável não existe; distribua com pesos no upstream"
-        }
-        "geo" => "classificação de IP em variável não existe; use as listas de allow/deny",
-        "rewrite" => "reescrita por expressão regular não existe; use uma rota de redirect",
-        "if" => "blocos condicionais não existem no Ferrix",
-        "set" => "variáveis definidas na configuração não existem no Ferrix",
-        "auth_request" => "autenticação delegada a um subrequest não existe no Ferrix",
         "error_page" => "só páginas em arquivo (error_page 404 /404.html) são convertidas",
         "stub_status" => "use /api/metrics e o painel do Ferrix",
         "access_log" | "error_log" | "log_format" => {
@@ -2449,14 +2908,121 @@ mod tests {
     }
 
     #[test]
-    fn return_with_a_body_is_reported() {
+    fn return_with_a_body_becomes_a_return_route() {
         let r =
             convert(r#"http { server { listen 80; location /ok { return 200 "tudo certo"; } } }"#);
-        assert!(r
-            .report
-            .notes
+        let route = first_route(&r);
+        assert_eq!(route.target_type, RouteTargetType::Return);
+        assert_eq!(route.redirect_code, Some(200));
+        assert_eq!(route.return_body.as_deref(), Some("tudo certo"));
+    }
+
+    #[test]
+    fn http_access_log_with_a_named_format_is_converted() {
+        let r = convert(
+            r#"http {
+                log_format main '$remote_addr ' '"$request" $status';
+                access_log /var/log/ferrix/access.log main;
+                server { listen 80; location / { root /srv; } }
+            }"#,
+        );
+        let al = r.config.http.access_log.as_ref().unwrap();
+        assert_eq!(al.path, "/var/log/ferrix/access.log");
+        assert_eq!(al.format, "$remote_addr \"$request\" $status");
+    }
+
+    #[test]
+    fn stream_ssl_preread_map_becomes_sni_routes() {
+        let r = convert(
+            r#"stream {
+                upstream a { server 10.0.0.1:443; }
+                upstream b { server 10.0.0.2:443; }
+                map $ssl_preread_server_name $up { api.ex.com a; default b; }
+                server { listen 443; ssl_preread on; proxy_pass $up; }
+            }"#,
+        );
+        let s = &r.config.streams[0];
+        assert_eq!(s.upstream, "b");
+        assert_eq!(s.sni_routes.get("api.ex.com").unwrap(), "a");
+    }
+
+    #[test]
+    fn map_if_set_and_rewrite_are_converted() {
+        let r = convert(
+            r#"http {
+                map $http_user_agent $bot { default 0; ~*bot 1; }
+                geo $lan { default no; 10.0.0.0/8 yes; }
+                split_clients "${remote_addr}" $ab { 20% a; * b; }
+                server {
+                    listen 80;
+                    rewrite ^/old/(.*)$ /new/$1 permanent;
+                    location / {
+                        if ($bot) { return 403; }
+                        set $x 1;
+                        rewrite ^/a/(.*)$ /b/$1 last;
+                        root /srv;
+                    }
+                }
+            }"#,
+        );
+        let vars = &r.config.http.variables;
+        assert!(matches!(
+            vars.get("bot"),
+            Some(crate::config::VariableDef::Map { .. })
+        ));
+        assert!(matches!(
+            vars.get("lan"),
+            Some(crate::config::VariableDef::Geo { .. })
+        ));
+        assert!(matches!(
+            vars.get("ab"),
+            Some(crate::config::VariableDef::SplitClients { .. })
+        ));
+        let v = &r.config.vhosts[0];
+        assert_eq!(v.rewrites[0].flag, crate::config::RewriteFlag::Permanent);
+        let route = first_route(&r);
+        assert_eq!(route.conditions[0].condition, "$bot");
+        assert_eq!(route.conditions[0].return_code, Some(403));
+        assert_eq!(route.set[0], ("$x".to_string(), "1".to_string()));
+        assert_eq!(route.rewrites[0].replacement, "/b/$1");
+    }
+
+    #[test]
+    fn grpc_pass_becomes_a_grpc_route() {
+        let r = convert(
+            r#"http {
+                upstream g { server 10.0.0.5:50051; }
+                server { listen 80 http2; location /pkg. { grpc_pass grpcs://g; } }
+            }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.grpc);
+        assert_eq!(route.upstream_name.as_deref(), Some("g"));
+        assert!(r.config.upstreams["g"].targets[0]
+            .url
+            .starts_with("https://"));
+    }
+
+    #[test]
+    fn php_fpm_location_becomes_a_fastcgi_route() {
+        let r = convert(
+            r#"http { server { listen 80; root /var/www;
+                location ~ \.php$ {
+                    fastcgi_pass unix:/run/php/php-fpm.sock;
+                    fastcgi_index index.php;
+                    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                }
+            } }"#,
+        );
+        let route = r.config.vhosts[0]
+            .routes
             .iter()
-            .any(|n| n.directive == "return" && n.reason.contains("corpo fixo")));
+            .find(|r| r.target_type == RouteTargetType::Cgi)
+            .unwrap();
+        let c = route.cgi.as_ref().unwrap();
+        assert_eq!(c.pass, "unix:/run/php/php-fpm.sock");
+        assert_eq!(route.static_root.as_deref(), Some("/var/www"));
+        assert!(c.params.contains_key("SCRIPT_FILENAME"));
     }
 
     #[test]
@@ -2707,31 +3273,6 @@ mod tests {
         assert!(!names.contains(&"gzip".to_string()));
         assert!(r.config.http.compression.enabled);
         assert!(names.contains(&"proxy_no_cache".to_string()));
-    }
-
-    #[test]
-    fn map_and_split_clients_get_specific_explanations() {
-        let r = convert(
-            r#"http {
-                map $a $b { default x; }
-                split_clients "$request_id" $s { 10% v2; * v1; }
-                server { listen 80; location / { proxy_pass http://a:1; } }
-            }"#,
-        );
-        let map_note = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "map")
-            .unwrap();
-        assert!(map_note.reason.contains("rotas explícitas"));
-        let split = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "split_clients")
-            .unwrap();
-        assert!(split.reason.contains("pesos"));
     }
 
     #[test]

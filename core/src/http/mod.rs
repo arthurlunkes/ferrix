@@ -1,5 +1,8 @@
 pub mod access;
+pub mod access_log;
+pub mod auth_request;
 pub mod cache;
+pub mod dav;
 pub mod default_page;
 pub mod filters;
 #[cfg(feature = "http3")]
@@ -7,12 +10,16 @@ pub mod h3;
 pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
+pub mod mirror;
 mod proxy;
 mod raw_proxy;
 pub mod realip;
+pub mod referer;
+pub mod secure_link;
 pub mod server;
 pub mod static_files;
 pub mod upstream;
+pub mod vars;
 pub mod websocket;
 
 use axum::body::{Body, Bytes};
@@ -224,6 +231,8 @@ impl ProxyEngine {
             .cloned()
             .unwrap_or_else(|| HeaderValue::from_static(""));
         let user_agent = req_headers.get(header::USER_AGENT).cloned();
+        let access_log = compiled.config.http.access_log.as_ref();
+        let referer = access_log.and_then(|_| req_headers.get(header::REFERER).cloned());
 
         let is_ws = WebSocketProxy::is_websocket_request(req_headers);
 
@@ -268,7 +277,7 @@ impl ProxyEngine {
                 .into_response(),
         };
 
-        if !metrics_on {
+        if !metrics_on && access_log.is_none() {
             return response;
         }
 
@@ -297,6 +306,18 @@ impl ProxyEngine {
             is_websocket: is_ws,
         };
 
+        if let Some(al) = access_log.filter(|_| !skip_log) {
+            let extra = access_log::Extra {
+                referer: referer.as_ref().and_then(|v| v.to_str().ok()).unwrap_or(""),
+                remote_user: "",
+                scheme: scheme_str(is_tls),
+            };
+            access_log::write(&al.path, &al.format, &log, &extra);
+        }
+
+        if !metrics_on {
+            return response;
+        }
         self.metrics.record_request(log, !skip_log);
         self.count_response_bytes(response)
     }
@@ -386,6 +407,155 @@ impl ProxyEngine {
             .await
     }
 
+    async fn serve_cgi(
+        &self,
+        compiled: &CompiledConfig,
+        route: &RouteRule,
+        parts: axum::http::request::Parts,
+        body: Body,
+        client_ip: IpAddr,
+        is_tls: bool,
+    ) -> Response {
+        let Some(cfg) = &route.cgi else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Misconfigured CGI Route",
+            )
+                .into_response();
+        };
+        let http = &compiled.config.http;
+        let body = match axum::body::to_bytes(body, http.client_max_body_size as usize).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "413 Payload Too Large").into_response()
+            }
+        };
+        // `pass` may name an upstream: use its live targets in order.
+        let addrs: Vec<String> = match compiled.config.upstreams.get(&cfg.pass) {
+            Some(up) => self
+                .pool_manager
+                .select_targets(up, client_ip)
+                .into_iter()
+                .map(|t| t.url.trim_start_matches("http://").to_string())
+                .collect(),
+            None => vec![cfg.pass.clone()],
+        };
+        let root = cfg
+            .root
+            .as_deref()
+            .or(route.static_root.as_deref())
+            .unwrap_or("/var/www/html");
+        let path = if route.strip_prefix {
+            parts
+                .uri
+                .path()
+                .strip_prefix(&route.path_prefix)
+                .unwrap_or(parts.uri.path())
+        } else {
+            parts.uri.path()
+        };
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        let (script, path_info) = upstream::cgi::split_script(&path, cfg.index.as_deref());
+        let params = upstream::cgi::build_params(
+            &parts,
+            root,
+            &script,
+            &path_info,
+            client_ip,
+            is_tls,
+            body.len(),
+            &cfg.params,
+        );
+        let connect = Duration::from_millis(
+            route
+                .proxy_connect_timeout_ms
+                .unwrap_or(http.proxy_connect_timeout_ms),
+        );
+        let read = Duration::from_millis(
+            route
+                .proxy_read_timeout_ms
+                .unwrap_or(http.proxy_read_timeout_ms),
+        );
+        let mut last = String::from("no CGI backend available");
+        for addr in addrs {
+            match upstream::cgi::call(cfg.protocol, &addr, &params, &body, connect, read).await {
+                Ok(r) => return r,
+                Err(e) => {
+                    warn!(backend = %addr, error = %e, "CGI backend failed");
+                    last = e;
+                }
+            }
+        }
+        (StatusCode::BAD_GATEWAY, format!("502 Bad Gateway - {last}")).into_response()
+    }
+
+    /// nginx rewrite phase: server-level then route-level `if`/`set`/`rewrite`,
+    /// re-matching routes after `rewrite ... last` (at most 10 times, like nginx).
+    fn rewrite_phase(
+        &self,
+        compiled: &CompiledConfig,
+        vhost_index: usize,
+        vhost: &VirtualHost,
+        is_tls: bool,
+        client_ip: IpAddr,
+        req: &mut Request,
+    ) -> Result<(), Box<Response>> {
+        let (uri, set) = {
+            let mut ctx = vars::Ctx {
+                method: req.method(),
+                uri: req.uri().clone(),
+                headers: req.headers(),
+                client_ip,
+                is_tls,
+                defs: &compiled.config.http.variables,
+                set: std::collections::HashMap::new(),
+                captures: Vec::new(),
+            };
+            let mut phase =
+                vars::run_route_phase(&mut ctx, &vhost.conditions, &[], &vhost.rewrites, None);
+            for _ in 0..10 {
+                if let vars::Phase::Return {
+                    code,
+                    location_or_body,
+                } = phase
+                {
+                    return Err(Box::new(phase_response(code, location_or_body)));
+                }
+                let Some(m) = compiled.match_route(vhost_index, ctx.uri.path()) else {
+                    break;
+                };
+                let route = &vhost.routes[m.route_index];
+                phase = vars::run_route_phase(
+                    &mut ctx,
+                    &route.conditions,
+                    &route.set,
+                    &route.rewrites,
+                    route.static_root.as_deref(),
+                );
+                if !matches!(phase, vars::Phase::Rematch) {
+                    if let vars::Phase::Return {
+                        code,
+                        location_or_body,
+                    } = phase
+                    {
+                        return Err(Box::new(phase_response(code, location_or_body)));
+                    }
+                    break;
+                }
+            }
+            (ctx.uri, ctx.set)
+        };
+        *req.uri_mut() = uri;
+        if !set.is_empty() {
+            req.extensions_mut().insert(vars::SetVars(set));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn process_vhost_routes(
         &self,
@@ -397,6 +567,14 @@ impl ProxyEngine {
         req: Request,
         is_ws: bool,
     ) -> Response {
+        let mut req = req;
+        if compiled.has_rewrite_phase(vhost_index) {
+            if let Err(resp) =
+                self.rewrite_phase(compiled, vhost_index, vhost, is_tls, client_ip, &mut req)
+            {
+                return *resp;
+            }
+        }
         let req_path = req.uri().path().to_string();
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
@@ -441,6 +619,59 @@ impl ProxyEngine {
             }
         }
 
+        if !route.valid_referers.is_empty() {
+            let referer = req
+                .headers()
+                .get(header::REFERER)
+                .and_then(|v| v.to_str().ok());
+            if !referer::is_valid(&route.valid_referers, referer, &vhost.server_names) {
+                return (StatusCode::FORBIDDEN, "403 Forbidden - Invalid Referer").into_response();
+            }
+        }
+
+        if let Some(cfg) = &route.secure_link {
+            let host = req
+                .headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .split(':')
+                .next()
+                .unwrap_or("");
+            match secure_link::check(cfg, req.uri(), client_ip, host) {
+                secure_link::Check::Ok => {}
+                secure_link::Check::Invalid => {
+                    return (StatusCode::FORBIDDEN, "403 Forbidden").into_response()
+                }
+                secure_link::Check::Expired => {
+                    return (StatusCode::GONE, "410 Gone - Link expired").into_response()
+                }
+            }
+        }
+
+        let mut req = req;
+        if let Some(cfg) = &route.auth_request {
+            match Box::pin(auth_request::check(
+                cfg,
+                req.method(),
+                req.uri(),
+                req.headers(),
+            ))
+            .await
+            {
+                auth_request::Outcome::Allow(pass) => {
+                    for (n, v) in pass {
+                        req.headers_mut().insert(n, v);
+                    }
+                }
+                auth_request::Outcome::Deny(resp) => return resp,
+            }
+        }
+
+        for base in &route.mirror {
+            mirror::spawn(base, req.method(), req.uri(), req.headers());
+        }
+
         let _route_conn_guard = match &route.limit_conn {
             Some(cfg) => {
                 let key = ("route", route.id.as_str(), client_ip);
@@ -461,6 +692,15 @@ impl ProxyEngine {
             }
         }
 
+        let (req_uri, ssi_method, ssi_headers) = if route.ssi {
+            (
+                req.uri().clone(),
+                req.method().clone(),
+                req.headers().clone(),
+            )
+        } else {
+            (axum::http::Uri::default(), Method::GET, HeaderMap::new())
+        };
         let (mut parts, body) = req.into_parts();
 
         let info = match filters::RequestInfo::capture(compiled, route, &mut parts) {
@@ -468,6 +708,11 @@ impl ProxyEngine {
             Err(preflight) => return *preflight,
         };
         let compression = &compiled.config.http.compression;
+        if route.sub_filter.is_some() {
+            // The backend must answer uncompressed so the text can be rewritten;
+            // Ferrix still compresses for the client afterwards.
+            parts.headers.remove(header::ACCEPT_ENCODING);
+        }
 
         let resp = match route.target_type {
             RouteTargetType::Redirect => {
@@ -481,6 +726,50 @@ impl ProxyEngine {
                     r.headers_mut().insert(header::LOCATION, val);
                 }
                 r
+            }
+            RouteTargetType::Cgi => {
+                Box::pin(self.serve_cgi(compiled, route, parts, body, client_ip, is_tls)).await
+            }
+            RouteTargetType::Return => {
+                let code = route.redirect_code.unwrap_or(200);
+                let status = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
+                let body = route
+                    .return_body
+                    .as_deref()
+                    .map(|b| interpolate_redirect_url(b, &parts, is_tls))
+                    .unwrap_or_default();
+                let mut r = (status, body).into_response();
+                r.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain; charset=utf-8"),
+                );
+                r
+            }
+            RouteTargetType::StaticFiles
+                if route
+                    .dav
+                    .as_ref()
+                    .is_some_and(|d| dav::handles(d, &parts.method)) =>
+            {
+                let root_dir = route.static_root.as_deref().unwrap_or("./public");
+                let path = if route.strip_prefix {
+                    req_path
+                        .strip_prefix(&route.path_prefix)
+                        .unwrap_or(&req_path)
+                } else {
+                    &req_path
+                };
+                let dav_cfg = route.dav.as_ref().expect("checked above");
+                Box::pin(dav::handle(
+                    dav_cfg,
+                    root_dir,
+                    path,
+                    &parts.method,
+                    &parts.headers,
+                    body,
+                    compiled.config.http.client_max_body_size,
+                ))
+                .await
             }
             RouteTargetType::StaticFiles => {
                 let root_dir = route.static_root.as_deref().unwrap_or("./public");
@@ -497,6 +786,13 @@ impl ProxyEngine {
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
                 };
+                if route.flv {
+                    if let Some(r) =
+                        Box::pin(static_files::flv(root_dir, file_path, parts.uri.query())).await
+                    {
+                        return r;
+                    }
+                }
                 match Box::pin(StaticFileServer::serve_file(
                     root_dir,
                     file_path,
@@ -506,6 +802,14 @@ impl ProxyEngine {
                 .await
                 {
                     Ok(r) => r,
+                    Err(StatusCode::NOT_FOUND) if route.autoindex => {
+                        match static_files::autoindex(root_dir, file_path, &req_path) {
+                            Some(r) => r,
+                            None => {
+                                (StatusCode::NOT_FOUND, "404 Static File Error").into_response()
+                            }
+                        }
+                    }
                     Err(code) => {
                         (code, format!("{} Static File Error", code.as_u16())).into_response()
                     }
@@ -518,6 +822,29 @@ impl ProxyEngine {
                         "500 Misconfigured Upstream Route",
                     )
                         .into_response();
+                };
+
+                // `$var`: upstream chosen at runtime by a map/split_clients variable.
+                let dynamic_name;
+                let upstream_name = if let Some(var) = upstream_name.strip_prefix('$') {
+                    let ctx = vars::Ctx {
+                        method: &parts.method,
+                        uri: parts.uri.clone(),
+                        headers: &parts.headers,
+                        client_ip,
+                        is_tls,
+                        defs: &compiled.config.http.variables,
+                        set: parts
+                            .extensions
+                            .get::<vars::SetVars>()
+                            .map(|s| s.0.clone())
+                            .unwrap_or_default(),
+                        captures: Vec::new(),
+                    };
+                    dynamic_name = ctx.var(var);
+                    &dynamic_name
+                } else {
+                    upstream_name
                 };
 
                 let Some(upstream_cfg) = compiled.config.upstreams.get(upstream_name) else {
@@ -536,12 +863,60 @@ impl ProxyEngine {
                     }
                     None => self.pool_manager.select_targets(upstream_cfg, client_ip),
                 };
+                let mut targets = targets;
+                if let Some(sc) = &upstream_cfg.sticky {
+                    upstream::sticky::prefer(&mut targets, &parts.headers, sc);
+                }
                 if targets.is_empty() {
                     return (
                         StatusCode::BAD_GATEWAY,
                         "502 Bad Gateway - No upstream targets available",
                     )
                         .into_response();
+                }
+
+                #[cfg(feature = "http2")]
+                if route.grpc {
+                    let connect = Duration::from_millis(
+                        route
+                            .proxy_connect_timeout_ms
+                            .unwrap_or(compiled.config.http.proxy_connect_timeout_ms),
+                    );
+                    let req = Request::from_parts(parts, body);
+                    // gRPC bodies are streams: no retry once the request is sent,
+                    // so only the first live target is used.
+                    let target = targets[0];
+                    let base = upstream::grpc::normalize(&target.url);
+                    match Box::pin(upstream::grpc::forward(
+                        &base,
+                        req,
+                        connect,
+                        upstream_cfg.verify_tls,
+                    ))
+                    .await
+                    {
+                        Ok(r) => {
+                            self.health_checker
+                                .mark_success(upstream_name, &target.url, 0.0);
+                            return r;
+                        }
+                        Err(e) => {
+                            self.health_checker.mark_failure(
+                                upstream_name,
+                                &target.url,
+                                target.max_fails,
+                            );
+                            warn!(target = %target.url, error = %e, "gRPC upstream failed");
+                        }
+                    }
+                    let mut r = (StatusCode::OK, "").into_response();
+                    r.headers_mut().insert(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/grpc"),
+                    );
+                    r.headers_mut()
+                        .insert("grpc-status", HeaderValue::from_static("14"));
+                    return r;
                 }
 
                 if is_ws && route.websocket_enabled {
@@ -608,6 +983,44 @@ impl ProxyEngine {
             }
         };
 
+        #[cfg(feature = "image-filter")]
+        let resp = match &route.image_filter {
+            Some(cfg) => Box::pin(filters::image::apply(cfg, resp)).await,
+            None => resp,
+        };
+
+        let resp = if route.ssi && filters::ssi::applies(&resp, &route.ssi_types) {
+            let mut ctx = vars::Ctx {
+                method: &ssi_method,
+                uri: req_uri.clone(),
+                headers: &ssi_headers,
+                client_ip,
+                is_tls,
+                defs: &compiled.config.http.variables,
+                set: std::collections::HashMap::new(),
+                captures: Vec::new(),
+            };
+            let dir = req_uri
+                .path()
+                .rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default();
+            Box::pin(filters::ssi::apply(
+                resp,
+                route.static_root.as_deref(),
+                &dir,
+                &mut ctx,
+            ))
+            .await
+        } else {
+            resp
+        };
+
+        let resp = match &route.sub_filter {
+            Some(cfg) => Box::pin(filters::sub::apply(cfg, resp)).await,
+            None => resp,
+        };
+
         let mut resp = filters::run(
             compiled,
             vhost_index,
@@ -622,6 +1035,19 @@ impl ProxyEngine {
         }
 
         resp
+    }
+}
+
+fn phase_response(code: u16, value: String) -> Response {
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_redirection() {
+        let mut r = (status, "").into_response();
+        if let Ok(v) = HeaderValue::from_str(&value) {
+            r.headers_mut().insert(header::LOCATION, v);
+        }
+        r
+    } else {
+        (status, value).into_response()
     }
 }
 

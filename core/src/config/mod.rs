@@ -48,6 +48,11 @@ pub struct StreamConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_stream_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
+
+    /// nginx `ssl_preread on` + `map $ssl_preread_server_name`: TLS server name
+    /// (exact, `*.suffix` or `default`) → upstream. Empty = always `upstream`.
+    #[serde(default)]
+    pub sni_routes: HashMap<String, String>,
 }
 
 fn default_stream_connect_timeout_ms() -> u64 {
@@ -218,6 +223,103 @@ pub struct HttpConfig {
 
     #[serde(default = "default_protocols")]
     pub protocols: Vec<HttpProtocol>,
+
+    /// nginx `access_log <path> <format>`: log every request to a file.
+    #[serde(default)]
+    pub access_log: Option<AccessLogConfig>,
+
+    /// nginx `map` / `geo` / `split_clients`: named variables (without `$`).
+    #[serde(default)]
+    pub variables: HashMap<String, VariableDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VariableDef {
+    Map {
+        source: String,
+        #[serde(default)]
+        entries: Vec<MapEntry>,
+        #[serde(default)]
+        default: String,
+    },
+    Geo {
+        /// Defaults to `$remote_addr`.
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        ranges: Vec<GeoRange>,
+        #[serde(default)]
+        default: String,
+    },
+    SplitClients {
+        source: String,
+        buckets: Vec<SplitBucket>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapEntry {
+    /// Exact value, `~regex` or `~*regex`.
+    pub pattern: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoRange {
+    pub network: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitBucket {
+    /// Percentage; `0` marks the `*` bucket (the rest).
+    pub percent: f64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RewriteFlag {
+    /// No flag: keep applying the next rewrites.
+    #[default]
+    None,
+    Last,
+    Break,
+    Redirect,
+    Permanent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewriteRule {
+    pub pattern: String,
+    pub replacement: String,
+    #[serde(default)]
+    pub flag: RewriteFlag,
+}
+
+/// nginx `if (condition) { set ...; rewrite ...; return ...; }`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConditionConfig {
+    /// e.g. `$http_user_agent ~* bot`, `$arg_debug`, `!-f $request_filename`.
+    pub condition: String,
+    #[serde(default)]
+    pub set: Vec<(String, String)>,
+    #[serde(default)]
+    pub return_code: Option<u16>,
+    /// Redirect URL for 3xx, body otherwise.
+    #[serde(default)]
+    pub return_value: Option<String>,
+    #[serde(default)]
+    pub rewrite: Option<RewriteRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccessLogConfig {
+    pub path: String,
+    /// nginx `log_format` string, or `combined` (default).
+    #[serde(default)]
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +538,8 @@ impl Default for HttpConfig {
             static_cache: StaticCacheConfig::default(),
             request_id: false,
             protocols: default_protocols(),
+            access_log: None,
+            variables: HashMap::new(),
         }
     }
 }
@@ -541,6 +645,25 @@ pub struct UpstreamConfig {
 
     #[serde(default)]
     pub hash_key: Option<String>,
+
+    /// nginx `sticky cookie`: keep each client on the same target.
+    #[serde(default)]
+    pub sticky: Option<StickyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StickyConfig {
+    pub cookie: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_age_secs: Option<u64>,
+}
+
+impl StickyConfig {
+    pub fn path(&self) -> &str {
+        self.path.as_deref().unwrap_or("/")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +697,13 @@ pub struct VirtualHost {
 
     #[serde(default)]
     pub error_pages: HashMap<String, String>,
+
+    /// Server-level nginx `if` blocks (run before route matching).
+    #[serde(default)]
+    pub conditions: Vec<ConditionConfig>,
+    /// Server-level nginx `rewrite` (run before route matching).
+    #[serde(default)]
+    pub rewrites: Vec<RewriteRule>,
 }
 
 fn default_vhost_port() -> u16 {
@@ -650,6 +780,104 @@ pub enum RouteTargetType {
     ProxyUpstream,
     StaticFiles,
     Redirect,
+
+    /// nginx `return <code> [text]` with a non-3xx code.
+    Return,
+
+    /// nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (see `cgi`).
+    Cgi,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageOp {
+    /// `image_filter test`: 415 unless JPEG/PNG/GIF/WebP.
+    Test,
+    /// `image_filter size`: JSON with width/height/type.
+    Size,
+    #[default]
+    Resize,
+    Crop,
+    /// Only `rotate` (90/180/270).
+    Rotate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageFilterConfig {
+    #[serde(default)]
+    pub op: ImageOp,
+    /// 0 = any (nginx `-`).
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    /// Applied after resize/crop (nginx `image_filter rotate`).
+    #[serde(default)]
+    pub rotate: u16,
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8,
+    /// nginx `image_filter_buffer` (default 1 MB).
+    #[serde(default = "default_image_buffer")]
+    pub buffer_bytes: u64,
+}
+
+fn default_jpeg_quality() -> u8 {
+    75
+}
+fn default_image_buffer() -> u64 {
+    1 << 20
+}
+
+impl Default for ImageFilterConfig {
+    fn default() -> Self {
+        Self {
+            op: ImageOp::Resize,
+            width: 0,
+            height: 0,
+            rotate: 0,
+            jpeg_quality: default_jpeg_quality(),
+            buffer_bytes: default_image_buffer(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DavConfig {
+    /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// nginx `create_full_put_path`.
+    #[serde(default)]
+    pub create_full_put_path: bool,
+    /// File mode for PUT (nginx `dav_access`), e.g. 0o644.
+    #[serde(default)]
+    pub access: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CgiProtocol {
+    #[default]
+    Fastcgi,
+    Scgi,
+    Uwsgi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CgiConfig {
+    #[serde(default)]
+    pub protocol: CgiProtocol,
+    /// `host:port`, `unix:/run/php/php-fpm.sock`, or an upstream name.
+    pub pass: String,
+    /// `$document_root` (defaults to the route's `static_root`).
+    #[serde(default)]
+    pub root: Option<String>,
+    /// nginx `fastcgi_index` (default `index.php`).
+    #[serde(default)]
+    pub index: Option<String>,
+    /// Extra / overriding params (nginx `fastcgi_param`).
+    #[serde(default)]
+    pub params: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -764,10 +992,17 @@ pub struct RouteRule {
     pub static_root: Option<String>,
     #[serde(default)]
     pub try_files: Option<String>,
+
+    /// nginx `autoindex on`: list a directory that has no index.html.
+    #[serde(default)]
+    pub autoindex: bool,
     #[serde(default)]
     pub redirect_url: Option<String>,
     #[serde(default = "default_redirect_code")]
     pub redirect_code: Option<u16>,
+    /// Body of a `return` route (`$scheme`, `$host`, `$request_uri` are expanded).
+    #[serde(default)]
+    pub return_body: Option<String>,
     #[serde(default = "default_true")]
     pub websocket_enabled: bool,
     #[serde(default)]
@@ -809,6 +1044,107 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub cors: Option<CorsConfig>,
+
+    /// nginx `valid_referers`: when non-empty, other Referers get 403.
+    #[serde(default)]
+    pub valid_referers: Vec<String>,
+
+    /// nginx `auth_request`: subrequest to an auth service before serving.
+    #[serde(default)]
+    pub auth_request: Option<AuthRequestConfig>,
+
+    /// nginx `mirror`: base URLs (`http://host:port`) that get a copy of each request.
+    #[serde(default)]
+    pub mirror: Vec<String>,
+
+    /// nginx `secure_link` + `secure_link_md5`.
+    #[serde(default)]
+    pub secure_link: Option<SecureLinkConfig>,
+
+    /// nginx `sub_filter`: string replacements in text responses.
+    #[serde(default)]
+    pub sub_filter: Option<SubFilterConfig>,
+
+    /// nginx `set $name value` (in order).
+    #[serde(default)]
+    pub set: Vec<(String, String)>,
+    /// nginx `if` blocks.
+    #[serde(default)]
+    pub conditions: Vec<ConditionConfig>,
+    /// nginx `rewrite`.
+    #[serde(default)]
+    pub rewrites: Vec<RewriteRule>,
+
+    /// nginx `image_filter` (needs the `image-filter` build feature).
+    #[serde(default)]
+    pub image_filter: Option<ImageFilterConfig>,
+
+    /// nginx `ssi on`: process `<!--# ... -->` in text/html (and `ssi_types`).
+    #[serde(default)]
+    pub ssi: bool,
+    #[serde(default)]
+    pub ssi_types: Vec<String>,
+
+    /// nginx `flv`: pseudo-streaming with `?start=<byte>` for .flv files.
+    #[serde(default)]
+    pub flv: bool,
+
+    /// nginx `dav_methods` on a static route.
+    #[serde(default)]
+    pub dav: Option<DavConfig>,
+
+    /// FastCGI / SCGI / uwsgi settings for `target_type: cgi`.
+    #[serde(default)]
+    pub cgi: Option<CgiConfig>,
+
+    /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
+    #[serde(default)]
+    pub grpc: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubFilterConfig {
+    /// `[from, to]` pairs, applied in order.
+    #[serde(default)]
+    pub replacements: Vec<[String; 2]>,
+    /// nginx `sub_filter_once` (nginx default is `on`).
+    #[serde(default = "default_true")]
+    pub once: bool,
+    /// Extra MIME types besides text/html (nginx `sub_filter_types`); `*` = all.
+    #[serde(default)]
+    pub types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecureLinkConfig {
+    /// `secure_link_md5` template, e.g. `$secure_link_expires$uri$remote_addr secret`.
+    pub md5: String,
+    /// Query argument with the hash (default `md5`).
+    #[serde(default)]
+    pub hash_arg: Option<String>,
+    /// Query argument with the expiry timestamp (default `expires`).
+    #[serde(default)]
+    pub expires_arg: Option<String>,
+}
+
+impl SecureLinkConfig {
+    pub fn hash_arg(&self) -> &str {
+        self.hash_arg.as_deref().unwrap_or("md5")
+    }
+    pub fn expires_arg(&self) -> &str {
+        self.expires_arg.as_deref().unwrap_or("expires")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthRequestConfig {
+    /// Full URL of the auth endpoint, e.g. `http://auth:9000/check`.
+    pub url: String,
+    /// Auth-response headers copied to the proxied request (nginx `auth_request_set`).
+    #[serde(default)]
+    pub set_headers: Vec<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -857,8 +1193,10 @@ impl Default for RouteRule {
             upstream_name: None,
             static_root: None,
             try_files: None,
+            autoindex: false,
             redirect_url: None,
             redirect_code: None,
+            return_body: None,
             websocket_enabled: true,
             proxy_set_headers: HashMap::new(),
             add_headers: HashMap::new(),
@@ -876,6 +1214,21 @@ impl Default for RouteRule {
             cache: None,
             compression: None,
             cors: None,
+            valid_referers: Vec::new(),
+            auth_request: None,
+            mirror: Vec::new(),
+            secure_link: None,
+            sub_filter: None,
+            set: Vec::new(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
+            image_filter: None,
+            ssi: false,
+            ssi_types: Vec::new(),
+            flv: false,
+            dav: None,
+            cgi: None,
+            grpc: false,
         }
     }
 }
@@ -916,6 +1269,7 @@ impl Default for FerrixConfig {
                 }),
                 verify_tls: true,
                 hash_key: None,
+                sticky: None,
             },
         );
 
@@ -959,6 +1313,8 @@ impl Default for FerrixConfig {
                 ..Default::default()
             }],
             error_pages: Default::default(),
+            conditions: Vec::new(),
+            rewrites: Vec::new(),
         };
 
         Self {

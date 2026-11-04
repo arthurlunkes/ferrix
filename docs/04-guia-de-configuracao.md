@@ -103,6 +103,15 @@ websocket_enabled: false
 
 - `static_root`: Local disk path where files are hosted.
 - `try_files`: Checks for the exact file (`$uri`), then directory index (`$uri/`), falling back to (`/index.html`). Tailor-made for React Router, Vue Router, etc.
+- `autoindex`: `true` lists the directory (HTML, like nginx `autoindex on`) when it has no `index.html`. Default `false`.
+- `target_type: return` + `redirect_code` + `return_body`: fixed response (nginx `return 200 "ok"`). `$scheme`, `$host` and `$request_uri` are expanded.
+- `valid_referers`: list like nginx (`none`, `blocked`, `server_names`, `*.ex.com`, `ex.*`, `ex.com/path`, `~regex`). Other Referers get 403 (the nginx `if ($invalid_referer) { return 403; }` pattern).
+- `auth_request: { url, set_headers, timeout_ms }`: asks `url` (GET, original headers + `X-Original-URI`/`X-Original-Method`) before serving. 2xx passes and copies `set_headers` to the backend request; 401/403 go to the client; anything else is 500.
+- `mirror: [http://shadow:8080]`: sends a copy of each request (method, URI, headers; no body, like `mirror_request_body off`) and ignores the response.
+- `secure_link: { md5, hash_arg, expires_arg }`: nginx `secure_link`/`secure_link_md5` (base64url MD5). Wrong hash = 403, expired = 410.
+- `sub_filter: { replacements: [[from, to]], once, types }`: nginx `sub_filter` on text/html (plus `types`); uncompressed bodies up to 8 MB.
+- `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
+- `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route
 
@@ -350,3 +359,119 @@ http:
 | `default_page` | the default site | `true` (default) answers requests that match no virtual host (or a host with no routes yet) with a "Welcome to Ferrix" page; `false` answers a plain `404`. |
 
 `ferrix import` converts the matching nginx directives (`worker_processes`, `worker_cpu_affinity`, `events { worker_connections }`, `worker_rlimit_nofile`, `server_tokens`) automatically.
+
+### Access log in a file (`http.access_log`)
+
+Equivalent to nginx `log_format` + `access_log`. Works with metrics on or off; routes with `access_log: false` are skipped.
+
+```yaml
+http:
+  access_log:
+    path: /var/log/ferrix/access.log
+    format: combined   # or e.g. '$remote_addr "$request" $status $request_time $upstream_addr'
+```
+
+Variables: `$remote_addr $remote_user $time_local $time_iso8601 $msec $request $request_method $request_uri $uri $args $status $body_bytes_sent $request_time $host $http_host $http_referer $http_user_agent $upstream_addr $scheme $request_id`.
+
+### Sticky sessions (`upstreams.<name>.sticky`)
+
+nginx `sticky cookie srv_id expires=1h path=/`. The cookie stores a hash of the target, never its address.
+
+```yaml
+upstreams:
+  app:
+    sticky: { cookie: srv_id, path: /, max_age_secs: 3600 }
+```
+
+### SNI routing for TCP streams (`streams[].sni_routes`)
+
+nginx `ssl_preread on` + `map $ssl_preread_server_name`. Ferrix peeks at the TLS ClientHello (without terminating TLS) and picks the upstream by server name: exact, `*.suffix`, then `default`, then `upstream`.
+
+```yaml
+streams:
+  - id: tls-443
+    listen: 0.0.0.0:443
+    upstream: web
+    sni_routes: { api.example.com: api, "*.example.com": web, default: web }
+```
+
+### Variables, `if`, `set` and `rewrite`
+
+nginx `map`, `geo` and `split_clients` become `http.variables`; `set`, `if` and `rewrite` exist per route (and `conditions`/`rewrites` per vhost, run before route matching). Variables work in `rewrite` targets, `if` returns, `proxy_set_headers` values and `upstream_name: $var`.
+
+```yaml
+http:
+  variables:
+    is_bot:  { type: map, source: $http_user_agent, entries: [{ pattern: "~*bot", value: "1" }], default: "0" }
+    network: { type: geo, ranges: [{ network: 10.0.0.0/8, value: lan }], default: wan }
+    canary:  { type: split_clients, source: $remote_addr, buckets: [{ percent: 10, value: app_v2 }, { percent: 0, value: app_v1 }] }
+vhosts:
+  - id: site
+    rewrites: [{ pattern: "^/old/(.*)$", replacement: "/new/$1", flag: permanent }]
+    routes:
+      - id: app
+        path_prefix: /
+        target_type: proxy_upstream
+        upstream_name: $canary
+        conditions: [{ condition: "$is_bot", return_code: 403 }]
+        set: [["$tier", "$network"]]
+        proxy_set_headers: { X-Tier: $tier }
+```
+
+Built-ins: `$uri $request_uri $args $arg_* $http_* $cookie_* $host $remote_addr $scheme $https $request_method $content_type $content_length $1..$9`. `if` operators: `= != ~ ~* !~ !~* -f !-f -d !-d -e !-e`. Rewrite flags: `last` (re-match routes, up to 10 times), `break`, `redirect`, `permanent`. `split_clients` hashes with Ferrix's own hash, so buckets keep their sizes but not nginx's exact client assignment.
+
+### gRPC (`grpc: true`)
+
+nginx `grpc_pass grpc://backend;`. The route proxies over HTTP/2 to the upstream (targets `http://`/`grpc://` = h2c, `https://`/`grpcs://` = TLS + ALPN h2), keeping one multiplexed connection per target. Trailers (`grpc-status`) pass through. If the backend is unreachable the client gets `grpc-status: 14` (UNAVAILABLE). Needs the `http2` feature (on by default), and clients must reach Ferrix over HTTP/2.
+
+```yaml
+routes:
+  - id: api-grpc
+    path_prefix: /pkg.Service/
+    target_type: proxy_upstream
+    upstream_name: grpc_backend
+    grpc: true
+```
+
+### FastCGI, SCGI and uwsgi (`target_type: cgi`)
+
+nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept `$document_root`, `$fastcgi_script_name` and `$fastcgi_path_info`. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
+
+```yaml
+routes:
+  - id: php
+    path_prefix: '\.php(/|$)'
+    match_type: regex
+    target_type: cgi
+    static_root: /var/www/html
+    cgi: { protocol: fastcgi, pass: "unix:/run/php/php8.3-fpm.sock", index: index.php }
+```
+
+### WebDAV (`dav`)
+
+nginx `dav_methods PUT DELETE MKCOL COPY MOVE;` on a static route. Paths stay inside `static_root`; PUT writes atomically (temp file + rename). Protect the route (basic auth / IP list) — it lets clients change files.
+
+```yaml
+routes:
+  - id: uploads
+    path_prefix: /dav/
+    strip_prefix: true
+    target_type: static_files
+    static_root: /srv/dav
+    dav: { methods: [PUT, DELETE, MKCOL, COPY, MOVE], create_full_put_path: true, access: 0o644 }
+    basic_auth: { username: admin, password: "$2b$..." }
+```
+
+### Image filter (`image_filter`, build feature `image-filter`)
+
+nginx `image_filter resize|crop|rotate|size|test`, for JPEG, PNG, GIF and WebP, on static or proxied responses. Not in the default build (it adds image codecs): `cargo build --release --features image-filter`. Work runs on a blocking thread.
+
+```yaml
+routes:
+  - id: thumbs
+    path_prefix: /thumbs/
+    target_type: static_files
+    static_root: /srv/images
+    strip_prefix: true
+    image_filter: { op: resize, width: 300, height: 0, jpeg_quality: 80, buffer_bytes: 5242880 }
+```
