@@ -1050,6 +1050,10 @@ impl ProxyEngine {
             resp,
         );
 
+        if route.limit_rate > 0 {
+            resp = filters::limit_rate::apply(resp, route.limit_rate, route.limit_rate_after);
+        }
+
         if !route.access_log {
             resp.extensions_mut().insert(SkipAccessLog);
         }

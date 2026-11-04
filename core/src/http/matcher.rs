@@ -227,6 +227,7 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || crate::http::filters::upstream_headers::needed(route)
         || route.proxy_intercept_errors
         || route.limit_except.is_some()
+        || route.limit_rate > 0
 }
 
 #[derive(Debug)]

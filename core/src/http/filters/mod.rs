@@ -4,6 +4,7 @@ pub mod error_page;
 pub mod headers;
 #[cfg(feature = "image-filter")]
 pub mod image;
+pub mod limit_rate;
 pub mod request_id;
 pub mod ssi;
 pub mod sub;

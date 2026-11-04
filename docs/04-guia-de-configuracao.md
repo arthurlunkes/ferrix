@@ -113,6 +113,7 @@ websocket_enabled: false
 - `proxy_redirect: [[from, to]]` (`default`, prefix or `~regex` with `$1`), `proxy_cookie_path` / `proxy_cookie_domain: [[from, to]]`, `proxy_cookie_flags: [[cookie|~regex|*, "secure httponly samesite=strict nosecure ..."]]`: nginx rewrites of `Location`/`Refresh` and `Set-Cookie` from the backend.
 - `proxy_intercept_errors: true`: backend 4xx/5xx are answered with the vhost `error_pages`.
 - `limit_except: { methods: [GET, POST], allow: [10.0.0.0/8] }`: other methods get 403 unless the client IP is in `allow` (GET also allows HEAD).
+- `limit_rate: 102400`, `limit_rate_after: 1048576`: nginx `limit_rate` / `limit_rate_after`, bytes per second for each response body after the first N bytes (turns off zero-copy sendfile for that route).
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 

@@ -1790,6 +1790,15 @@ impl Converter {
                     },
                 },
                 "mirror_request_body" => {}
+                "limit_rate" | "limit_rate_after" => {
+                    if let Some(v) = item.arg(0).and_then(parse_size) {
+                        if item.name == "limit_rate" {
+                            route.limit_rate = v;
+                        } else {
+                            route.limit_rate_after = v;
+                        }
+                    }
+                }
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }

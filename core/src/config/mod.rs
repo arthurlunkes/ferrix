@@ -1144,6 +1144,13 @@ pub struct RouteRule {
     #[serde(default)]
     pub limit_except: Option<LimitExceptConfig>,
 
+    /// nginx `limit_rate`: max bytes/s for each response body (0 = off).
+    #[serde(default)]
+    pub limit_rate: u64,
+    /// nginx `limit_rate_after`: bytes sent at full speed first.
+    #[serde(default)]
+    pub limit_rate_after: u64,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1281,6 +1288,8 @@ impl Default for RouteRule {
             proxy_cookie_flags: Vec::new(),
             proxy_intercept_errors: false,
             limit_except: None,
+            limit_rate: 0,
+            limit_rate_after: 0,
             grpc: false,
         }
     }
