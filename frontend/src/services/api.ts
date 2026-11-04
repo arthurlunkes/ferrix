@@ -143,13 +143,14 @@ export interface RouteRule {
   path_prefix: string;
   match_type: RouteMatchType;
   strip_prefix: boolean;
-  target_type: "proxy_upstream" | "static_files" | "redirect";
+  target_type: "proxy_upstream" | "static_files" | "redirect" | "return";
   upstream_name?: string | null;
   static_root?: string | null;
   try_files?: string | null;
   autoindex?: boolean;
   redirect_url?: string | null;
   redirect_code?: number | null;
+  return_body?: string | null;
   websocket_enabled: boolean;
   proxy_set_headers: Record<string, string>;
   add_headers: Record<string, string>;

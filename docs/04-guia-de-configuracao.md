@@ -104,6 +104,7 @@ websocket_enabled: false
 - `static_root`: Local disk path where files are hosted.
 - `try_files`: Checks for the exact file (`$uri`), then directory index (`$uri/`), falling back to (`/index.html`). Tailor-made for React Router, Vue Router, etc.
 - `autoindex`: `true` lists the directory (HTML, like nginx `autoindex on`) when it has no `index.html`. Default `false`.
+- `target_type: return` + `redirect_code` + `return_body`: fixed response (nginx `return 200 "ok"`). `$scheme`, `$host` and `$request_uri` are expanded.
 
 ### 3. HTTP Redirect Route
 

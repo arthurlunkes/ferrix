@@ -482,6 +482,21 @@ impl ProxyEngine {
                 }
                 r
             }
+            RouteTargetType::Return => {
+                let code = route.redirect_code.unwrap_or(200);
+                let status = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
+                let body = route
+                    .return_body
+                    .as_deref()
+                    .map(|b| interpolate_redirect_url(b, &parts, is_tls))
+                    .unwrap_or_default();
+                let mut r = (status, body).into_response();
+                r.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain; charset=utf-8"),
+                );
+                r
+            }
             RouteTargetType::StaticFiles => {
                 let root_dir = route.static_root.as_deref().unwrap_or("./public");
                 let file_path = if route.strip_prefix {
