@@ -168,10 +168,18 @@ impl ProxyEngine {
                         .iter()
                         .position(|t| std::ptr::eq(t, *target))
                         .unwrap_or(0);
-                    return build_upstream_response(
+                    let mut resp = build_upstream_response(
                         upstream_res,
                         compiled.target_header(upstream_name, target_index),
                     );
+                    if let Some(sc) = &upstream_cfg.sticky {
+                        if let Some(c) =
+                            super::upstream::sticky::set_cookie(sc, headers, &target.url)
+                        {
+                            resp.headers_mut().append(header::SET_COOKIE, c);
+                        }
+                    }
+                    return resp;
                 }
                 Err(err) => {
                     let retryable = should_retry_error(&next_upstream.conditions, &err);

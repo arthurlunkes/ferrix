@@ -222,6 +222,7 @@ mod tests {
             health_check: None,
             verify_tls: true,
             hash_key: None,
+            sticky: None,
         }
     }
 

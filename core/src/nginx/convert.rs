@@ -443,6 +443,7 @@ impl Converter {
                     health_check: None,
                     verify_tls: true,
                     hash_key: None,
+                    sticky: None,
                 },
             );
             name
@@ -708,6 +709,7 @@ impl Converter {
         let mut targets = Vec::new();
         let mut algorithm = None;
         let mut hash_key: Option<String> = None;
+        let mut sticky: Option<crate::config::StickyConfig> = None;
         let mut has_weights = false;
 
         for item in block {
@@ -734,6 +736,21 @@ impl Converter {
                         &item.source(),
                         "virou consistent_hash (anel ketama) sobre a mesma chave",
                     );
+                }
+                "sticky" if item.arg(0) == Some("cookie") => {
+                    let mut sc = crate::config::StickyConfig {
+                        cookie: item.arg(1).unwrap_or("route").to_string(),
+                        ..Default::default()
+                    };
+                    for a in item.args.iter().skip(2) {
+                        if let Some(p) = a.strip_prefix("path=") {
+                            sc.path = Some(p.to_string());
+                        } else if let Some(e) = a.strip_prefix("expires=") {
+                            sc.max_age_secs = parse_time_ms(e).map(|ms| ms / 1000);
+                        }
+                    }
+                    sticky = Some(sc);
+                    self.converted(item, "virou upstream.sticky (cookie)");
                 }
                 "keepalive" => self.report.note(
                     NoteLevel::Converted,
@@ -773,6 +790,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key,
+                sticky,
             },
         );
     }
@@ -1736,6 +1754,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key: None,
+                sticky: None,
             },
         );
         name
