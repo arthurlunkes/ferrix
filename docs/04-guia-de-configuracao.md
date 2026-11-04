@@ -111,6 +111,7 @@ websocket_enabled: false
 - `secure_link: { md5, hash_arg, expires_arg }`: nginx `secure_link`/`secure_link_md5` (base64url MD5). Wrong hash = 403, expired = 410.
 - `sub_filter: { replacements: [[from, to]], once, types }`: nginx `sub_filter` on text/html (plus `types`); uncompressed bodies up to 8 MB.
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
+- `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route
 

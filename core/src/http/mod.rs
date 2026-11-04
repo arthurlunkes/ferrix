@@ -692,6 +692,15 @@ impl ProxyEngine {
             }
         }
 
+        let (req_uri, ssi_method, ssi_headers) = if route.ssi {
+            (
+                req.uri().clone(),
+                req.method().clone(),
+                req.headers().clone(),
+            )
+        } else {
+            (axum::http::Uri::default(), Method::GET, HeaderMap::new())
+        };
         let (mut parts, body) = req.into_parts();
 
         let info = match filters::RequestInfo::capture(compiled, route, &mut parts) {
@@ -972,6 +981,33 @@ impl ProxyEngine {
                     .await
                 }
             }
+        };
+
+        let resp = if route.ssi && filters::ssi::applies(&resp, &route.ssi_types) {
+            let mut ctx = vars::Ctx {
+                method: &ssi_method,
+                uri: req_uri.clone(),
+                headers: &ssi_headers,
+                client_ip,
+                is_tls,
+                defs: &compiled.config.http.variables,
+                set: std::collections::HashMap::new(),
+                captures: Vec::new(),
+            };
+            let dir = req_uri
+                .path()
+                .rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default();
+            Box::pin(filters::ssi::apply(
+                resp,
+                route.static_root.as_deref(),
+                &dir,
+                &mut ctx,
+            ))
+            .await
+        } else {
+            resp
         };
 
         let resp = match &route.sub_filter {
