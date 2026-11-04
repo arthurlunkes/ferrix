@@ -64,6 +64,8 @@ struct Converter {
 
     log_formats: HashMap<String, String>,
 
+    stream_maps: HashMap<String, HashMap<String, String>>,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -96,6 +98,7 @@ impl Converter {
             route_seq: 0,
             http_headers: HashMap::new(),
             log_formats: HashMap::new(),
+            stream_maps: HashMap::new(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -364,6 +367,24 @@ impl Converter {
         for item in block {
             match item.name.as_str() {
                 "upstream" => {}
+                "map" if item.arg(0) == Some("$ssl_preread_server_name") => {
+                    let mut m = HashMap::new();
+                    for e in item.block.iter().flatten() {
+                        if e.name == "hostnames" {
+                            continue;
+                        }
+                        if let Some(v) = e.arg(0) {
+                            m.insert(e.name.trim_start_matches('.').to_string(), v.to_string());
+                            if e.name.starts_with('.') {
+                                m.insert(format!("*{}", e.name), v.to_string());
+                            }
+                        }
+                    }
+                    if let Some(var) = item.arg(1) {
+                        self.stream_maps.insert(var.to_string(), m);
+                    }
+                    self.converted(item, "virou sni_routes no stream que usar a variável");
+                }
                 "server" => self.convert_stream_server(item),
                 "log_format" | "access_log" | "error_log" => self.converted(
                     item,
@@ -408,6 +429,7 @@ impl Converter {
                         idle_timeout_ms = v;
                     }
                 }
+                "ssl_preread" => {}
                 _ => self.note_unsupported(item),
             }
         }
@@ -422,6 +444,16 @@ impl Converter {
             return;
         };
         let port = listen.rsplit(':').next().unwrap_or("0").to_string();
+        let sni_routes = self.stream_maps.get(&pass).cloned().unwrap_or_default();
+        let pass = if sni_routes.is_empty() {
+            pass
+        } else {
+            sni_routes
+                .get("default")
+                .or_else(|| sni_routes.values().next())
+                .cloned()
+                .unwrap_or_default()
+        };
         let upstream = if self.config.upstreams.contains_key(&pass) {
             pass
         } else {
@@ -455,6 +487,7 @@ impl Converter {
             upstream,
             connect_timeout_ms,
             idle_timeout_ms,
+            sni_routes,
         });
         self.converted(d, "virou um proxy TCP/UDP em streams");
     }
@@ -2568,6 +2601,21 @@ mod tests {
         let al = r.config.http.access_log.as_ref().unwrap();
         assert_eq!(al.path, "/var/log/ferrix/access.log");
         assert_eq!(al.format, "$remote_addr \"$request\" $status");
+    }
+
+    #[test]
+    fn stream_ssl_preread_map_becomes_sni_routes() {
+        let r = convert(
+            r#"stream {
+                upstream a { server 10.0.0.1:443; }
+                upstream b { server 10.0.0.2:443; }
+                map $ssl_preread_server_name $up { api.ex.com a; default b; }
+                server { listen 443; ssl_preread on; proxy_pass $up; }
+            }"#,
+        );
+        let s = &r.config.streams[0];
+        assert_eq!(s.upstream, "b");
+        assert_eq!(s.sni_routes.get("api.ex.com").unwrap(), "a");
     }
 
     #[test]

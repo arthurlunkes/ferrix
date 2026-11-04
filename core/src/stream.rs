@@ -15,13 +15,9 @@ pub fn target_addr(url: &str) -> &str {
     rest.split('/').next().unwrap_or(rest)
 }
 
-fn targets_for(
-    engine: &ProxyEngine,
-    stream: &StreamConfig,
-    client: SocketAddr,
-) -> Vec<UpstreamTarget> {
+fn targets_for(engine: &ProxyEngine, upstream: &str, client: SocketAddr) -> Vec<UpstreamTarget> {
     let config = engine.store.config();
-    match config.upstreams.get(&stream.upstream) {
+    match config.upstreams.get(upstream) {
         Some(up) => engine
             .pool_manager
             .select_targets(up, client.ip())
@@ -77,15 +73,23 @@ async fn handle_tcp(
     addr: SocketAddr,
 ) -> Result<(), String> {
     let connect_timeout = Duration::from_millis(stream.connect_timeout_ms);
+    let upstream_name = if stream.sni_routes.is_empty() {
+        stream.upstream.clone()
+    } else {
+        let name = preread_sni(&client, connect_timeout).await;
+        crate::net::sni::lookup(&stream.sni_routes, name.as_deref())
+            .cloned()
+            .unwrap_or_else(|| stream.upstream.clone())
+    };
     let mut last_err = String::from("no upstream targets available");
-    for target in targets_for(engine, stream, addr) {
+    for target in targets_for(engine, &upstream_name, addr) {
         let dest = target_addr(&target.url);
         match tokio::time::timeout(connect_timeout, TcpStream::connect(dest)).await {
             Ok(Ok(upstream)) => {
                 let _ = upstream.set_nodelay(true);
                 engine
                     .health_checker
-                    .mark_success(&stream.upstream, &target.url, 0.0);
+                    .mark_success(&upstream_name, &target.url, 0.0);
                 engine.pool_manager.inc_conn(&target.url);
                 let r = pipe(
                     client,
@@ -101,9 +105,28 @@ async fn handle_tcp(
         }
         engine
             .health_checker
-            .mark_failure(&stream.upstream, &target.url, target.max_fails);
+            .mark_failure(&upstream_name, &target.url, target.max_fails);
     }
     Err(last_err)
+}
+
+/// Peeks (without consuming) the ClientHello and returns its server name.
+async fn preread_sni(client: &TcpStream, timeout: Duration) -> Option<String> {
+    let mut buf = vec![0u8; 16 * 1024];
+    let read = async {
+        loop {
+            let n = client.peek(&mut buf).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            match crate::net::sni::parse(&buf[..n]) {
+                Ok(name) => return name,
+                Err(()) if n == buf.len() => return None,
+                Err(()) => tokio::time::sleep(Duration::from_millis(5)).await,
+            }
+        }
+    };
+    tokio::time::timeout(timeout, read).await.ok().flatten()
 }
 
 async fn pipe(client: TcpStream, upstream: TcpStream, idle: Duration) -> std::io::Result<()> {
@@ -183,7 +206,10 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
         let (n, client) = socket.recv_from(&mut buf).await?;
         let mut map = sessions.lock().await;
         if let std::collections::hash_map::Entry::Vacant(e) = map.entry(client) {
-            let Some(target) = targets_for(&engine, stream, client).into_iter().next() else {
+            let Some(target) = targets_for(&engine, &stream.upstream, client)
+                .into_iter()
+                .next()
+            else {
                 continue;
             };
             let upstream = UdpSocket::bind(if client.is_ipv4() {

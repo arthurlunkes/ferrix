@@ -380,3 +380,15 @@ upstreams:
   app:
     sticky: { cookie: srv_id, path: /, max_age_secs: 3600 }
 ```
+
+### SNI routing for TCP streams (`streams[].sni_routes`)
+
+nginx `ssl_preread on` + `map $ssl_preread_server_name`. Ferrix peeks at the TLS ClientHello (without terminating TLS) and picks the upstream by server name: exact, `*.suffix`, then `default`, then `upstream`.
+
+```yaml
+streams:
+  - id: tls-443
+    listen: 0.0.0.0:443
+    upstream: web
+    sni_routes: { api.example.com: api, "*.example.com": web, default: web }
+```
