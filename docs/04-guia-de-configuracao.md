@@ -352,3 +352,16 @@ http:
 | `default_page` | the default site | `true` (default) answers requests that match no virtual host (or a host with no routes yet) with a "Welcome to Ferrix" page; `false` answers a plain `404`. |
 
 `ferrix import` converts the matching nginx directives (`worker_processes`, `worker_cpu_affinity`, `events { worker_connections }`, `worker_rlimit_nofile`, `server_tokens`) automatically.
+
+### Access log in a file (`http.access_log`)
+
+Equivalent to nginx `log_format` + `access_log`. Works with metrics on or off; routes with `access_log: false` are skipped.
+
+```yaml
+http:
+  access_log:
+    path: /var/log/ferrix/access.log
+    format: combined   # or e.g. '$remote_addr "$request" $status $request_time $upstream_addr'
+```
+
+Variables: `$remote_addr $remote_user $time_local $time_iso8601 $msec $request $request_method $request_uri $uri $args $status $body_bytes_sent $request_time $host $http_host $http_referer $http_user_agent $upstream_addr $scheme $request_id`.
