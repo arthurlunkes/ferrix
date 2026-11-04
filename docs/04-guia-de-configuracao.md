@@ -117,6 +117,7 @@ websocket_enabled: false
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
 - `empty_gif: true`: nginx `empty_gif`, answers a 1×1 transparent GIF (tracking pixels).
 - `random_index: true`: nginx `random_index`, a request for a directory serves a random visible file from it.
+- `userid: { name: uid, domain, path: /, expires_secs: 31536000, flags: "Secure HttpOnly" }`: nginx `userid on`, a visitor-id cookie set on the first response (and added to that request so the backend sees it).
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route

@@ -229,6 +229,7 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || route.limit_except.is_some()
         || route.limit_rate > 0
         || route.empty_gif
+        || route.userid.is_some()
 }
 
 #[derive(Debug)]

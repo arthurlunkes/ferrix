@@ -2052,6 +2052,31 @@ impl Converter {
                     has_target = true;
                 }
                 "random_index" => route.random_index = item.arg(0) == Some("on"),
+                "userid" => {
+                    if item.arg(0) == Some("on") {
+                        route.userid.get_or_insert_with(Default::default);
+                    } else {
+                        route.userid = None;
+                    }
+                }
+                "userid_name" | "userid_domain" | "userid_path" | "userid_expires" | "userid_flags" => {
+                    let u = route.userid.get_or_insert_with(Default::default);
+                    let v = item.args.join(" ");
+                    match item.name.as_str() {
+                        "userid_name" => u.name = Some(v),
+                        "userid_domain" => u.domain = Some(v).filter(|d| d != "none"),
+                        "userid_path" => u.path = Some(v),
+                        "userid_flags" => u.flags = Some(v).filter(|f| f != "off"),
+                        _ => {
+                            u.expires_secs = match v.as_str() {
+                                "max" => Some(10 * 365 * 86_400),
+                                "off" => None,
+                                t => parse_time_ms(t).map(|ms| ms / 1000),
+                            }
+                        }
+                    }
+                }
+                "userid_service" | "userid_p3p" | "userid_mark" => {}
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");

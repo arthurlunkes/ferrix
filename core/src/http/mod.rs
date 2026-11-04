@@ -745,6 +745,10 @@ impl ProxyEngine {
             (axum::http::Uri::default(), Method::GET, HeaderMap::new())
         };
         let (mut parts, body) = req.into_parts();
+        let userid_cookie = route
+            .userid
+            .as_ref()
+            .and_then(|cfg| filters::userid::ensure(cfg, &mut parts.headers));
 
         let info = match filters::RequestInfo::capture(compiled, route, &mut parts) {
             Ok(info) => info,
@@ -1076,6 +1080,10 @@ impl ProxyEngine {
             info,
             resp,
         );
+
+        if let Some(c) = userid_cookie {
+            resp.headers_mut().append(header::SET_COOKIE, c);
+        }
 
         if route.limit_rate > 0 {
             resp = filters::limit_rate::apply(resp, route.limit_rate, route.limit_rate_after);

@@ -923,6 +923,29 @@ pub struct LimitExceptConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserIdConfig {
+    /// Cookie name (default `uid`).
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Max-Age in seconds; empty = session cookie.
+    #[serde(default)]
+    pub expires_secs: Option<u64>,
+    /// Extra attributes, e.g. `Secure HttpOnly SameSite=Lax` (nginx `userid_flags`).
+    #[serde(default)]
+    pub flags: Option<String>,
+}
+
+impl UserIdConfig {
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("uid")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DavConfig {
     /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
     #[serde(default)]
@@ -1244,6 +1267,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub random_index: bool,
 
+    /// nginx `userid on`: visitor id cookie.
+    #[serde(default)]
+    pub userid: Option<UserIdConfig>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1385,6 +1412,7 @@ impl Default for RouteRule {
             limit_rate_after: 0,
             empty_gif: false,
             random_index: false,
+            userid: None,
             grpc: false,
         }
     }
