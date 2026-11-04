@@ -176,6 +176,10 @@ impl ProxyEngine {
                         upstream_res,
                         compiled.target_header(upstream_name, target_index),
                     );
+                    if route.proxy_intercept_errors && resp.status().as_u16() >= 400 {
+                        resp.extensions_mut()
+                            .insert(super::filters::error_page::InterceptErrors);
+                    }
                     if super::filters::upstream_headers::needed(route) {
                         super::filters::upstream_headers::apply(
                             resp.headers_mut(),

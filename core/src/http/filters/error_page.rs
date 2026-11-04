@@ -6,11 +6,17 @@ use tracing::warn;
 use crate::config::VirtualHost;
 use crate::http::X_FERRIX_UPSTREAM;
 
+/// Marks a backend response whose errors should use the error pages
+/// (`proxy_intercept_errors on`).
+#[derive(Clone, Copy)]
+pub struct InterceptErrors;
+
 pub async fn apply(vhost: &VirtualHost, resp: Response) -> Response {
     let status = resp.status();
     if status.as_u16() < 400
         || vhost.error_pages.is_empty()
-        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
+        || (resp.headers().contains_key(X_FERRIX_UPSTREAM)
+            && resp.extensions().get::<InterceptErrors>().is_none())
     {
         return resp;
     }

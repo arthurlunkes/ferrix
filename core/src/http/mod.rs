@@ -619,6 +619,19 @@ impl ProxyEngine {
             }
         }
 
+        if let Some(le) = &route.limit_except {
+            let m = req.method().as_str();
+            let ok = le.methods.iter().any(|a| {
+                a.eq_ignore_ascii_case(m) || (m == "HEAD" && a.eq_ignore_ascii_case("GET"))
+            });
+            if !ok {
+                let (allow, _) = crate::net::cidr::IpMatcher::compile(&le.allow);
+                if !allow.matches(client_ip) {
+                    return (StatusCode::FORBIDDEN, "403 Forbidden").into_response();
+                }
+            }
+        }
+
         if !route.valid_referers.is_empty() {
             let referer = req
                 .headers()

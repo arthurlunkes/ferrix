@@ -842,6 +842,14 @@ impl Default for ImageFilterConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LimitExceptConfig {
+    pub methods: Vec<String>,
+    /// IPs/CIDRs that may use any method (the `allow` lines inside the block).
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DavConfig {
     /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
     #[serde(default)]
@@ -1110,6 +1118,13 @@ pub struct RouteRule {
     #[serde(default)]
     pub proxy_cookie_flags: Vec<[String; 2]>,
 
+    /// nginx `proxy_intercept_errors on`: backend 4xx/5xx use the vhost error pages.
+    #[serde(default)]
+    pub proxy_intercept_errors: bool,
+    /// nginx `limit_except`: methods allowed for everyone (GET implies HEAD).
+    #[serde(default)]
+    pub limit_except: Option<LimitExceptConfig>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1245,6 +1260,8 @@ impl Default for RouteRule {
             proxy_cookie_path: Vec::new(),
             proxy_cookie_domain: Vec::new(),
             proxy_cookie_flags: Vec::new(),
+            proxy_intercept_errors: false,
+            limit_except: None,
             grpc: false,
         }
     }

@@ -1660,6 +1660,31 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "proxy_intercept_errors" => {
+                    route.proxy_intercept_errors = item.arg(0) == Some("on")
+                }
+                "limit_except" => {
+                    let allow = item
+                        .block
+                        .iter()
+                        .flatten()
+                        .filter(|d| d.name == "allow")
+                        .filter_map(|d| d.arg(0).map(String::from))
+                        .collect();
+                    for d in item.block.iter().flatten() {
+                        if !matches!(d.name.as_str(), "allow" | "deny") {
+                            self.note_unsupported(d);
+                        }
+                    }
+                    route.limit_except = Some(crate::config::LimitExceptConfig {
+                        methods: item.args.iter().map(|m| m.to_ascii_uppercase()).collect(),
+                        allow,
+                    });
+                    self.converted(
+                        item,
+                        "virou route.limit_except (outros métodos recebem 403)",
+                    );
+                }
                 "proxy_redirect" => match (item.arg(0), item.arg(1)) {
                     (Some("off"), _) => route.proxy_redirect.clear(),
                     (Some("default"), _) => {
@@ -3050,6 +3075,21 @@ mod tests {
         assert_eq!(c.pass, "unix:/run/php/php-fpm.sock");
         assert_eq!(route.static_root.as_deref(), Some("/var/www"));
         assert!(c.params.contains_key("SCRIPT_FILENAME"));
+    }
+
+    #[test]
+    fn limit_except_and_intercept_errors_are_converted() {
+        let r = convert(
+            r#"http { upstream b { server 10.0.0.1; } server { listen 80; location / {
+                proxy_pass http://b; proxy_intercept_errors on;
+                limit_except GET { allow 10.0.0.0/8; deny all; }
+            } } }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.proxy_intercept_errors);
+        let le = route.limit_except.as_ref().unwrap();
+        assert_eq!(le.methods, vec!["GET"]);
+        assert_eq!(le.allow, vec!["10.0.0.0/8"]);
     }
 
     #[test]
