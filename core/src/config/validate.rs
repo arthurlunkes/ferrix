@@ -529,6 +529,18 @@ fn validate_vhost_routes(
                     }
                 }
             }
+            RouteTargetType::Memcached => {
+                if route
+                    .memcached
+                    .as_ref()
+                    .is_none_or(|m| m.pass.trim().is_empty())
+                {
+                    report.error(
+                        format!("{}.memcached.pass", rpath),
+                        "rota memcached sem endereço (memcached.pass)",
+                    );
+                }
+            }
             RouteTargetType::Cgi => {
                 if route.cgi.as_ref().is_none_or(|c| c.pass.trim().is_empty()) {
                     report.error(

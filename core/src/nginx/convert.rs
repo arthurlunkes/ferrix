@@ -2092,6 +2092,26 @@ impl Converter {
                     &item.source(),
                     "o Ferrix usa as tabelas padrão do WHATWG (encoding_rs); mapas próprios não existem",
                 ),
+                "memcached_pass" => {
+                    let m = route.memcached.get_or_insert_with(Default::default);
+                    m.pass = item.arg(0).unwrap_or("").to_string();
+                    route.target_type = RouteTargetType::Memcached;
+                    has_target = true;
+                    self.converted(item, "virou target_type: memcached (miss = 404)");
+                }
+                "memcached_gzip_flag" => {
+                    route.memcached.get_or_insert_with(Default::default).gzip_flag =
+                        item.arg(0).and_then(|v| v.parse().ok());
+                }
+                "memcached_connect_timeout" | "memcached_read_timeout" => {
+                    let v = item.arg(0).and_then(parse_time_ms);
+                    if item.name == "memcached_connect_timeout" {
+                        route.proxy_connect_timeout_ms = v;
+                    } else {
+                        route.proxy_read_timeout_ms = v;
+                    }
+                }
+                "memcached_buffer_size" | "memcached_send_timeout" | "memcached_bind" | "memcached_socket_keepalive" => {}
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");
@@ -2195,7 +2215,12 @@ impl Converter {
                 }
                 "set" => {
                     if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
-                        route.set.push((k.to_string(), v.to_string()));
+                        if k == "$memcached_key" {
+                            route.memcached.get_or_insert_with(Default::default).key =
+                                Some(v.to_string());
+                        } else {
+                            route.set.push((k.to_string(), v.to_string()));
+                        }
                         self.converted(item, "virou route.set");
                     }
                 }

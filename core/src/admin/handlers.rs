@@ -242,6 +242,10 @@ pub async fn route_test(state: &AdminState, req: RouteTestRequest) -> impl IntoR
             .clone()
             .map(|u| format!("redirect {} to {}", route.redirect_code.unwrap_or(302), u)),
         RouteTargetType::Return => Some(format!("return {}", route.redirect_code.unwrap_or(200))),
+        RouteTargetType::Memcached => route
+            .memcached
+            .as_ref()
+            .map(|m| format!("memcached {}", m.pass)),
         RouteTargetType::Cgi => route
             .cgi
             .as_ref()

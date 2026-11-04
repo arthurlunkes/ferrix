@@ -859,6 +859,24 @@ pub enum RouteTargetType {
 
     /// nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (see `cgi`).
     Cgi,
+
+    /// nginx `memcached_pass` (see `memcached`).
+    Memcached,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemcachedConfig {
+    /// `host:port`.
+    pub pass: String,
+    /// nginx `$memcached_key` (default `$uri`; variables allowed).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Content-Type of hits (default `text/html`).
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// nginx `memcached_gzip_flag`: values with this flag bit are sent as gzip.
+    #[serde(default)]
+    pub gzip_flag: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1298,6 +1316,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub charset_types: Vec<String>,
 
+    /// Settings for `target_type: memcached`.
+    #[serde(default)]
+    pub memcached: Option<MemcachedConfig>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1448,6 +1470,7 @@ impl Default for RouteRule {
             source_charset: None,
             override_charset: false,
             charset_types: Vec::new(),
+            memcached: None,
             grpc: false,
         }
     }

@@ -4,6 +4,7 @@ pub mod cgi;
 pub mod grpc;
 pub mod h1;
 pub mod hash;
+pub mod memcached;
 pub mod sticky;
 pub mod tls_client;
 

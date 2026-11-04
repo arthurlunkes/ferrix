@@ -510,6 +510,71 @@ impl ProxyEngine {
         (StatusCode::BAD_GATEWAY, format!("502 Bad Gateway - {last}")).into_response()
     }
 
+    async fn serve_memcached(
+        &self,
+        compiled: &CompiledConfig,
+        route: &RouteRule,
+        parts: &axum::http::request::Parts,
+        client_ip: IpAddr,
+        is_tls: bool,
+    ) -> Response {
+        let Some(cfg) = &route.memcached else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Misconfigured memcached route",
+            )
+                .into_response();
+        };
+        let ctx = vars::Ctx {
+            method: &parts.method,
+            uri: parts.uri.clone(),
+            headers: &parts.headers,
+            client_ip,
+            is_tls,
+            defs: &compiled.config.http.variables,
+            set: parts
+                .extensions
+                .get::<vars::SetVars>()
+                .map(|s| s.0.clone())
+                .unwrap_or_default(),
+            captures: Vec::new(),
+            client_cert: None,
+        };
+        let key = ctx.expand(cfg.key.as_deref().unwrap_or("$uri"));
+        let http = &compiled.config.http;
+        let connect = Duration::from_millis(
+            route
+                .proxy_connect_timeout_ms
+                .unwrap_or(http.proxy_connect_timeout_ms),
+        );
+        let read = Duration::from_millis(
+            route
+                .proxy_read_timeout_ms
+                .unwrap_or(http.proxy_read_timeout_ms),
+        );
+        match upstream::memcached::get(&cfg.pass, &key, connect, read).await {
+            Ok(upstream::memcached::Reply::Hit { flags, data }) => {
+                let mut r = Response::new(Body::from(data));
+                let ct = cfg.content_type.as_deref().unwrap_or("text/html");
+                if let Ok(v) = HeaderValue::from_str(ct) {
+                    r.headers_mut().insert(header::CONTENT_TYPE, v);
+                }
+                if cfg.gzip_flag.is_some_and(|f| flags & f != 0) {
+                    r.headers_mut()
+                        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                }
+                r
+            }
+            Ok(upstream::memcached::Reply::Miss) => {
+                (StatusCode::NOT_FOUND, "404 Not Found").into_response()
+            }
+            Err(e) => {
+                warn!(memcached = %cfg.pass, error = %e, "memcached failed");
+                (StatusCode::BAD_GATEWAY, "502 Bad Gateway").into_response()
+            }
+        }
+    }
+
     /// nginx-style subrequest: `uri` is either a full URL (fetched directly)
     /// or a path served by this same vhost. Returns the 2xx body.
     #[allow(clippy::too_many_arguments)]
@@ -840,6 +905,9 @@ impl ProxyEngine {
                     r.headers_mut().insert(header::LOCATION, val);
                 }
                 r
+            }
+            RouteTargetType::Memcached => {
+                Box::pin(self.serve_memcached(compiled, route, &parts, client_ip, is_tls)).await
             }
             RouteTargetType::Cgi => {
                 Box::pin(self.serve_cgi(compiled, route, parts, body, client_ip, is_tls)).await
