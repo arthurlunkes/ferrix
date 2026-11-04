@@ -1660,6 +1660,41 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "fastcgi_pass" | "scgi_pass" | "uwsgi_pass" => {
+                    use crate::config::CgiProtocol;
+                    let protocol = match item.name.as_str() {
+                        "scgi_pass" => CgiProtocol::Scgi,
+                        "uwsgi_pass" => CgiProtocol::Uwsgi,
+                        _ => CgiProtocol::Fastcgi,
+                    };
+                    let pass = item
+                        .arg(0)
+                        .unwrap_or("")
+                        .trim_start_matches("uwsgi://")
+                        .to_string();
+                    let c = route.cgi.get_or_insert_with(Default::default);
+                    c.protocol = protocol;
+                    c.pass = pass;
+                    has_target = true;
+                    self.converted(item, "virou target_type: cgi");
+                }
+                "fastcgi_param" | "scgi_param" | "uwsgi_param" => {
+                    if let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) {
+                        route
+                            .cgi
+                            .get_or_insert_with(Default::default)
+                            .params
+                            .insert(k.to_string(), v.to_string());
+                    }
+                }
+                "fastcgi_index" => {
+                    route.cgi.get_or_insert_with(Default::default).index =
+                        item.arg(0).map(String::from);
+                }
+                "fastcgi_split_path_info" => self.converted(
+                    item,
+                    "o Ferrix separa SCRIPT_NAME/PATH_INFO em .php/, .py/ e .cgi/",
+                ),
                 "grpc_pass" => {
                     let raw = item.arg(0).unwrap_or("");
                     let tls = raw.starts_with("grpcs://");
@@ -1857,7 +1892,12 @@ impl Converter {
             }
         }
 
-        if !has_target {
+        if route.cgi.as_ref().is_some_and(|c| !c.pass.is_empty()) {
+            route.target_type = RouteTargetType::Cgi;
+            if route.static_root.is_none() {
+                route.static_root = server_root.map(|s| s.to_string());
+            }
+        } else if !has_target {
             if let Some(root) = server_root {
                 route.target_type = RouteTargetType::StaticFiles;
                 route.static_root = Some(root.to_string());
@@ -2305,9 +2345,6 @@ fn reason_for(name: &str) -> String {
         n if n.starts_with("modsecurity") => "WAF não existe no Ferrix",
         n if n.starts_with("open_file_cache") => {
             "o Ferrix não mantém cache de descritores de arquivo"
-        }
-        n if n.starts_with("fastcgi") || n.starts_with("uwsgi") || n.starts_with("scgi") => {
-            "o Ferrix só fala HTTP com o backend"
         }
 
         "include" => {
@@ -2876,6 +2913,28 @@ mod tests {
         assert!(r.config.upstreams["g"].targets[0]
             .url
             .starts_with("https://"));
+    }
+
+    #[test]
+    fn php_fpm_location_becomes_a_fastcgi_route() {
+        let r = convert(
+            r#"http { server { listen 80; root /var/www;
+                location ~ \.php$ {
+                    fastcgi_pass unix:/run/php/php-fpm.sock;
+                    fastcgi_index index.php;
+                    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                }
+            } }"#,
+        );
+        let route = r.config.vhosts[0]
+            .routes
+            .iter()
+            .find(|r| r.target_type == RouteTargetType::Cgi)
+            .unwrap();
+        let c = route.cgi.as_ref().unwrap();
+        assert_eq!(c.pass, "unix:/run/php/php-fpm.sock");
+        assert_eq!(route.static_root.as_deref(), Some("/var/www"));
+        assert!(c.params.contains_key("SCRIPT_FILENAME"));
     }
 
     #[test]

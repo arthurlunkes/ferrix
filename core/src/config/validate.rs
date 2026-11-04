@@ -515,6 +515,14 @@ fn validate_vhost_routes(
                     }
                 }
             }
+            RouteTargetType::Cgi => {
+                if route.cgi.as_ref().is_none_or(|c| c.pass.trim().is_empty()) {
+                    report.error(
+                        format!("{}.cgi.pass", rpath),
+                        "rota cgi sem endereço (cgi.pass)",
+                    );
+                }
+            }
             RouteTargetType::Return => {
                 let code = route.redirect_code.unwrap_or(200);
                 if !(200..600).contains(&code) {

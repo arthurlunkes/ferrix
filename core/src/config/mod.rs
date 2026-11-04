@@ -783,6 +783,35 @@ pub enum RouteTargetType {
 
     /// nginx `return <code> [text]` with a non-3xx code.
     Return,
+
+    /// nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (see `cgi`).
+    Cgi,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CgiProtocol {
+    #[default]
+    Fastcgi,
+    Scgi,
+    Uwsgi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CgiConfig {
+    #[serde(default)]
+    pub protocol: CgiProtocol,
+    /// `host:port`, `unix:/run/php/php-fpm.sock`, or an upstream name.
+    pub pass: String,
+    /// `$document_root` (defaults to the route's `static_root`).
+    #[serde(default)]
+    pub root: Option<String>,
+    /// nginx `fastcgi_index` (default `index.php`).
+    #[serde(default)]
+    pub index: Option<String>,
+    /// Extra / overriding params (nginx `fastcgi_param`).
+    #[serde(default)]
+    pub params: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -980,6 +1009,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
 
+    /// FastCGI / SCGI / uwsgi settings for `target_type: cgi`.
+    #[serde(default)]
+    pub cgi: Option<CgiConfig>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1105,6 +1138,7 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            cgi: None,
             grpc: false,
         }
     }
