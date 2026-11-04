@@ -2080,6 +2080,7 @@ impl Converter {
                 "add_before_body" => route.add_before_body = item.arg(0).map(String::from),
                 "add_after_body" => route.add_after_body = item.arg(0).map(String::from),
                 "addition_types" => route.addition_types = item.args.clone(),
+                "gunzip" => route.gunzip = item.arg(0) == Some("on"),
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");

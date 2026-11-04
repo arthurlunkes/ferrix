@@ -810,6 +810,7 @@ impl ProxyEngine {
         } else {
             HeaderMap::new()
         };
+        let needs_gunzip = route.gunzip && !filters::gunzip::client_accepts_gzip(req.headers());
         let (mut parts, body) = req.into_parts();
         let userid_cookie = route
             .userid
@@ -1129,6 +1130,12 @@ impl ProxyEngine {
                 &mut ctx,
             ))
             .await
+        } else {
+            resp
+        };
+
+        let resp = if needs_gunzip {
+            filters::gunzip::apply(resp)
         } else {
             resp
         };

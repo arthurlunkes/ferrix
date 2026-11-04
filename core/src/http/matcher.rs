@@ -232,6 +232,7 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || route.userid.is_some()
         || route.add_before_body.is_some()
         || route.add_after_body.is_some()
+        || route.gunzip
 }
 
 #[derive(Debug)]

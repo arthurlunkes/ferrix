@@ -1281,6 +1281,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub addition_types: Vec<String>,
 
+    /// nginx `gunzip on`: decompress gzip responses for clients without gzip.
+    #[serde(default)]
+    pub gunzip: bool,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1426,6 +1430,7 @@ impl Default for RouteRule {
             add_before_body: None,
             add_after_body: None,
             addition_types: Vec::new(),
+            gunzip: false,
             grpc: false,
         }
     }
