@@ -417,3 +417,16 @@ vhosts:
 ```
 
 Built-ins: `$uri $request_uri $args $arg_* $http_* $cookie_* $host $remote_addr $scheme $https $request_method $content_type $content_length $1..$9`. `if` operators: `= != ~ ~* !~ !~* -f !-f -d !-d -e !-e`. Rewrite flags: `last` (re-match routes, up to 10 times), `break`, `redirect`, `permanent`. `split_clients` hashes with Ferrix's own hash, so buckets keep their sizes but not nginx's exact client assignment.
+
+### gRPC (`grpc: true`)
+
+nginx `grpc_pass grpc://backend;`. The route proxies over HTTP/2 to the upstream (targets `http://`/`grpc://` = h2c, `https://`/`grpcs://` = TLS + ALPN h2), keeping one multiplexed connection per target. Trailers (`grpc-status`) pass through. If the backend is unreachable the client gets `grpc-status: 14` (UNAVAILABLE). Needs the `http2` feature (on by default), and clients must reach Ferrix over HTTP/2.
+
+```yaml
+routes:
+  - id: api-grpc
+    path_prefix: /pkg.Service/
+    target_type: proxy_upstream
+    upstream_name: grpc_backend
+    grpc: true
+```

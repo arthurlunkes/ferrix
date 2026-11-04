@@ -1660,6 +1660,36 @@ impl Converter {
                         has_target = true;
                     }
                 }
+                "grpc_pass" => {
+                    let raw = item.arg(0).unwrap_or("");
+                    let tls = raw.starts_with("grpcs://");
+                    let as_http = format!(
+                        "{}{}",
+                        if tls { "https://" } else { "http://" },
+                        raw.trim_start_matches("grpcs://")
+                            .trim_start_matches("grpc://")
+                    );
+                    let mut d = item.clone();
+                    d.args = vec![as_http];
+                    if self.apply_proxy_pass(&d, &mut route) {
+                        route.grpc = true;
+                        route.websocket_enabled = false;
+                        if tls {
+                            if let Some(up) = route
+                                .upstream_name
+                                .as_ref()
+                                .and_then(|n| self.config.upstreams.get_mut(n))
+                            {
+                                for t in &mut up.targets {
+                                    if let Some(r) = t.url.strip_prefix("http://") {
+                                        t.url = format!("https://{r}");
+                                    }
+                                }
+                            }
+                        }
+                        has_target = true;
+                    }
+                }
                 "root" => {
                     route.target_type = RouteTargetType::StaticFiles;
                     route.static_root = item.arg(0).map(|s| s.to_string());
@@ -2830,6 +2860,22 @@ mod tests {
         assert_eq!(route.conditions[0].return_code, Some(403));
         assert_eq!(route.set[0], ("$x".to_string(), "1".to_string()));
         assert_eq!(route.rewrites[0].replacement, "/b/$1");
+    }
+
+    #[test]
+    fn grpc_pass_becomes_a_grpc_route() {
+        let r = convert(
+            r#"http {
+                upstream g { server 10.0.0.5:50051; }
+                server { listen 80 http2; location /pkg. { grpc_pass grpcs://g; } }
+            }"#,
+        );
+        let route = first_route(&r);
+        assert!(route.grpc);
+        assert_eq!(route.upstream_name.as_deref(), Some("g"));
+        assert!(r.config.upstreams["g"].targets[0]
+            .url
+            .starts_with("https://"));
     }
 
     #[test]
