@@ -1237,6 +1237,13 @@ pub struct RouteRule {
     #[serde(default)]
     pub limit_rate_after: u64,
 
+    /// nginx `empty_gif`: answer with a 1×1 transparent GIF.
+    #[serde(default)]
+    pub empty_gif: bool,
+    /// nginx `random_index`: a directory request serves a random file from it.
+    #[serde(default)]
+    pub random_index: bool,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1376,6 +1383,8 @@ impl Default for RouteRule {
             limit_except: None,
             limit_rate: 0,
             limit_rate_after: 0,
+            empty_gif: false,
+            random_index: false,
             grpc: false,
         }
     }

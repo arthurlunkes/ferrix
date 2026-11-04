@@ -228,6 +228,7 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || route.proxy_intercept_errors
         || route.limit_except.is_some()
         || route.limit_rate > 0
+        || route.empty_gif
 }
 
 #[derive(Debug)]

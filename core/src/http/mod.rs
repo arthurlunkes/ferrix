@@ -645,6 +645,10 @@ impl ProxyEngine {
             }
         }
 
+        if route.empty_gif {
+            return static_files::empty_gif();
+        }
+
         if let Some(le) = &route.limit_except {
             let m = req.method().as_str();
             let ok = le.methods.iter().any(|a| {
@@ -824,6 +828,13 @@ impl ProxyEngine {
                     headers: &parts.headers,
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
+                };
+                let random_pick;
+                let file_path = if route.random_index {
+                    random_pick = static_files::random_index(root_dir, file_path);
+                    random_pick.as_deref().unwrap_or(file_path)
+                } else {
+                    file_path
                 };
                 if route.flv {
                     if let Some(r) =

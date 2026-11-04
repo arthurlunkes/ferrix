@@ -115,6 +115,8 @@ websocket_enabled: false
 - `limit_except: { methods: [GET, POST], allow: [10.0.0.0/8] }`: other methods get 403 unless the client IP is in `allow` (GET also allows HEAD).
 - `limit_rate: 102400`, `limit_rate_after: 1048576`: nginx `limit_rate` / `limit_rate_after`, bytes per second for each response body after the first N bytes (turns off zero-copy sendfile for that route).
 - `flv: true`: nginx `flv` pseudo-streaming; `video.flv?start=<byte>` streams from that byte with an FLV header in front.
+- `empty_gif: true`: nginx `empty_gif`, answers a 1×1 transparent GIF (tracking pixels).
+- `random_index: true`: nginx `random_index`, a request for a directory serves a random visible file from it.
 - `ssi: true` (+ `ssi_types`): nginx SSI subset on text/html — `include file|virtual` (read from `static_root`, nested up to 10), `echo var default`, `set`, `if/elif/else/endif expr`. Bodies up to 8 MB.
 
 ### 3. HTTP Redirect Route

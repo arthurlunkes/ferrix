@@ -2044,6 +2044,14 @@ impl Converter {
                 }
                 "ssi" => route.ssi = item.arg(0) == Some("on"),
                 "ssi_types" => route.ssi_types = item.args.clone(),
+                "empty_gif" => {
+                    route.empty_gif = true;
+                    // A target that validates on its own; empty_gif answers first.
+                    route.target_type = RouteTargetType::Return;
+                    route.redirect_code = Some(200);
+                    has_target = true;
+                }
+                "random_index" => route.random_index = item.arg(0) == Some("on"),
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");
