@@ -56,6 +56,26 @@ export const ExtraTargetFields: React.FC<{ route: RouteRule; upstreams: Upstream
       </div>
     );
   }
+  if (route.target_type === "memcached") {
+    const m = route.memcached ?? { pass: "127.0.0.1:11211", key: null, content_type: null, gzip_flag: null };
+    const set = (p: Partial<typeof m>) => onChange({ memcached: { ...m, ...p } });
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <Field label="memcached" hint="host:port">
+          <Input value={m.pass} onChange={(e) => set({ pass: e.target.value })} mono className="text-xs" />
+        </Field>
+        <Field label="Key" hint="$memcached_key, default $uri">
+          <Input value={m.key ?? ""} onChange={(e) => set({ key: e.target.value || null })} placeholder="$uri?$args" mono className="text-xs" />
+        </Field>
+        <Field label="Content-Type">
+          <Input value={m.content_type ?? ""} onChange={(e) => set({ content_type: e.target.value || null })} placeholder="text/html" mono className="text-xs" />
+        </Field>
+        <Field label="gzip flag" hint="memcached_gzip_flag">
+          <Input type="number" value={m.gzip_flag ?? ""} onChange={(e) => set({ gzip_flag: num(e.target.value) })} mono />
+        </Field>
+      </div>
+    );
+  }
   if (route.target_type === "cgi") {
     const cgi = route.cgi ?? { protocol: "fastcgi" as CgiProtocol, pass: "", root: null, index: null, params: {} };
     const set = (p: Partial<typeof cgi>) => onChange({ cgi: { ...cgi, ...p } });
@@ -365,6 +385,202 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
             )}
           </Section>
         </>
+      )}
+
+      {isProxy && (
+        <Section title="Backend responses (proxy_redirect / proxy_cookie_* / intercept)" hint="Rewrite Location and Set-Cookie coming from the backend">
+          <div>
+            <span className="block text-[11px] font-medium text-content-secondary mb-1.5">proxy_redirect (from → to; "default" or ~regex)</span>
+            <PairListEditor value={route.proxy_redirect ?? []} onChange={(v) => onChange({ proxy_redirect: v })} leftPlaceholder="http://backend:8080/" rightPlaceholder="/app/" addLabel="Add redirect rule" />
+          </div>
+          <div>
+            <span className="block text-[11px] font-medium text-content-secondary mb-1.5">proxy_cookie_path</span>
+            <PairListEditor value={route.proxy_cookie_path ?? []} onChange={(v) => onChange({ proxy_cookie_path: v })} leftPlaceholder="/" rightPlaceholder="/app/" addLabel="Add path rule" />
+          </div>
+          <div>
+            <span className="block text-[11px] font-medium text-content-secondary mb-1.5">proxy_cookie_domain</span>
+            <PairListEditor value={route.proxy_cookie_domain ?? []} onChange={(v) => onChange({ proxy_cookie_domain: v })} leftPlaceholder="internal.local" rightPlaceholder="example.com" addLabel="Add domain rule" />
+          </div>
+          <div>
+            <span className="block text-[11px] font-medium text-content-secondary mb-1.5">proxy_cookie_flags (cookie, ~regex or * → flags)</span>
+            <PairListEditor value={route.proxy_cookie_flags ?? []} onChange={(v) => onChange({ proxy_cookie_flags: v })} leftPlaceholder="*" rightPlaceholder="secure httponly samesite=strict" addLabel="Add flag rule" />
+          </div>
+          <Toggle checked={!!route.proxy_intercept_errors} onChange={(v) => onChange({ proxy_intercept_errors: v })} label="Use the vhost error pages for backend errors (proxy_intercept_errors)" />
+        </Section>
+      )}
+
+      {isProxy && (
+        <Section
+          title="Response cache (proxy_cache)"
+          hint="x-cache-status: HIT, MISS, STALE, UPDATING, REVALIDATED"
+          enabled={!!route.cache}
+          onToggle={(on) =>
+            onChange({
+              cache: on
+                ? { valid_secs: 60, bypass_headers: [], bypass_cookies: [], bypass_query_params: [], use_stale: [], stale_keep_secs: 86400, lock: false, lock_timeout_ms: null, revalidate: false, background_update: false }
+                : null,
+            })
+          }
+        >
+          {route.cache && (() => {
+            const c = route.cache!;
+            const set = (p: Partial<typeof c>) => onChange({ cache: { ...c, ...p } });
+            const STALE = ["error", "timeout", "updating", "http_500", "http_502", "http_503", "http_504", "http_403", "http_404", "http_429"];
+            const csv = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
+            return (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Field label="Valid for (s)">
+                    <Input type="number" value={c.valid_secs} onChange={(e) => set({ valid_secs: parseInt(e.target.value) || 0 })} mono />
+                  </Field>
+                  <Field label="Keep stale (s)">
+                    <Input type="number" value={c.stale_keep_secs} onChange={(e) => set({ stale_keep_secs: parseInt(e.target.value) || 0 })} mono />
+                  </Field>
+                  <Field label="Lock timeout (ms)">
+                    <Input type="number" value={c.lock_timeout_ms ?? ""} onChange={(e) => set({ lock_timeout_ms: num(e.target.value) })} placeholder="5000" mono />
+                  </Field>
+                </div>
+                <div>
+                  <span className="block text-[11px] font-medium text-content-secondary mb-1.5">Serve stale on (proxy_cache_use_stale)</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {STALE.map((s) => {
+                      const on = c.use_stale.includes(s);
+                      return (
+                        <button key={s} type="button" onClick={() => set({ use_stale: on ? c.use_stale.filter((x) => x !== s) : [...c.use_stale, s] })}
+                          className={`px-2 py-1 rounded-md text-[11px] font-mono border transition ${on ? "bg-brand-500/10 text-brand-400 border-brand-500/40" : "bg-surface-2 text-content-muted border-border"}`}>
+                          {s}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-6">
+                  <Toggle checked={c.lock} onChange={(v) => set({ lock: v })} label="Lock (one request fills)" />
+                  <Toggle checked={c.revalidate} onChange={(v) => set({ revalidate: v })} label="Revalidate (If-None-Match)" />
+                  <Toggle checked={c.background_update} onChange={(v) => set({ background_update: v })} label="Background update" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Field label="Bypass headers" hint="comma-separated">
+                    <Input value={c.bypass_headers.join(", ")} onChange={(e) => set({ bypass_headers: csv(e.target.value) })} mono className="text-xs" />
+                  </Field>
+                  <Field label="Bypass cookies">
+                    <Input value={c.bypass_cookies.join(", ")} onChange={(e) => set({ bypass_cookies: csv(e.target.value) })} mono className="text-xs" />
+                  </Field>
+                  <Field label="Bypass query params">
+                    <Input value={c.bypass_query_params.join(", ")} onChange={(e) => set({ bypass_query_params: csv(e.target.value) })} mono className="text-xs" />
+                  </Field>
+                </div>
+              </>
+            );
+          })()}
+        </Section>
+      )}
+
+      <Section
+        title="Allowed methods (limit_except)"
+        hint="Other methods get 403 unless the client IP is allowed; GET also allows HEAD"
+        enabled={!!route.limit_except}
+        onToggle={(on) => onChange({ limit_except: on ? { methods: ["GET"], allow: [] } : null })}
+      >
+        {route.limit_except && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Methods" hint="comma-separated">
+              <Input
+                value={route.limit_except.methods.join(", ")}
+                onChange={(e) => onChange({ limit_except: { ...route.limit_except!, methods: e.target.value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean) } })}
+                mono
+                className="text-xs"
+              />
+            </Field>
+            <div>
+              <span className="block text-xs font-medium text-content-secondary mb-1">IPs allowed any method</span>
+              <StringListEditor value={route.limit_except.allow} onChange={(v) => onChange({ limit_except: { ...route.limit_except!, allow: v } })} placeholder="10.0.0.0/8" />
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section title="Bandwidth (limit_rate)" hint="Bytes per second for each response, after the first N bytes; 0 = off">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Rate (bytes/s)">
+            <Input type="number" value={route.limit_rate ?? 0} onChange={(e) => onChange({ limit_rate: parseInt(e.target.value) || 0 })} mono />
+          </Field>
+          <Field label="After (bytes)">
+            <Input type="number" value={route.limit_rate_after ?? 0} onChange={(e) => onChange({ limit_rate_after: parseInt(e.target.value) || 0 })} mono />
+          </Field>
+        </div>
+      </Section>
+
+      <Section title="Response body (addition / charset / gunzip)">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Field label="add_before_body" hint="URI on this vhost or full URL">
+            <Input value={route.add_before_body ?? ""} onChange={(e) => onChange({ add_before_body: e.target.value || null })} placeholder="/header.html" mono className="text-xs" />
+          </Field>
+          <Field label="add_after_body">
+            <Input value={route.add_after_body ?? ""} onChange={(e) => onChange({ add_after_body: e.target.value || null })} placeholder="/footer.html" mono className="text-xs" />
+          </Field>
+          <Field label="addition_types" hint="comma-separated, besides text/html">
+            <Input value={(route.addition_types ?? []).join(", ")} onChange={(e) => onChange({ addition_types: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} mono className="text-xs" />
+          </Field>
+          <Field label="charset" hint="declared / converted to">
+            <Input value={route.charset ?? ""} onChange={(e) => onChange({ charset: e.target.value || null })} placeholder="utf-8" mono className="text-xs" />
+          </Field>
+          <Field label="source_charset">
+            <Input value={route.source_charset ?? ""} onChange={(e) => onChange({ source_charset: e.target.value || null })} placeholder="windows-1251" mono className="text-xs" />
+          </Field>
+          <Field label="charset_types" hint="comma-separated">
+            <Input value={(route.charset_types ?? []).join(", ")} onChange={(e) => onChange({ charset_types: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} mono className="text-xs" />
+          </Field>
+        </div>
+        <div className="flex flex-wrap gap-6">
+          <Toggle checked={!!route.override_charset} onChange={(v) => onChange({ override_charset: v })} label="override_charset" />
+          <Toggle checked={!!route.gunzip} onChange={(v) => onChange({ gunzip: v })} label="gunzip for clients without gzip" />
+        </div>
+      </Section>
+
+      <Section
+        title="Visitor id cookie (userid)"
+        enabled={!!route.userid}
+        onToggle={(on) => onChange({ userid: on ? { name: "uid", path: "/", expires_secs: 31536000 } : null })}
+      >
+        {route.userid && (
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {(["name", "domain", "path", "flags"] as const).map((k) => (
+              <Field key={k} label={k}>
+                <Input value={(route.userid as any)[k] ?? ""} onChange={(e) => onChange({ userid: { ...route.userid!, [k]: e.target.value || null } })} mono className="text-xs" />
+              </Field>
+            ))}
+            <Field label="Max-Age (s)">
+              <Input type="number" value={route.userid.expires_secs ?? ""} onChange={(e) => onChange({ userid: { ...route.userid!, expires_secs: num(e.target.value) } })} mono />
+            </Field>
+          </div>
+        )}
+      </Section>
+
+      <Section
+        title="CONNECT forward proxy (tunnel_pass)"
+        hint="CONNECT host:port opens a TCP tunnel; keep it private with an IP list"
+        enabled={!!route.tunnel}
+        onToggle={(on) => onChange({ tunnel: on ? { pass: null, allowed_ports: [443], allowed_hosts: [], idle_timeout_ms: null } : null })}
+      >
+        {route.tunnel && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label="Allowed ports" hint="comma-separated">
+              <Input value={route.tunnel.allowed_ports.join(", ")} onChange={(e) => onChange({ tunnel: { ...route.tunnel!, allowed_ports: e.target.value.split(",").map((s) => parseInt(s.trim())).filter((n) => !Number.isNaN(n)) } })} mono />
+            </Field>
+            <Field label="Allowed hosts" hint="comma-separated, *.example.com ok; empty = any">
+              <Input value={route.tunnel.allowed_hosts.join(", ")} onChange={(e) => onChange({ tunnel: { ...route.tunnel!, allowed_hosts: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } })} mono className="text-xs" />
+            </Field>
+            <Field label="Fixed target" hint="host:port; empty = what the client asks">
+              <Input value={route.tunnel.pass ?? ""} onChange={(e) => onChange({ tunnel: { ...route.tunnel!, pass: e.target.value || null } })} mono className="text-xs" />
+            </Field>
+          </div>
+        )}
+      </Section>
+
+      <Section title="1×1 transparent GIF (empty_gif)" enabled={!!route.empty_gif} onToggle={(on) => onChange({ empty_gif: on })} />
+      {isStatic && (
+        <Section title="Random index file (random_index)" hint="A directory request serves a random file from it" enabled={!!route.random_index} onToggle={(on) => onChange({ random_index: on })} />
       )}
 
       <Toggle checked={route.access_log !== false} onChange={(v) => onChange({ access_log: v })} label="Access log" description="Off = this route is not written to logs (access_log off)" />
