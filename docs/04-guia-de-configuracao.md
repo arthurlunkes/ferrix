@@ -105,6 +105,7 @@ websocket_enabled: false
 - `try_files`: Checks for the exact file (`$uri`), then directory index (`$uri/`), falling back to (`/index.html`). Tailor-made for React Router, Vue Router, etc.
 - `autoindex`: `true` lists the directory (HTML, like nginx `autoindex on`) when it has no `index.html`. Default `false`.
 - `target_type: return` + `redirect_code` + `return_body`: fixed response (nginx `return 200 "ok"`). `$scheme`, `$host` and `$request_uri` are expanded.
+- `valid_referers`: list like nginx (`none`, `blocked`, `server_names`, `*.ex.com`, `ex.*`, `ex.com/path`, `~regex`). Other Referers get 403 (the nginx `if ($invalid_referer) { return 403; }` pattern).
 
 ### 3. HTTP Redirect Route
 

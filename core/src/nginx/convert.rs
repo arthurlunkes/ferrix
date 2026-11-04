@@ -1475,6 +1475,9 @@ impl Converter {
                         route.target_type = RouteTargetType::StaticFiles;
                     }
                 }
+                "valid_referers" => {
+                    route.valid_referers = item.args.clone();
+                }
                 "autoindex" => {
                     route.autoindex = item.arg(0) == Some("on");
                 }
