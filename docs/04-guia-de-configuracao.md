@@ -490,3 +490,19 @@ routes:
 - `absolute_redirect` (default `true`): redirects Ferrix builds itself with a relative target (`/new`, directory slash redirects, `rewrite ... redirect`, `return 301 /x`) get `scheme://host`. Backend redirects are untouched (see `proxy_redirect`).
 - `port_in_redirect` (default `true`): keep the Host port in those redirects.
 - `server_name_in_redirect` (default `false`): use the vhost's first concrete server name instead of the Host header.
+
+### Cache: stale, lock, revalidate, background update
+
+Extra `cache:` fields on a proxy route (nginx `proxy_cache_*`):
+
+```yaml
+cache:
+  valid_secs: 60
+  use_stale: [error, timeout, updating, http_500, http_502, http_503, http_504]
+  stale_keep_secs: 86400     # how long expired entries are kept for the options below
+  lock: true                 # proxy_cache_lock: one request fills, the rest wait (lock_timeout_ms, default 5000)
+  revalidate: true           # proxy_cache_revalidate: If-None-Match / If-Modified-Since; 304 refreshes the entry
+  background_update: true    # serve stale (needs "updating") and refresh in the background
+```
+
+`x-cache-status` shows `HIT`, `MISS`, `STALE`, `UPDATING` or `REVALIDATED`.

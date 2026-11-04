@@ -71,7 +71,9 @@ mod tests {
         // 1 KB free, then 4 KB at 10 KB/s: the last 1 KB slice starts ~0.3 s in.
         let resp = apply(Response::new(Body::from(vec![0u8; 5120])), 10_240, 1024);
         let t0 = Instant::now();
-        let b = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let b = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(b.len(), 5120);
         let took = t0.elapsed().as_secs_f64();
         assert!((0.25..0.6).contains(&took), "took {took}");

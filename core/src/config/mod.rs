@@ -986,6 +986,32 @@ pub struct CacheConfig {
 
     #[serde(default)]
     pub bypass_query_params: Vec<String>,
+
+    /// nginx `proxy_cache_use_stale`: error, timeout, updating, http_500,
+    /// http_502, http_503, http_504, http_403, http_404, http_429.
+    #[serde(default)]
+    pub use_stale: Vec<String>,
+    /// How long an expired entry is kept for `use_stale` / `revalidate` (default 1 day).
+    #[serde(default = "default_stale_keep_secs")]
+    pub stale_keep_secs: u64,
+    /// nginx `proxy_cache_lock`: one request fills a missing entry, the others wait.
+    #[serde(default)]
+    pub lock: bool,
+    /// nginx `proxy_cache_lock_timeout` (default 5 s).
+    #[serde(default)]
+    pub lock_timeout_ms: Option<u64>,
+    /// nginx `proxy_cache_revalidate`: refresh expired entries with
+    /// If-None-Match / If-Modified-Since.
+    #[serde(default)]
+    pub revalidate: bool,
+    /// nginx `proxy_cache_background_update`: serve stale and refresh in the
+    /// background (needs `updating` in `use_stale`).
+    #[serde(default)]
+    pub background_update: bool,
+}
+
+fn default_stale_keep_secs() -> u64 {
+    86_400
 }
 
 fn default_cache_valid_secs() -> u64 {
@@ -999,6 +1025,12 @@ impl Default for CacheConfig {
             bypass_headers: Vec::new(),
             bypass_cookies: Vec::new(),
             bypass_query_params: Vec::new(),
+            use_stale: Vec::new(),
+            stale_keep_secs: default_stale_keep_secs(),
+            lock: false,
+            lock_timeout_ms: None,
+            revalidate: false,
+            background_update: false,
         }
     }
 }

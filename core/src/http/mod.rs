@@ -42,7 +42,7 @@ use crate::health::HealthChecker;
 use crate::metrics::logger::RequestLog;
 use crate::metrics::MetricsCollector;
 use access::{AccessControl, AccessDecision};
-use cache::{build_cached_response, cache_bypass_matches, cache_key_for, ResponseCache};
+use cache::{cache_bypass_matches, cache_key_for, ResponseCache};
 use limit_conn::ConnLimiter;
 use limit_req::{RateLimitDecision, RateLimiter};
 use matcher::CompiledConfig;
@@ -964,28 +964,20 @@ impl ProxyEngine {
 
                 if let Some(cfg) = cache_cfg {
                     let key = cache_key_for(vhost, &parts);
-                    if let Some(cached) = self.response_cache.get(&key) {
-                        let mut r = build_cached_response(&cached);
-                        if let Some(v) = crate::http::cache::header_value("HIT") {
-                            r.headers_mut().insert("x-cache-status", v);
-                        }
-                        r
-                    } else {
-                        let restored_req = Request::from_parts(parts, body);
-                        let inner = self
-                            .proxy_http_request(
-                                compiled,
-                                route,
-                                upstream_name,
-                                upstream_cfg,
-                                targets,
-                                is_tls,
-                                client_ip,
-                                restored_req,
-                            )
-                            .await;
-                        Box::pin(self.store_if_cacheable(key, cfg, inner)).await
-                    }
+                    Box::pin(self.serve_with_cache(
+                        compiled,
+                        route,
+                        upstream_name,
+                        upstream_cfg,
+                        targets,
+                        is_tls,
+                        client_ip,
+                        parts,
+                        body,
+                        key,
+                        cfg,
+                    ))
+                    .await
                 } else {
                     let restored_req = Request::from_parts(parts, body);
                     self.proxy_http_request(

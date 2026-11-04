@@ -70,6 +70,9 @@ struct Converter {
     /// (targets for `auth_request` / `mirror`).
     internal_locations: HashMap<String, String>,
 
+    /// proxy_cache_use_stale / _lock / _revalidate / _background_update in scope.
+    cache_tuning: CacheConfig,
+
     cache_enabled: bool,
     cache_valid_secs: u64,
     cache_bypass_headers: Vec<String>,
@@ -104,6 +107,7 @@ impl Converter {
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
             internal_locations: HashMap::new(),
+            cache_tuning: CacheConfig::default(),
             cache_enabled: false,
             cache_valid_secs: 60,
             cache_bypass_headers: Vec::new(),
@@ -672,6 +676,13 @@ impl Converter {
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
             "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "proxy_cache_use_stale"
+            | "proxy_cache_lock"
+            | "proxy_cache_lock_timeout"
+            | "proxy_cache_revalidate"
+            | "proxy_cache_background_update" => {
+                self.apply_cache_tuning(d);
+            }
             "merge_slashes"
             | "absolute_redirect"
             | "port_in_redirect"
@@ -1060,6 +1071,12 @@ impl Converter {
     }
 
     fn convert_server(&mut self, d: &Directive) {
+        let tuning_outside = self.cache_tuning.clone();
+        self.convert_server_inner(d);
+        self.cache_tuning = tuning_outside;
+    }
+
+    fn convert_server_inner(&mut self, d: &Directive) {
         let Some(block) = &d.block else { return };
 
         (
@@ -1131,6 +1148,13 @@ impl Converter {
                         });
                         self.converted(item, "virou um set no vhost");
                     }
+                }
+                "proxy_cache_use_stale"
+                | "proxy_cache_lock"
+                | "proxy_cache_lock_timeout"
+                | "proxy_cache_revalidate"
+                | "proxy_cache_background_update" => {
+                    self.apply_cache_tuning(item);
                 }
                 "server_name" => {
                     vhost.server_names.extend(item.args.iter().cloned());
@@ -1326,9 +1350,16 @@ impl Converter {
                     self.cache_bypass_query,
                 ) = server_cache_state.clone();
 
+                let tuning = self.cache_tuning.clone();
+                for d in item.block.iter().flatten() {
+                    if d.name.starts_with("proxy_cache_") {
+                        self.apply_cache_tuning(d);
+                    }
+                }
                 if let Some(route) = self.convert_location(item, server_root.as_deref()) {
                     vhost.routes.push(route);
                 }
+                self.cache_tuning = tuning;
             }
         }
 
@@ -1687,7 +1718,31 @@ impl Converter {
             bypass_headers: self.cache_bypass_headers.clone(),
             bypass_cookies: self.cache_bypass_cookies.clone(),
             bypass_query_params: self.cache_bypass_query.clone(),
+            use_stale: self.cache_tuning.use_stale.clone(),
+            stale_keep_secs: self.cache_tuning.stale_keep_secs,
+            lock: self.cache_tuning.lock,
+            lock_timeout_ms: self.cache_tuning.lock_timeout_ms,
+            revalidate: self.cache_tuning.revalidate,
+            background_update: self.cache_tuning.background_update,
         })
+    }
+
+    /// Returns true when `d` was a cache-tuning directive.
+    fn apply_cache_tuning(&mut self, d: &Directive) -> bool {
+        let on = d.arg(0) == Some("on");
+        let t = &mut self.cache_tuning;
+        match d.name.as_str() {
+            "proxy_cache_use_stale" => {
+                t.use_stale = d.args.iter().filter(|a| *a != "off").cloned().collect()
+            }
+            "proxy_cache_lock" => t.lock = on,
+            "proxy_cache_lock_timeout" => t.lock_timeout_ms = d.arg(0).and_then(parse_time_ms),
+            "proxy_cache_revalidate" => t.revalidate = on,
+            "proxy_cache_background_update" => t.background_update = on,
+            _ => return false,
+        }
+        self.converted(d, "virou uma opção do cache da rota");
+        true
     }
 
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
@@ -1799,6 +1854,11 @@ impl Converter {
                         }
                     }
                 }
+                "proxy_cache_use_stale"
+                | "proxy_cache_lock"
+                | "proxy_cache_lock_timeout"
+                | "proxy_cache_revalidate"
+                | "proxy_cache_background_update" => {}
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }
