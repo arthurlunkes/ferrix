@@ -38,6 +38,18 @@ impl ConfigStore {
     }
 
     pub fn persist_and_apply(&self, config: FerrixConfig) -> Result<(), String> {
+        let path = std::path::Path::new(&self.path);
+        if path.exists() {
+            let mut backup = path.as_os_str().to_owned();
+            backup.push(".bak");
+            std::fs::copy(path, &backup).map_err(|e| {
+                format!(
+                    "Failed to keep a backup of {} before saving: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+        }
         config.save_to_file(&self.path)?;
         self.apply(config);
         Ok(())
@@ -97,5 +109,22 @@ mod tests {
 
         assert_eq!(held.config.vhosts[0].name, "Default Virtual Host");
         assert_eq!(store.config().vhosts[0].name, "novo");
+    }
+
+    #[test]
+    fn saving_keeps_the_previous_file_as_a_backup() {
+        let dir = std::env::temp_dir().join(format!("ferrix-store-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ferrix.yaml");
+        std::fs::write(&path, "# my notes\nhttp:\n  listen: 0.0.0.0:80\n").unwrap();
+        let store = ConfigStore::new(FerrixConfig::default(), path.to_str().unwrap());
+
+        store.persist_and_apply(FerrixConfig::default()).unwrap();
+
+        let backup = std::fs::read_to_string(dir.join("ferrix.yaml.bak")).unwrap();
+        assert!(backup.starts_with("# my notes"));
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("ferrix.yaml.bak"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

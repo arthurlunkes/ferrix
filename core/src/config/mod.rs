@@ -1001,7 +1001,10 @@ impl ConfigFormat {
 pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../../../ferrix.example.yaml");
 
 const YAML_HEADER: &str = "# Ferrix configuration. Every option is described in\n\
-# https://arthurlunkes.github.io/ferrix (04. Configuration Guide).\n\
+# https://arthurlunkes.github.io/ferrix (04. Configuration Guide); the commented\n\
+# reference with all of them is ferrix.example.yaml (/usr/share/doc/ferrix/ in the\n\
+# packages). When this file is saved from the dashboard, the previous version is\n\
+# kept as ferrix.yaml.bak.\n\
 # Apply changes without a restart: `ferrix reload` (or SIGHUP).\n\n";
 
 impl FerrixConfig {
