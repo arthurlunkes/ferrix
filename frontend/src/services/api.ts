@@ -143,7 +143,7 @@ export interface RouteRule {
   path_prefix: string;
   match_type: RouteMatchType;
   strip_prefix: boolean;
-  target_type: "proxy_upstream" | "static_files" | "redirect" | "return";
+  target_type: "proxy_upstream" | "static_files" | "redirect" | "return" | "cgi";
   upstream_name?: string | null;
   static_root?: string | null;
   try_files?: string | null;

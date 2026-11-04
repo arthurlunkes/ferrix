@@ -430,3 +430,17 @@ routes:
     upstream_name: grpc_backend
     grpc: true
 ```
+
+### FastCGI, SCGI and uwsgi (`target_type: cgi`)
+
+nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept `$document_root`, `$fastcgi_script_name` and `$fastcgi_path_info`. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
+
+```yaml
+routes:
+  - id: php
+    path_prefix: '\.php(/|$)'
+    match_type: regex
+    target_type: cgi
+    static_root: /var/www/html
+    cgi: { protocol: fastcgi, pass: "unix:/run/php/php8.3-fpm.sock", index: index.php }
+```

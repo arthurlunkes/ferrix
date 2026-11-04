@@ -1,4 +1,5 @@
 pub mod balancer;
+pub mod cgi;
 #[cfg(feature = "http2")]
 pub mod grpc;
 pub mod h1;

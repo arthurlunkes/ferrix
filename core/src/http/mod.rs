@@ -406,6 +406,92 @@ impl ProxyEngine {
             .await
     }
 
+    async fn serve_cgi(
+        &self,
+        compiled: &CompiledConfig,
+        route: &RouteRule,
+        parts: axum::http::request::Parts,
+        body: Body,
+        client_ip: IpAddr,
+        is_tls: bool,
+    ) -> Response {
+        let Some(cfg) = &route.cgi else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Misconfigured CGI Route",
+            )
+                .into_response();
+        };
+        let http = &compiled.config.http;
+        let body = match axum::body::to_bytes(body, http.client_max_body_size as usize).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "413 Payload Too Large").into_response()
+            }
+        };
+        // `pass` may name an upstream: use its live targets in order.
+        let addrs: Vec<String> = match compiled.config.upstreams.get(&cfg.pass) {
+            Some(up) => self
+                .pool_manager
+                .select_targets(up, client_ip)
+                .into_iter()
+                .map(|t| t.url.trim_start_matches("http://").to_string())
+                .collect(),
+            None => vec![cfg.pass.clone()],
+        };
+        let root = cfg
+            .root
+            .as_deref()
+            .or(route.static_root.as_deref())
+            .unwrap_or("/var/www/html");
+        let path = if route.strip_prefix {
+            parts
+                .uri
+                .path()
+                .strip_prefix(&route.path_prefix)
+                .unwrap_or(parts.uri.path())
+        } else {
+            parts.uri.path()
+        };
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        let (script, path_info) = upstream::cgi::split_script(&path, cfg.index.as_deref());
+        let params = upstream::cgi::build_params(
+            &parts,
+            root,
+            &script,
+            &path_info,
+            client_ip,
+            is_tls,
+            body.len(),
+            &cfg.params,
+        );
+        let connect = Duration::from_millis(
+            route
+                .proxy_connect_timeout_ms
+                .unwrap_or(http.proxy_connect_timeout_ms),
+        );
+        let read = Duration::from_millis(
+            route
+                .proxy_read_timeout_ms
+                .unwrap_or(http.proxy_read_timeout_ms),
+        );
+        let mut last = String::from("no CGI backend available");
+        for addr in addrs {
+            match upstream::cgi::call(cfg.protocol, &addr, &params, &body, connect, read).await {
+                Ok(r) => return r,
+                Err(e) => {
+                    warn!(backend = %addr, error = %e, "CGI backend failed");
+                    last = e;
+                }
+            }
+        }
+        (StatusCode::BAD_GATEWAY, format!("502 Bad Gateway - {last}")).into_response()
+    }
+
     /// nginx rewrite phase: server-level then route-level `if`/`set`/`rewrite`,
     /// re-matching routes after `rewrite ... last` (at most 10 times, like nginx).
     fn rewrite_phase(
@@ -630,6 +716,9 @@ impl ProxyEngine {
                     r.headers_mut().insert(header::LOCATION, val);
                 }
                 r
+            }
+            RouteTargetType::Cgi => {
+                Box::pin(self.serve_cgi(compiled, route, parts, body, client_ip, is_tls)).await
             }
             RouteTargetType::Return => {
                 let code = route.redirect_code.unwrap_or(200);
