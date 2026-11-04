@@ -270,3 +270,34 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+  update-manifests:
+    name: Update Homebrew and Scoop manifests
+    needs: [check-version, publish-release]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Write the manifests for this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.check-version.outputs.tag_name }}"
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          python3 packaging/update_manifests.py "${{ needs.check-version.outputs.version }}" "$RUNNER_TEMP/SHA256SUMS"
+
+      - name: Commit them
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ferrix.rb packaging/scoop/ferrix.json
+          if git diff --cached --quiet; then
+            echo "Manifests already up to date."
+            exit 0
+          fi
+          git commit -m "chore: Homebrew and Scoop manifests for ${{ needs.check-version.outputs.tag_name }}"
+          git push origin HEAD:main

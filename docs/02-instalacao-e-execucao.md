@@ -140,6 +140,25 @@ An AUR package (`ferrix-bin`) is prepared in `packaging/aur/` and will be publis
 
 Because the service runs as the `ferrix` user, apply changes with `sudo systemctl reload ferrix` (or `sudo ferrix reload`).
 
+## 🍎 Installing on macOS (Homebrew)
+
+```bash
+brew tap arthurlunkes/ferrix https://github.com/arthurlunkes/ferrix
+brew install ferrix
+brew services start ferrix          # run it in the background
+```
+
+The configuration is written on the first start to `$(brew --prefix)/etc/ferrix/ferrix.yaml`; `brew upgrade ferrix` installs new versions. The same formula works with Homebrew on Linux.
+
+## 🪟 Installing on Windows (Scoop)
+
+```powershell
+scoop install https://raw.githubusercontent.com/arthurlunkes/ferrix/main/packaging/scoop/ferrix.json
+ferrix run --config ferrix.yaml
+```
+
+`scoop update ferrix` installs new versions. Without Scoop, `core\scripts\install.ps1` (from a checkout of this repository) installs it under `C:\Program Files\Ferrix`.
+
 ### Switching from a source install
 
 If Ferrix was installed earlier with `./core/scripts/install.sh` (binary in `/usr/local/bin`, unit in `/etc/systemd/system`), remove those first: they take precedence over the package's files, so the old version would keep running. The configuration in `/etc/ferrix` is kept.

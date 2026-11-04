@@ -8,7 +8,8 @@ How Ferrix reaches users' machines, and what a maintainer needs to know to keep 
 2. The **Release** workflow sees a version with no tag yet and:
    - builds the binaries: static Linux (musl) for x86_64 and arm64, macOS and Windows;
    - builds the Linux packages from the static binaries with [nfpm](https://nfpm.goreleaser.com/) (`nfpm.yaml`): `.deb`, `.rpm` and Arch `.pkg.tar.zst`, for amd64 and arm64;
-   - publishes the GitHub release `vX.Y.Z` with every file and a `SHA256SUMS`.
+   - publishes the GitHub release `vX.Y.Z` with every file and a `SHA256SUMS`, the `.rpm` signed with the APT key;
+   - commits the Homebrew formula and the Scoop manifest for the new version.
 3. When the release finishes, the **Deploy Documentation** workflow rebuilds the site at <https://arthurlunkes.github.io/ferrix>: the documentation, `/install.sh` (this folder's `install.sh`) and the APT repository in `/apt`, made from the release's `.deb` files and signed.
 
 ## Files here
@@ -21,6 +22,8 @@ How Ferrix reaches users' machines, and what a maintainer needs to know to keep 
 | `scripts/` | Package install/remove hooks: create the `ferrix` user, start or stop the service |
 | `ferrix-archive-keyring.asc` | Public key of the APT repository |
 | `aur/` | `ferrix-bin` for the AUR (not published yet) |
+| `scoop/ferrix.json` | Scoop manifest (Windows) |
+| `update_manifests.py` | Rewrites `scoop/ferrix.json` and `../Formula/ferrix.rb` (Homebrew) from a release's `SHA256SUMS`; the Release workflow runs it and commits the result |
 
 To build the packages locally, put a static binary in `packaging/build/ferrix` and the built dashboard in `packaging/build/dashboard/`, then run for example `VERSION=0.2.0 ARCH=amd64 nfpm package --config packaging/nfpm.yaml --packager deb`.
 

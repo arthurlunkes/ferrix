@@ -175,6 +175,19 @@ It uses your package manager: the Ferrix APT repository on Debian/Ubuntu (update
 
 From a checkout of this repository, `./core/scripts/install.sh` builds and installs it instead.
 
+#### On macOS (Homebrew)
+
+```bash
+brew tap arthurlunkes/ferrix https://github.com/arthurlunkes/ferrix
+brew install ferrix
+```
+
+#### On Windows (Scoop)
+
+```powershell
+scoop install https://raw.githubusercontent.com/arthurlunkes/ferrix/main/packaging/scoop/ferrix.json
+```
+
 #### On Windows (PowerShell as Administrator):
 
 ```powershell
