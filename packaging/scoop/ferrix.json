@@ -1,0 +1,26 @@
+{
+    "version": "0.2.1",
+    "description": "High-performance web server and reverse proxy written in Rust, inspired by nginx",
+    "homepage": "https://github.com/arthurlunkes/ferrix",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.1/ferrix-v0.2.1-x86_64-pc-windows-msvc.zip",
+            "hash": "0800bab9116c453e65eba47f5d5ab27d8c8d7cfefde313f8d9ccdcceafe41ffa",
+            "extract_dir": "ferrix-v0.2.1-x86_64-pc-windows-msvc"
+        }
+    },
+    "bin": "ferrix.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/arthurlunkes/ferrix/releases/download/v$version/ferrix-v$version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "ferrix-v$version-x86_64-pc-windows-msvc"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/arthurlunkes/ferrix/releases/download/v$version/SHA256SUMS"
+        }
+    }
+}

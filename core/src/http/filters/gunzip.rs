@@ -1,6 +1,3 @@
-//! nginx `gunzip on`: a gzip-encoded response is decompressed for clients
-//! that do not accept gzip (the backend or a pre-compressed file sent gzip).
-
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Response};
 use futures_util::TryStreamExt;

@@ -904,7 +904,6 @@ pub fn tls_connector(verify: bool) -> TlsConnector {
     tls_connector_alpn(verify, b"http/1.1")
 }
 
-/// No-verify (or default-roots) connector that also presents a client certificate.
 pub fn tls_connector_with_client_auth(
     verify: bool,
     auth: super::tls_client::ClientAuth,

@@ -39,7 +39,6 @@ struct Entry {
 pub struct ResponseCache {
     entries: RwLock<HashMap<String, Entry>>,
     seq: std::sync::atomic::AtomicU64,
-    /// Per-key fill locks (proxy_cache_lock / updating).
     locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -52,12 +51,10 @@ impl ResponseCache {
         })
     }
 
-    /// Fresh entries only.
     pub fn get(&self, key: &str) -> Option<CachedResponse> {
         self.get_any(key).filter(|r| r.is_fresh())
     }
 
-    /// Fresh or still-kept stale entry; drops it once the stale window is over.
     pub fn get_any(&self, key: &str) -> Option<CachedResponse> {
         let now = Instant::now();
         {
@@ -74,7 +71,6 @@ impl ResponseCache {
         None
     }
 
-    /// Marks a revalidated entry fresh again.
     pub fn refresh(&self, key: &str, valid_for: Duration, keep_stale: Duration) {
         if let Ok(mut entries) = self.entries.write() {
             if let Some(e) = entries.get_mut(key) {
@@ -89,7 +85,6 @@ impl ResponseCache {
             Ok(l) => l,
             Err(p) => p.into_inner(),
         };
-        // Drop locks nobody holds any more so the map stays small.
         if locks.len() > 1024 {
             locks.retain(|_, l| Arc::strong_count(l) > 1);
         }
@@ -379,8 +374,6 @@ fn keep_stale(cfg: &CacheConfig) -> Duration {
     }
 }
 
-/// Whether `status` (from the backend, or Ferrix's own 502/504 on error /
-/// timeout) lets a stale entry be served instead.
 pub(super) fn stale_allowed(cfg: &CacheConfig, status: u16) -> bool {
     cfg.use_stale.iter().any(|c| match c.as_str() {
         "error" => status == 502,
@@ -402,8 +395,6 @@ fn tag(mut r: Response, status: &str) -> Response {
 }
 
 impl ProxyEngine {
-    /// Cache lookup + fill for a proxied GET/HEAD, with nginx's stale, lock,
-    /// revalidate and background-update behaviour.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn serve_with_cache(
         &self,
@@ -431,7 +422,6 @@ impl ProxyEngine {
             let lock = cache.lock_for(&key);
             match (&stale, lock.clone().try_lock_owned()) {
                 (_, Ok(g)) => _guard = Some(g),
-                // Someone is already refreshing: hand out the stale copy.
                 (Some(s), Err(_)) if updating => return tag(build_cached_response(s), "UPDATING"),
                 (_, Err(_)) => {
                     let wait = Duration::from_millis(cfg.lock_timeout_ms.unwrap_or(5000));
@@ -448,7 +438,6 @@ impl ProxyEngine {
         if let (Some(s), true, Some(guard)) =
             (&stale, cfg.background_update && updating, _guard.take())
         {
-            // Serve stale now; refresh with a plain GET in the background.
             if let Some(target) = targets.first() {
                 let base = target.url.clone();
                 let path = super::build_target_path(&parts.uri, parts.uri.path(), route);
@@ -499,7 +488,6 @@ impl ProxyEngine {
             return tag(build_cached_response(s), "UPDATING");
         }
 
-        // proxy_cache_revalidate: ask with the validators of the stale copy.
         let mut added_validators = false;
         if let (true, Some(s)) = (cfg.revalidate, &stale) {
             let client_asked = parts.headers.contains_key(header::IF_NONE_MATCH)
@@ -810,7 +798,6 @@ mod stale_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Backend that answers 304 to conditional requests and 200 "v1" otherwise.
     async fn backend(hits: Arc<AtomicUsize>) -> String {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
@@ -914,13 +901,11 @@ mod stale_tests {
             ..Default::default()
         };
         assert_eq!(get(&e, &url, &cfg).await, ("MISS".into(), "v1".into()));
-        // Expired at once: revalidated with If-None-Match → 304 → cached body.
         assert_eq!(
             get(&e, &url, &cfg).await,
             ("REVALIDATED".into(), "v1".into())
         );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
-        // Backend gone: the stale copy is served.
         assert_eq!(
             get(&e, "http://127.0.0.1:1", &cfg).await,
             ("STALE".into(), "v1".into())

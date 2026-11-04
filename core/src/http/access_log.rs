@@ -1,8 +1,3 @@
-//! nginx `ngx_http_log_module`: `access_log <path> <format>` written to a file.
-//!
-//! Each file has one writer thread fed by a channel, so a request only formats
-//! its line and sends it; the disk write never blocks the event loop.
-
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::mpsc::{self, Sender};
@@ -10,11 +5,9 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::metrics::logger::RequestLog;
 
-/// nginx's predefined `combined` format.
 pub const COMBINED: &str = "$remote_addr - $remote_user [$time_local] \"$request\" $status \
 $body_bytes_sent \"$http_referer\" \"$http_user_agent\"";
 
-/// Request data the access log needs beyond [`RequestLog`].
 pub struct Extra<'a> {
     pub referer: &'a str,
     pub remote_user: &'a str,
@@ -42,7 +35,6 @@ fn writer_for(path: &str) -> Option<Sender<String>> {
             let mut w = std::io::BufWriter::new(file);
             while let Ok(line) = rx.recv() {
                 let _ = w.write_all(line.as_bytes());
-                // Drain whatever is queued, then flush once.
                 while let Ok(more) = rx.try_recv() {
                     let _ = w.write_all(more.as_bytes());
                 }
@@ -74,7 +66,6 @@ fn dash(s: &str) -> &str {
     }
 }
 
-/// Expands nginx log variables. Unknown variables are left as they are.
 pub fn render(format: &str, log: &RequestLog, extra: &Extra<'_>) -> String {
     let fmt = if format.is_empty() || format == "combined" {
         COMBINED

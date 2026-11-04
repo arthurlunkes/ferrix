@@ -19,7 +19,7 @@ dist/
 # machine bindings.
 # A default configuration is automatically generated on first run.
 ferrix.yaml
-ferrix.json
+/ferrix.json
 ferrix.log
 .ferrix.pid
 *.log

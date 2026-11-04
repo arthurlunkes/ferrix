@@ -66,11 +66,8 @@ struct Converter {
 
     stream_maps: HashMap<String, HashMap<String, String>>,
 
-    /// Per server: location path → full backend URL of its proxy_pass
-    /// (targets for `auth_request` / `mirror`).
     internal_locations: HashMap<String, String>,
 
-    /// proxy_cache_use_stale / _lock / _revalidate / _background_update in scope.
     cache_tuning: CacheConfig,
 
     cache_enabled: bool,
@@ -420,7 +417,7 @@ impl Converter {
         let mut ssl_key: Option<String> = None;
         let mut proxy_ssl = false;
         let mut up_tls = crate::config::StreamUpstreamTls {
-            verify: false, // nginx default for proxy_ssl_verify
+            verify: false,
             ..Default::default()
         };
         for item in block {
@@ -575,12 +572,10 @@ impl Converter {
         self.converted(d, "virou um proxy TCP/UDP em streams");
     }
 
-    /// `http://upstream_name/uri` → `<first target>/uri`; plain URLs as they are.
     fn resolve_pass_url(&self, pass: &str) -> Option<String> {
         let rest = pass
             .strip_prefix("http://")
             .or_else(|| pass.strip_prefix("https://"))?;
-        // A trailing $request_uri is what Ferrix sends anyway.
         let rest = rest.strip_suffix("$request_uri").unwrap_or(rest);
         if rest.contains('$') {
             return None;
@@ -661,7 +656,6 @@ impl Converter {
         Some(c)
     }
 
-    /// `map`, `geo` and `split_clients` at http level → `http.variables`.
     fn convert_variable(&mut self, d: &Directive) {
         use crate::config::{GeoRange, MapEntry, SplitBucket, VariableDef};
         let entries = d.block.as_deref().unwrap_or(&[]);
@@ -731,7 +725,6 @@ impl Converter {
         self.converted(d, "virou http.variables");
     }
 
-    /// http2_* / http3_* limits (http or server level, global in Ferrix).
     fn apply_protocol_limit(&mut self, d: &Directive) -> bool {
         let size = d
             .arg(0)
@@ -1932,7 +1925,6 @@ impl Converter {
         })
     }
 
-    /// Returns true when `d` was a cache-tuning directive.
     fn apply_cache_tuning(&mut self, d: &Directive) -> bool {
         let on = d.arg(0) == Some("on");
         let t = &mut self.cache_tuning;
@@ -2018,7 +2010,6 @@ impl Converter {
                     None => self.note_unsupported(item),
                 },
                 "auth_request_set" => {
-                    // auth_request_set $x $upstream_http_x_user; → copy X-User.
                     if let Some(h) = item.arg(1).and_then(|v| v.strip_prefix("$upstream_http_")) {
                         route
                             .auth_request
@@ -2031,8 +2022,6 @@ impl Converter {
                     Some("off") | None => {}
                     Some(path) => match self.internal_locations.get(path) {
                         Some(url) => {
-                            // The mirror location's proxy_pass usually ends in $request_uri;
-                            // Ferrix appends the request URI itself.
                             let base = url
                                 .split('$')
                                 .next()
@@ -2205,7 +2194,6 @@ impl Converter {
                 "ssi_types" => route.ssi_types = item.args.clone(),
                 "empty_gif" => {
                     route.empty_gif = true;
-                    // A target that validates on its own; empty_gif answers first.
                     route.target_type = RouteTargetType::Return;
                     route.redirect_code = Some(200);
                     has_target = true;
@@ -2308,7 +2296,6 @@ impl Converter {
                         .create_full_put_path = item.arg(0) == Some("on");
                 }
                 "dav_access" => {
-                    // `user:rw group:r all:r` → 0o644
                     let mut mode = 0u32;
                     for a in &item.args {
                         let (who, perm) = a.split_once(':').unwrap_or(("", ""));
@@ -2399,7 +2386,6 @@ impl Converter {
                     }
                 }
                 "secure_link" => {
-                    // `secure_link $arg_md5,$arg_expires;`
                     let a = item.arg(0).unwrap_or("");
                     let mut parts = a.split(',').map(|p| p.trim().trim_start_matches("$arg_"));
                     let sl = route.secure_link.get_or_insert_with(Default::default);

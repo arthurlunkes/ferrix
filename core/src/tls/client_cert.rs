@@ -1,15 +1,8 @@
-//! Client certificates (nginx `ssl_verify_client`, `ssl_client_certificate`).
-//!
-//! The TLS listener asks for a certificate when any vhost on that port wants
-//! one, verifying it against the union of their CAs but never failing the
-//! handshake itself; each vhost then enforces its own mode on the request.
-
 use base64::Engine;
 use std::sync::Arc;
 
 use crate::config::{ClientVerify, FerrixConfig};
 
-/// What the request knows about the client's certificate.
 #[derive(Debug, Clone)]
 pub struct ClientCert {
     pub der: Vec<u8>,
@@ -27,7 +20,6 @@ impl ClientCert {
         }
     }
 
-    /// nginx `$ssl_client_escaped_cert`: URL-escaped PEM.
     pub fn escaped_pem(&self) -> String {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&self.der);
         let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
@@ -61,7 +53,6 @@ fn names(_der: &[u8]) -> (String, String) {
     (String::new(), String::new())
 }
 
-/// Client verifier for a TLS port, or `None` when no vhost there asks for one.
 pub fn verifier_for_port(
     config: &FerrixConfig,
     port: u16,

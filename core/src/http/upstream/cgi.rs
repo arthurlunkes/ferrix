@@ -1,8 +1,3 @@
-//! nginx `fastcgi_pass`, `scgi_pass` and `uwsgi_pass`: run the request through
-//! a CGI-style application server (PHP-FPM, Python, ...) over TCP or a unix
-//! socket. The request body is buffered (like nginx's default) and the reply is
-//! parsed as CGI output (`Status:` + headers) or a full HTTP response.
-
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use std::collections::HashMap;
@@ -11,7 +6,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::config::CgiProtocol;
 
-/// Max reply size kept in memory.
 const MAX_REPLY: usize = 64 << 20;
 
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -35,8 +29,6 @@ async fn connect(addr: &str, timeout: Duration) -> std::io::Result<Box<dyn Io>> 
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"))?
 }
-
-// ---------- FastCGI ----------
 
 const FCGI_BEGIN: u8 = 1;
 const FCGI_END: u8 = 3;
@@ -64,7 +56,7 @@ fn fcgi_len(out: &mut Vec<u8>, n: usize) {
 
 pub fn fastcgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(512 + body.len());
-    fcgi_record(&mut out, FCGI_BEGIN, &[0, 1, 0, 0, 0, 0, 0, 0]); // responder, no keep-conn
+    fcgi_record(&mut out, FCGI_BEGIN, &[0, 1, 0, 0, 0, 0, 0, 0]);
     let mut p = Vec::new();
     for (k, v) in params {
         fcgi_len(&mut p, k.len());
@@ -113,11 +105,8 @@ async fn fastcgi_read(io: &mut (dyn Io + '_)) -> std::io::Result<Vec<u8>> {
     }
 }
 
-// ---------- SCGI ----------
-
 pub fn scgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     let mut h = Vec::new();
-    // CONTENT_LENGTH must come first, then SCGI=1.
     let cl = params
         .iter()
         .find(|(k, _)| k == "CONTENT_LENGTH")
@@ -143,8 +132,6 @@ pub fn scgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     out
 }
 
-// ---------- uwsgi ----------
-
 pub fn uwsgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     let mut vars = Vec::new();
     for (k, v) in params {
@@ -161,9 +148,6 @@ pub fn uwsgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     out
 }
 
-// ---------- reply ----------
-
-/// Parses CGI output (`Status: 404 ...` + headers) or an HTTP/1.x response.
 pub fn parse_reply(raw: &[u8]) -> Result<Response<Body>, String> {
     let split = raw
         .windows(4)
@@ -204,7 +188,6 @@ pub fn parse_reply(raw: &[u8]) -> Result<Response<Body>, String> {
             headers.append(n, v);
         }
     }
-    // CGI: a Location without Status means 302.
     if status == StatusCode::OK && headers.contains_key(axum::http::header::LOCATION) {
         status = StatusCode::FOUND;
     }
@@ -256,7 +239,6 @@ pub async fn call(
     parse_reply(&raw)
 }
 
-/// Builds the CGI/1.1 environment nginx's `fastcgi_params` would send.
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
     parts: &axum::http::request::Parts,
@@ -348,7 +330,6 @@ pub fn build_params(
     p
 }
 
-/// nginx `fastcgi_split_path_info ^(.+\.php)(/.+)$` + `fastcgi_index`.
 pub fn split_script(path: &str, index: Option<&str>) -> (String, String) {
     if path.ends_with('/') {
         return (
@@ -414,7 +395,6 @@ mod tests {
         let addr = l.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut s, _) = l.accept().await.unwrap();
-            // Read until the empty STDIN record.
             let mut got = Vec::new();
             let mut buf = [0u8; 4096];
             loop {

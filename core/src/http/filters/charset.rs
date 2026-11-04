@@ -1,7 +1,3 @@
-//! nginx `charset` / `source_charset` / `override_charset` / `charset_types`:
-//! declare the charset of text responses and, when the source differs,
-//! convert the body (e.g. windows-1251 → utf-8).
-
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Response};
 
@@ -42,9 +38,7 @@ pub async fn apply(route: &RouteRule, resp: Response<Body>) -> Response<Body> {
             .map(|c| c.trim_matches('"').to_string())
     });
 
-    // Which charset is the body in?
     let source = match (&declared, route.override_charset) {
-        // Already declared and not overridden: leave it alone.
         (Some(_), false) => return resp,
         (Some(d), true) => Some(d.clone()),
         (None, _) => route.source_charset.clone(),
@@ -111,7 +105,6 @@ mod tests {
         let b = axum::body::to_bytes(out.into_body(), 1024).await.unwrap();
         assert_eq!(std::str::from_utf8(&b).unwrap(), "Привет");
 
-        // Declared and not overridden: untouched.
         let out = apply(&r, resp("text/html; charset=iso-8859-1", b"x")).await;
         assert_eq!(
             out.headers()[header::CONTENT_TYPE],

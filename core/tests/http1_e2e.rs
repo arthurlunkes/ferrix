@@ -375,7 +375,6 @@ async fn head_requests_get_no_body() {
 
 #[tokio::test]
 async fn connect_tunnel_relays_bytes() {
-    // Echo server the client tunnels to.
     let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let echo_port = echo.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -408,7 +407,6 @@ async fn connect_tunnel_relays_bytes() {
         .unwrap();
     assert_eq!(&buf[..n], b"ping");
 
-    // A port that is not allowed is refused.
     let r = request(addr, "CONNECT 127.0.0.1:22 HTTP/1.1\r\nHost: x\r\n\r\n").await;
     assert_eq!(r.status, 403);
 }

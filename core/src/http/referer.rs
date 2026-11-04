@@ -1,9 +1,3 @@
-//! nginx `ngx_http_referer_module` (`valid_referers`): blocks hotlinking.
-//!
-//! Entries: `none` (no Referer), `blocked` (Referer without a scheme),
-//! `server_names` (the vhost's names), `host`, `*.host`, `host.*`, `host/path`
-//! prefix, and `~regex` (matched against the Referer without its scheme).
-
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
@@ -37,7 +31,6 @@ fn host_matches(pattern: &str, host: &str) -> bool {
     }
 }
 
-/// `true` when the request may proceed.
 pub fn is_valid(rules: &[String], referer: Option<&str>, server_names: &[String]) -> bool {
     let Some(referer) = referer.filter(|r| !r.is_empty()) else {
         return rules.iter().any(|r| r == "none");
@@ -76,7 +69,7 @@ mod tests {
         let names = rules(&["ex.com"]);
         let r = rules(&["none", "blocked", "server_names", "*.cdn.net", "~google\\."]);
         assert!(is_valid(&r, None, &names));
-        assert!(is_valid(&r, Some("ex.com/x"), &names)); // blocked
+        assert!(is_valid(&r, Some("ex.com/x"), &names));
         assert!(is_valid(&r, Some("https://ex.com/page"), &names));
         assert!(is_valid(&r, Some("http://a.cdn.net:8080/"), &names));
         assert!(!is_valid(&r, Some("http://cdn.net/"), &names));

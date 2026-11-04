@@ -1,6 +1,3 @@
-//! nginx `ngx_http_dav_module`: PUT, DELETE, MKCOL, COPY and MOVE on a static
-//! root. Paths are confined to the root (no `..`, no symlink escape).
-
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Method, Response, StatusCode};
 use axum::response::IntoResponse;
@@ -14,7 +11,6 @@ pub fn handles(cfg: &DavConfig, method: &Method) -> bool {
         .any(|m| m.eq_ignore_ascii_case(method.as_str()))
 }
 
-/// Joins a URL path onto root, rejecting `..` and absolute components.
 fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
     let decoded = percent_decode(url_path);
     let mut out = root.to_path_buf();
@@ -46,7 +42,6 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The parent must exist inside the (canonical) root.
 fn inside_root(root: &Path, p: &Path) -> bool {
     let (Ok(root), Some(parent)) = (root.canonicalize(), p.parent()) else {
         return false;
@@ -66,7 +61,6 @@ fn status(code: StatusCode) -> Response<Body> {
 
 fn destination(headers: &HeaderMap) -> Option<String> {
     let d = headers.get("destination")?.to_str().ok()?;
-    // Absolute URL or path: keep only the path.
     let path = match d.find("://") {
         Some(i) => &d[i + 3..][d[i + 3..].find('/').unwrap_or(d.len() - i - 3)..],
         None => d,
@@ -125,7 +119,6 @@ pub async fn handle(
                 Ok(b) => b,
                 Err(_) => return status(StatusCode::PAYLOAD_TOO_LARGE),
             };
-            // Write to a temp file and rename, so readers never see half a file.
             let tmp = target.with_extension(format!("ferrix-put-{}", uuid::Uuid::new_v4()));
             if tokio::fs::write(&tmp, &bytes).await.is_err()
                 || tokio::fs::rename(&tmp, &target).await.is_err()

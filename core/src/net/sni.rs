@@ -1,7 +1,3 @@
-//! Server Name from a TLS ClientHello, for nginx `ssl_preread` routing.
-
-/// Returns `Ok(Some(name))`, `Ok(None)` (complete hello without SNI / not TLS),
-/// or `Err(())` when more bytes are needed.
 #[allow(clippy::result_unit_err)]
 pub fn parse(buf: &[u8]) -> Result<Option<String>, ()> {
     if buf.is_empty() {
@@ -25,7 +21,7 @@ fn parse_hello(h: &[u8]) -> Option<String> {
     if r.u8()? != 1 {
         return None;
     }
-    r.skip(3 + 2 + 32)?; // length, version, random
+    r.skip(3 + 2 + 32)?;
     let sid = r.u8()? as usize;
     r.skip(sid)?;
     let cs = r.u16()? as usize;
@@ -81,7 +77,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Picks the value for `name`: exact, then `*.suffix`, then `default`.
 pub fn lookup<'a>(
     map: &'a std::collections::HashMap<String, String>,
     name: Option<&str>,

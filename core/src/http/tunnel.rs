@@ -1,7 +1,3 @@
-//! nginx `tunnel_pass` (ngx_http_tunnel_module): HTTP CONNECT forward proxy.
-//! The client asks `CONNECT host:port`; Ferrix opens a TCP connection there
-//! (or to a fixed `pass` target), answers 200 and relays bytes both ways.
-
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use axum::response::IntoResponse;
@@ -11,7 +7,6 @@ use tokio::net::TcpStream;
 
 use crate::config::TunnelConfig;
 
-/// `host:port` the client wants, if it is allowed.
 pub fn target(cfg: &TunnelConfig, req: &Request<Body>) -> Result<String, StatusCode> {
     if let Some(p) = &cfg.pass {
         return Ok(p.clone());

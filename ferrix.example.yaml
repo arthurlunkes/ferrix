@@ -66,6 +66,46 @@ http:
   #   max_file_bytes: 1048576     ## 0 turns the cache off
   #   max_total_bytes: 67108864
 
+  ## Access log file (nginx `log_format` + `access_log`): combined, or your own format.
+  # access_log:
+  #   path: /var/log/ferrix/access.log
+  #   format: combined
+
+  ## URL and redirect handling (nginx defaults).
+  # merge_slashes: true
+  # absolute_redirect: true
+  # port_in_redirect: true
+  # server_name_in_redirect: false
+
+  ## Every connection starts with a PROXY protocol header (behind an AWS NLB or HAProxy).
+  # proxy_protocol: false
+
+  ## HTTP/2 and HTTP/3 limits; leave out for the defaults.
+  # http2:
+  #   max_concurrent_streams: 200
+  #   max_header_list_size: 65536
+  #   initial_stream_window: 1048576
+  #   initial_connection_window: 2097152
+  #   max_frame_size: 16384
+  #   keepalive_interval_ms: 30000
+  # http3:
+  #   max_concurrent_streams: 100
+  #   stream_buffer_size: 1048576
+  #   idle_timeout_ms: 30000
+
+  ## Country, city and ASN variables from MaxMind .mmdb databases ($geoip_country_code...).
+  # geoip:
+  #   country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
+  #   city_db: /usr/share/GeoIP/GeoLite2-City.mmdb
+  #   asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
+
+  ## Variables (nginx map, geo, split_clients), usable in routes as $name.
+  # variables:
+  #   is_bot: { type: map, source: $http_user_agent, entries: [{ pattern: "~*bot", value: "1" }], default: "0" }
+  #   network: { type: geo, ranges: [{ network: 10.0.0.0/8, value: lan }], default: wan }
+  #   canary: { type: split_clients, source: $remote_addr, buckets: [{ percent: 10, value: v2 }, { percent: 0, value: v1 }] }
+  #   user_id: { type: json, source: $request_body, path: user.id }
+
 ## -----------------------------------------------------------------------------
 ## admin: REST API and web dashboard
 ## -----------------------------------------------------------------------------
@@ -131,6 +171,17 @@ upstreams:
     ## Key for consistent_hash: $remote_addr, $request_uri, $uri, $host,
     ## $http_<header>, $cookie_<name> or $arg_<name>.
     # hash_key: $remote_addr
+    ## Keep each client on the same server with a cookie.
+    # sticky:
+    #   cookie: srv_id
+    #   path: /
+    #   max_age_secs: 3600
+    ## TLS towards https:// targets: client certificate, own CA, SNI name.
+    # tls:
+    #   client_cert: /etc/ferrix/certs/client.pem
+    #   client_key: /etc/ferrix/certs/client.key
+    #   trusted_ca: /etc/ferrix/certs/backend-ca.pem
+    #   server_name: backend.internal
 
 ## -----------------------------------------------------------------------------
 ## vhosts: sites, like nginx `server {}` blocks
@@ -148,6 +199,9 @@ vhosts:
     #   cert_path: /etc/ferrix/certs/example.com.crt
     #   key_path: /etc/ferrix/certs/example.com.key
     #   acme: false
+    #   verify_client: off          ## off, on or optional (client certificates)
+    #   client_ca: /etc/ferrix/certs/clients-ca.pem
+    #   ocsp_file: /etc/ferrix/certs/example.com.ocsp
 
     ## Headers added to every response of this site.
     # headers:
@@ -177,6 +231,12 @@ vhosts:
     # error_pages:
     #   "404": /var/www/errors/404.html
     #   5xx: /var/www/errors/50x.html
+
+    ## Rewrites and if-conditions that run before route matching.
+    # rewrites:
+    #   - { pattern: "^/old/(.*)$", replacement: "/new/$1", flag: permanent }   ## last, break, redirect, permanent
+    # conditions:
+    #   - { condition: "$is_bot", return_code: 403 }
 
     routes:
       ## With no route for "/", Ferrix shows its welcome page there.
@@ -217,6 +277,12 @@ vhosts:
         #   bypass_headers: [Authorization]
         #   bypass_cookies: [session]
         #   bypass_query_params: [nocache]
+        #   use_stale: [error, timeout, updating, http_500, http_502, http_503, http_504]
+        #   stale_keep_secs: 86400
+        #   lock: true
+        #   lock_timeout_ms: 5000
+        #   revalidate: true
+        #   background_update: true
 
         ## Compress this route even when http.compression is off (or the other way round).
         # compression: true
@@ -237,12 +303,93 @@ vhosts:
         #   requests_per_second: 5
         #   burst: 10
 
+        ## nginx rewrite, if and set for this route.
+        # rewrites:
+        #   - { pattern: "^/v1/(.*)$", replacement: "/$1", flag: break }
+        # conditions:
+        #   - { condition: "$request_method = DELETE", return_code: 405 }
+        #   - { condition: "$http_x_legacy", return_code: 302, return_value: "https://old.example.com$request_uri" }
+        #   - { condition: "-f $request_filename", rewrite: { pattern: "^(.*)$", replacement: "/static$1", flag: last } }
+        # set: [["$tier", "$network"]]
+
+        ## Only these methods, unless the client IP is allowed.
+        # limit_except:
+        #   methods: [GET, POST]
+        #   allow: [10.0.0.0/8]
+        ## Bandwidth per response, after the first bytes.
+        # limit_rate: 102400
+        # limit_rate_after: 1048576
+        ## Hotlink protection and signed, expiring links.
+        # valid_referers: [none, blocked, server_names, "*.example.com"]
+        # secure_link:
+        #   md5: "$secure_link_expires$uri secret"
+        #   hash_arg: md5
+        #   expires_arg: expires
+
+        ## Ask an auth service first; 2xx lets the request through.
+        # auth_request:
+        #   url: http://127.0.0.1:9000/auth
+        #   set_headers: [X-User]
+        #   timeout_ms: 2000
+        ## Send a copy of each request elsewhere and ignore its response.
+        # mirror: [http://127.0.0.1:8080]
+        ## Rewrite Location headers and cookies coming from the upstream.
+        # proxy_redirect: [[default, default]]
+        # proxy_cookie_path: [[/app/, /]]
+        # proxy_cookie_domain: [[backend.internal, example.com]]
+        # proxy_cookie_flags: [["*", "secure httponly samesite=lax"]]
+        ## Upstream errors (>= 400) use this vhost's error_pages.
+        # proxy_intercept_errors: false
+        ## Proxy gRPC over HTTP/2 to the upstream.
+        # grpc: false
+        ## CONNECT tunnels (forward proxy).
+        # tunnel:
+        #   allowed_ports: [443]
+        #   allowed_hosts: ["*.example.com"]
+        #   idle_timeout_ms: 600000
+
+        ## Response filters.
+        # sub_filter:
+        #   replacements: [["http://old.example.com", "https://example.com"]]
+        #   once: true
+        #   types: [text/css]
+        # add_before_body: /header.html
+        # add_after_body: /footer.html
+        # addition_types: [text/plain]
+        # charset: utf-8
+        # source_charset: windows-1251
+        # override_charset: false
+        # charset_types: [text/xml]
+        # gunzip: false               ## decompress for clients without gzip
+        # ssi: false
+        # ssi_types: [text/shtml]
+        # userid:
+        #   name: uid
+        #   domain: example.com
+        #   path: /
+        #   expires_secs: 31536000
+        #   flags: "Secure HttpOnly"
+        # image_filter:               ## needs a build with --features image-filter
+        #   op: resize                ## resize, crop, rotate, size or test
+        #   width: 300
+        #   height: 0
+        #   jpeg_quality: 80
+        #   rotate: 90                ## for op: rotate (90, 180 or 270)
+        #   buffer_bytes: 5242880     ## largest image read, in bytes
+
       ## Static files: serve a folder (like nginx `root` + `try_files`).
       # - id: site
       #   path_prefix: /
       #   target_type: static_files
       #   static_root: /var/www/html
       #   try_files: $uri $uri/ /index.html
+      #   autoindex: false            ## list folders without an index.html
+      #   random_index: false
+      #   flv: false                  ## FLV pseudo-streaming (?start=)
+      #   dav:                        ## WebDAV uploads
+      #     methods: [PUT, DELETE, MKCOL, COPY, MOVE]
+      #     create_full_put_path: true
+      #     access: 0o644             ## permissions of created files
 
       ## Redirect: /old -> https://example.com/new
       # - id: old
@@ -250,6 +397,43 @@ vhosts:
       #   target_type: redirect
       #   redirect_url: https://example.com/new
       #   redirect_code: 301
+
+      ## Fixed response (nginx `return 200 "ok"`).
+      # - id: health
+      #   path_prefix: /healthz
+      #   match_type: exact
+      #   target_type: return
+      #   redirect_code: 200
+      #   return_body: ok
+
+      ## 1x1 transparent GIF (nginx empty_gif).
+      # - id: pixel
+      #   path_prefix: /pixel.gif
+      #   target_type: return
+      #   empty_gif: true
+
+      ## PHP-FPM and other FastCGI, SCGI or uWSGI apps.
+      # - id: php
+      #   path_prefix: '\.php(/|$)'
+      #   match_type: regex
+      #   target_type: cgi
+      #   static_root: /var/www/html
+      #   cgi:
+      #     protocol: fastcgi         ## fastcgi, scgi or uwsgi
+      #     pass: "unix:/run/php/php8.3-fpm.sock"
+      #     index: index.php
+      #     root: /var/www/html         ## overrides static_root for SCRIPT_FILENAME
+      #     params: { APP_ENV: production }
+
+      ## Pages served from memcached.
+      # - id: cached-pages
+      #   path_prefix: /cached
+      #   target_type: memcached
+      #   memcached:
+      #     pass: "127.0.0.1:11211"
+      #     key: "$uri?$args"
+      #     content_type: text/html
+      #     gzip_flag: 2
 
 ## -----------------------------------------------------------------------------
 ## streams: TCP/UDP proxying (nginx `stream {}`), e.g. databases or DNS
@@ -261,3 +445,15 @@ vhosts:
 #     upstream: backend           ## an upstream whose targets are host:port
 #     connect_timeout_ms: 5000
 #     idle_timeout_ms: 600000
+#     accept_proxy_protocol: false
+#     send_proxy_protocol: false
+#     upload_rate: 0              ## bytes per second, 0 = unlimited
+#     download_rate: 0
+#     ## TLS towards the upstream.
+#     upstream_tls:
+#       verify: true
+#       server_name: db.internal
+#     ## Route by TLS SNI name to different upstreams (instead of `upstream`).
+#     sni_routes: { api.example.com: backend, default: backend }
+#     ## Or answer with fixed text and close (nginx `return` in a stream).
+#     # return_text: "maintenance"

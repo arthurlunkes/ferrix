@@ -1,7 +1,3 @@
-//! HAProxy PROXY protocol v1 (text) and v2 (binary): read the real client
-//! address that a load balancer puts in front of a connection, and write one
-//! towards a backend (nginx `listen ... proxy_protocol` / `proxy_protocol on`).
-
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -16,9 +12,6 @@ fn bad(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("PROXY protocol: {msg}"))
 }
 
-/// Parses a complete header at the start of `buf`.
-/// `Ok(Some((len, addr)))`: header of `len` bytes, source `addr` (None for
-/// LOCAL/UNKNOWN). `Ok(None)`: need more bytes.
 pub fn parse(buf: &[u8]) -> io::Result<Option<(usize, Option<SocketAddr>)>> {
     if buf.len() >= 12 && buf[..12] == V2_SIG {
         if buf.len() < 16 {
@@ -32,7 +25,7 @@ pub fn parse(buf: &[u8]) -> io::Result<Option<(usize, Option<SocketAddr>)>> {
         let fam = buf[13] >> 4;
         let body = &buf[16..len];
         if cmd == 0 {
-            return Ok(Some((len, None))); // LOCAL (health checks)
+            return Ok(Some((len, None)));
         }
         let addr = match fam {
             1 if body.len() >= 12 => Some(SocketAddr::new(
@@ -81,8 +74,6 @@ pub fn parse(buf: &[u8]) -> io::Result<Option<(usize, Option<SocketAddr>)>> {
     Ok(Some((end + 2, addr)))
 }
 
-/// Reads and consumes the header from `tcp` (peeking first, so no payload
-/// byte is lost). Returns the client address it announced, if any.
 pub async fn read(tcp: &mut TcpStream, timeout: Duration) -> io::Result<Option<SocketAddr>> {
     let fut = async {
         let mut buf = [0u8; 536];
@@ -107,7 +98,6 @@ pub async fn read(tcp: &mut TcpStream, timeout: Duration) -> io::Result<Option<S
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "PROXY protocol header timed out"))?
 }
 
-/// v1 header announcing `src` → `dst`.
 pub fn v1_header(src: SocketAddr, dst: SocketAddr) -> String {
     let (src, dst) = match (src, dst) {
         (SocketAddr::V4(_), SocketAddr::V6(d)) => {

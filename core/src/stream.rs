@@ -89,11 +89,9 @@ fn tls_acceptor(cert: &str, key: &str) -> Result<tokio_rustls::TlsAcceptor, Stri
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
 }
 
-/// Any byte stream (plain TCP or TLS) on either side of a stream session.
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
-/// Counts a client's open connections for `limit_conn`; released on drop.
 struct ConnSlot<'a> {
     map: &'a std::sync::Mutex<HashMap<std::net::IpAddr, u32>>,
     ip: std::net::IpAddr,
@@ -134,12 +132,10 @@ async fn handle_tcp(
         }
     }
 
-    // allow / deny (nginx stream access module).
     if !crate::http::access::AccessControl::is_ip_allowed(addr.ip(), &acl.0, &acl.1) {
         return Err("denied by allow/deny".into());
     }
 
-    // limit_conn per client IP.
     let _slot = match stream.limit_conn {
         Some(max) => {
             let mut m = per_ip.lock().map_err(|_| "limit_conn lock")?;
@@ -156,7 +152,6 @@ async fn handle_tcp(
         None => None,
     };
 
-    // SNI is read before TLS is terminated (or when it passes through).
     let upstream_name = if stream.sni_routes.is_empty() {
         stream.upstream.clone()
     } else {
@@ -218,7 +213,6 @@ async fn handle_tcp(
     Err(last_err)
 }
 
-/// TCP connect + optional PROXY header + optional TLS (proxy_ssl).
 async fn connect_upstream(
     stream: &StreamConfig,
     dest: &str,
@@ -260,7 +254,6 @@ async fn connect_upstream(
     Ok(Box::new(tls))
 }
 
-/// Peeks (without consuming) the ClientHello and returns its server name.
 async fn preread_sni(client: &TcpStream, timeout: Duration) -> Option<String> {
     let mut buf = vec![0u8; 16 * 1024];
     let read = async {
@@ -308,7 +301,6 @@ async fn pipe(
     }
 }
 
-/// Copies one direction; `rate` > 0 paces it to that many bytes/s.
 async fn copy_half(
     mut from: impl AsyncRead + Unpin,
     mut to: impl AsyncWrite + Unpin,

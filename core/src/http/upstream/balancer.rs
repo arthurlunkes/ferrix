@@ -13,7 +13,6 @@ pub struct UpstreamPoolManager {
     rr_indices: RwLock<HashMap<String, AtomicUsize>>,
 
     active_connections: RwLock<HashMap<String, Arc<AtomicI64>>>,
-    /// EWMA of response time per target, in microseconds (least_time).
     latency_us: RwLock<HashMap<String, Arc<AtomicI64>>>,
     health_checker: Arc<HealthChecker>,
 }
@@ -61,7 +60,6 @@ impl UpstreamPoolManager {
         }
     }
 
-    /// Feeds one response time into the target's moving average (weight 1/8).
     pub fn record_latency(&self, target_url: &str, ms: f64) {
         let cell = self.latency_cell(target_url);
         let sample = (ms * 1000.0) as i64;
@@ -217,8 +215,6 @@ impl UpstreamPoolManager {
                 pool
             }
             LoadBalanceAlgorithm::LeastTime => {
-                // Untried targets (0) go first so every target gets measured;
-                // ties rotate round-robin.
                 let idx = self.next_rr_index(&upstream.name, pool.len());
                 pool.rotate_left(idx);
                 pool.sort_by_cached_key(|t| {
@@ -389,14 +385,12 @@ mod tests {
         p.algorithm = LoadBalanceAlgorithm::LeastTime;
         m.record_latency("slow", 80.0);
         m.record_latency("fast", 5.0);
-        // An unmeasured target is tried first, then the fastest.
         assert_eq!(urls(&m.select_targets(&p, ip("1.1.1.1")))[0], "new");
         m.record_latency("new", 40.0);
         assert_eq!(
             urls(&m.select_targets(&p, ip("1.1.1.1"))),
             vec!["fast", "new", "slow"]
         );
-        // Busy targets are penalised by their active connections.
         for _ in 0..20 {
             m.inc_conn("fast");
         }

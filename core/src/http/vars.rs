@@ -1,9 +1,3 @@
-//! nginx variables and the rewrite phase: `map`, `geo`, `split_clients`
-//! (http-level definitions), and per-route `set`, `if` and `rewrite`.
-//!
-//! Only routes that use these pay for them: everything is evaluated lazily from
-//! the request when a template is expanded.
-
 use axum::http::{header, HeaderMap, Method, Uri};
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -16,7 +10,6 @@ use crate::net::cidr::IpRule;
 type RegexCache = HashMap<(String, bool), Option<regex_lite::Regex>>;
 static REGEX: LazyLock<RwLock<RegexCache>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Compiled-once regex lookup (`ci` = case-insensitive).
 pub fn regex(pattern: &str, ci: bool) -> Option<regex_lite::Regex> {
     let key = (pattern.to_string(), ci);
     if let Some(r) = REGEX.read().ok().and_then(|m| m.get(&key).cloned()) {
@@ -32,24 +25,18 @@ pub fn regex(pattern: &str, ci: bool) -> Option<regex_lite::Regex> {
     r
 }
 
-/// `set` results, kept in the request extensions for header templates.
 #[derive(Clone, Debug)]
 pub struct SetVars(pub HashMap<String, String>);
 
-/// Request values variables are computed from.
 pub struct Ctx<'a> {
     pub method: &'a Method,
     pub uri: Uri,
     pub headers: &'a HeaderMap,
     pub client_ip: IpAddr,
     pub is_tls: bool,
-    /// http settings: `variables` (map/geo/split_clients) and `geoip`.
     pub http: &'a crate::config::HttpConfig,
-    /// `set` results.
     pub set: HashMap<String, String>,
-    /// `$1`..`$9` from the last matching regex.
     pub captures: Vec<String>,
-    /// TLS client certificate, for `$ssl_client_*`.
     pub client_cert: Option<std::sync::Arc<crate::tls::client_cert::ClientCert>>,
 }
 
@@ -182,7 +169,6 @@ impl Ctx<'_> {
                 let Ok(ip) = src.parse::<IpAddr>() else {
                     return default.clone();
                 };
-                // Most specific network wins, like nginx.
                 ranges
                     .iter()
                     .filter_map(|r| {
@@ -270,7 +256,6 @@ impl Ctx<'_> {
             .collect();
     }
 
-    /// nginx `if (...)` condition.
     pub fn test(&mut self, cond: &str, root: Option<&str>) -> bool {
         let c = cond.trim();
         let toks: Vec<&str> = split_condition(c);
@@ -332,8 +317,6 @@ impl Ctx<'_> {
     }
 }
 
-/// Walks `.a.b[0]["c d"]` in a JSON document. Strings come out raw, other
-/// values as compact JSON, like nginx's json_set.
 pub fn json_path(doc: &str, path: &str) -> Option<String> {
     let mut v: serde_json::Value = serde_json::from_str(doc).ok()?;
     let mut rest = path.trim();
@@ -354,7 +337,6 @@ pub fn json_path(doc: &str, path: &str) -> Option<String> {
             };
             rest = &r[end + 1..];
         } else {
-            // Leading key without a dot.
             let end = rest.find(['.', '[']).unwrap_or(rest.len());
             v = v.get_mut(&rest[..end])?.take();
             rest = &rest[end..];
@@ -374,7 +356,6 @@ fn unquote(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// Splits `$a ~* "x y"` into tokens, keeping quoted strings whole.
 fn split_condition(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let b = s.as_bytes();
@@ -404,18 +385,12 @@ fn split_condition(s: &str) -> Vec<&str> {
     out
 }
 
-/// What the rewrite phase decided for a route.
 pub enum Phase {
-    /// Continue serving (the URI may have changed).
     Continue,
-    /// URI changed with `last`: match the routes again.
     Rematch,
-    /// Send this redirect / status.
     Return { code: u16, location_or_body: String },
 }
 
-/// Runs a route's `if` → `set` → `rewrite` in nginx order (the order they
-/// were written is approximated as: ifs first, then sets, then rewrites).
 pub fn run_route_phase(
     ctx: &mut Ctx<'_>,
     conditions: &[ConditionConfig],
@@ -455,7 +430,6 @@ pub fn run_route_phase(
     Phase::Continue
 }
 
-/// Applies one rewrite. `None` = keep going with the next rule.
 fn apply_rewrite(ctx: &mut Ctx<'_>, rw: &RewriteRule) -> Option<Phase> {
     let re = regex(&rw.pattern, false)?;
     let path = ctx.uri.path().to_string();

@@ -170,7 +170,6 @@ pub async fn serve(
                 }
                 Some(acceptor) => Conn::Tls(acceptor, tcp),
             };
-            // Client certificate of this TLS connection, set after the handshake.
             let peer_cert: Arc<std::sync::OnceLock<Arc<crate::tls::client_cert::ClientCert>>> =
                 Arc::new(std::sync::OnceLock::new());
             let peer_for_service = peer_cert.clone();

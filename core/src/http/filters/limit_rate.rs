@@ -1,13 +1,9 @@
-//! nginx `limit_rate` / `limit_rate_after`: caps how fast a response body is
-//! sent to the client (per response), after an optional unthrottled prefix.
-
 use axum::body::{Body, Bytes};
 use axum::http::Response;
 use futures_util::StreamExt;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Largest slice written at once, so pauses stay short and smooth.
 fn slice_for(rate: u64) -> usize {
     (rate / 8).clamp(1024, 256 * 1024) as usize
 }
@@ -17,7 +13,6 @@ pub fn apply(resp: Response<Body>, rate: u64, after: u64) -> Response<Body> {
         return resp;
     }
     let (mut parts, body) = resp.into_parts();
-    // The zero-copy sendfile path would bypass the throttle.
     parts.extensions.remove::<crate::http::server::SendFile>();
     let slice = slice_for(rate);
     let stream = async_stream(body.into_data_stream(), rate, after, slice);
@@ -68,7 +63,6 @@ mod tests {
 
     #[tokio::test]
     async fn throttles_after_the_free_prefix() {
-        // 1 KB free, then 4 KB at 10 KB/s: the last 1 KB slice starts ~0.3 s in.
         let resp = apply(Response::new(Body::from(vec![0u8; 5120])), 10_240, 1024);
         let t0 = Instant::now();
         let b = axum::body::to_bytes(resp.into_body(), usize::MAX)

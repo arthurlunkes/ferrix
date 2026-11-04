@@ -1,6 +1,3 @@
-//! nginx `memcached_pass`: the response body is read from memcached with
-//! `get <key>`; a miss is a 404 (nginx pairs it with `error_page 404`).
-
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -41,7 +38,6 @@ fn parse(buf: &[u8], key: &str) -> Result<Option<Reply>, String> {
     }
 }
 
-/// Keys may not contain spaces or control characters (memcached protocol).
 pub fn valid_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 250 && key.bytes().all(|b| b > 32 && b != 127)
 }

@@ -1,10 +1,3 @@
-//! nginx `ngx_http_ssi_filter_module` (common subset) for text/html:
-//! `include file|virtual`, `echo var [default]`, `set var value`,
-//! `if expr` / `elif` / `else` / `endif`, and `config` (ignored).
-//!
-//! Includes are read from the route's root (a `virtual` path is resolved as a
-//! file there, no subrequest), nested up to 10 levels.
-
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Response};
 use std::path::{Path, PathBuf};
@@ -49,10 +42,8 @@ fn resolve(root: &Path, dir: &str, p: &str) -> Option<PathBuf> {
         .then_some(canon)
 }
 
-/// Processes SSI commands in `text`; `dir` is the document's URL directory.
 pub fn process(text: &str, root: Option<&Path>, dir: &str, ctx: &mut Ctx<'_>, depth: u8) -> String {
     let mut out = String::with_capacity(text.len());
-    // Stack of (this branch active, some branch already taken).
     let mut cond: Vec<(bool, bool)> = Vec::new();
     let active = |c: &Vec<(bool, bool)>| c.iter().all(|(a, _)| *a);
     let mut rest = text;
@@ -134,7 +125,6 @@ pub fn process(text: &str, root: Option<&Path>, dir: &str, ctx: &mut Ctx<'_>, de
     out
 }
 
-/// SSI `expr`: `$var`, `$var = text`, `$var != text`, `$var = /regex/`.
 fn eval(expr: &str, ctx: &mut Ctx<'_>) -> bool {
     let e = expr.trim();
     for op in ["!=", "="] {

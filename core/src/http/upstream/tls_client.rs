@@ -1,7 +1,3 @@
-//! Per-upstream TLS client settings (nginx `proxy_ssl_certificate`,
-//! `proxy_ssl_certificate_key`, `proxy_ssl_trusted_certificate`,
-//! `proxy_ssl_name`, `proxy_ssl_verify`).
-
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio_rustls::TlsConnector;
@@ -10,13 +6,10 @@ use crate::config::UpstreamTlsConfig;
 
 pub struct CustomTls {
     pub connector: TlsConnector,
-    /// SNI / certificate name to use instead of the target host.
     pub server_name: Option<String>,
-    /// Distinguishes pooled connections made with these settings.
     pub pool_tag: String,
 }
 
-/// Built connectors live for the whole process (one per distinct setting).
 static CACHE: LazyLock<Mutex<HashMap<String, &'static CustomTls>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -41,7 +34,6 @@ fn build(cfg: &UpstreamTlsConfig, verify: bool) -> Result<CustomTls, String> {
         }
         builder.with_root_certificates(roots)
     } else {
-        // Same no-verify path as the shared insecure connector.
         return Ok(CustomTls {
             connector: super::h1::tls_connector_with_client_auth(false, client_auth(cfg)?),
             server_name: cfg.server_name.clone(),
@@ -93,8 +85,6 @@ fn tag(cfg: &UpstreamTlsConfig, verify: bool) -> String {
     )
 }
 
-/// Connector for these settings, built once. Errors (unreadable files) are
-/// logged and fall back to the default connector.
 pub fn get(cfg: Option<&UpstreamTlsConfig>, verify: bool) -> Option<&'static CustomTls> {
     let cfg = cfg?;
     let key = tag(cfg, verify);
@@ -132,7 +122,6 @@ mod tests {
             .unwrap()
     }
 
-    /// TLS backend that requires a client certificate signed by the test CA.
     async fn mtls_backend() -> u16 {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut roots = rustls::RootCertStore::empty();
@@ -201,7 +190,6 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
 
-        // No client certificate: the backend refuses the handshake.
         let no_cert = UpstreamTlsConfig {
             client_cert: None,
             client_key: None,
@@ -219,7 +207,6 @@ mod tests {
             .map(|r| r.status() != 200)
             .unwrap_or(true));
 
-        // Wrong name: certificate check fails.
         let wrong = UpstreamTlsConfig {
             server_name: Some("other.internal".into()),
             ..ok

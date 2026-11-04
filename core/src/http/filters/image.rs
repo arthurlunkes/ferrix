@@ -1,7 +1,3 @@
-//! nginx `ngx_http_image_filter_module`: resize / crop / rotate JPEG, PNG, GIF
-//! and WebP responses, or report their size as JSON. Built with the
-//! `image-filter` feature.
-
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
@@ -11,7 +7,6 @@ use std::io::Cursor;
 use crate::config::{ImageFilterConfig, ImageOp};
 
 fn fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    // `-` (0) means "any" in nginx.
     let rw = if max_w == 0 {
         f64::MAX
     } else {
@@ -65,7 +60,6 @@ pub fn transform(
             }
         }
         ImageOp::Crop => {
-            // Scale to cover, then cut the centre.
             let (tw, th) = (
                 if cfg.width == 0 {
                     img.width()
@@ -124,7 +118,6 @@ pub async fn apply(cfg: &ImageFilterConfig, resp: Response<Body>) -> Response<Bo
     let Ok(bytes) = axum::body::to_bytes(body, cfg.buffer_bytes as usize).await else {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     };
-    // Heavy work off the async workers.
     let cfg2 = cfg.clone();
     let res = tokio::task::spawn_blocking(move || transform(&cfg2, &bytes)).await;
     match res {

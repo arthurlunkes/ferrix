@@ -1,7 +1,3 @@
-//! nginx `ngx_http_mirror_module`: fire-and-forget copy of each request to
-//! another backend; its response is discarded. The body is not copied (same as
-//! nginx `mirror_request_body off`), so the client request is never buffered.
-
 use axum::http::{header, HeaderMap, Method, Uri};
 use std::time::Duration;
 
@@ -29,7 +25,6 @@ pub fn spawn(base: &str, method: &Method, uri: &Uri, headers: &HeaderMap) {
             .await
         {
             Ok(resp) => {
-                // Drain so the connection can return to the pool.
                 let _ = axum::body::to_bytes(resp.into_body(), 1 << 20).await;
             }
             Err(e) => tracing::debug!(mirror = %base, error = %e, "mirror request failed"),

@@ -1,7 +1,3 @@
-//! nginx geoip (`$geoip_*` variables) from MaxMind `.mmdb` databases.
-//! Databases are opened once and kept for the life of the process; a changed
-//! path in the config opens the new file.
-
 use maxminddb::{geoip2, Reader};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -37,7 +33,6 @@ fn en<'a>(names: &Option<std::collections::BTreeMap<&'a str, &'a str>>) -> Strin
         .to_string()
 }
 
-/// Value of `$<name>` (e.g. `geoip_country_code`) for `ip`.
 pub fn variable(cfg: &GeoIpConfig, name: &str, ip: IpAddr) -> Option<String> {
     let field = name.strip_prefix("geoip_")?;
     match field {

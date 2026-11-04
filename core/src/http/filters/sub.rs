@@ -1,8 +1,3 @@
-//! nginx `ngx_http_sub_filter_module`: replace strings in text responses.
-//!
-//! Only uncompressed responses with a matching Content-Type and at most
-//! `MAX_BODY` bytes are rewritten; anything else passes through untouched.
-
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Response};
 
@@ -30,7 +25,6 @@ fn applies(cfg: &SubFilterConfig, resp: &Response<Body>) -> bool {
             .any(|t| t == "*" || t.eq_ignore_ascii_case(mime))
 }
 
-/// Uncompressed text/html (or one of `types`, `*` = all) with a known type.
 pub fn is_text(resp: &Response<Body>, types: &[String]) -> bool {
     if resp.headers().contains_key(header::CONTENT_ENCODING) {
         return false;
@@ -48,7 +42,6 @@ pub fn is_text(resp: &Response<Body>, types: &[String]) -> bool {
                 .any(|t| t == "*" || t.eq_ignore_ascii_case(mime)))
 }
 
-/// nginx addition filter: `before` + body + `after`.
 pub async fn wrap_body(
     resp: Response<Body>,
     before: Option<axum::body::Bytes>,

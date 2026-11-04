@@ -310,8 +310,6 @@ pub(super) fn prepare_forwarded_headers(
     }
 }
 
-/// `proxy_set_header` values with variables beyond the four handled inline
-/// (`$host`, `$remote_addr`, `$proxy_add_x_forwarded_for`, `$scheme`).
 fn templated_headers(
     parts: &axum::http::request::Parts,
     route: &RouteRule,

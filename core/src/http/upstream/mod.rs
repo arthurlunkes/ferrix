@@ -79,7 +79,6 @@ impl UpstreamClient {
         }
     }
 
-    /// Uses the upstream's own TLS client settings (client cert, CA, name).
     pub fn with_tls(mut self, cfg: Option<&crate::config::UpstreamTlsConfig>) -> Self {
         self.custom_tls = tls_client::get(cfg, self.verify_tls);
         self

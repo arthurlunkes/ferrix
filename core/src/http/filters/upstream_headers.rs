@@ -1,7 +1,3 @@
-//! Rewrites of headers coming back from the upstream:
-//! nginx `proxy_redirect` (Location / Refresh) and `proxy_cookie_path`,
-//! `proxy_cookie_domain`, `proxy_cookie_flags` (Set-Cookie).
-
 use axum::http::{header, HeaderMap, HeaderValue};
 
 use crate::config::RouteRule;
@@ -13,9 +9,6 @@ pub fn needed(route: &RouteRule) -> bool {
         || !route.proxy_cookie_flags.is_empty()
 }
 
-/// One `proxy_redirect from to` rule. `from = "default"` means the upstream
-/// URL (target + the part of the route after strip) → the route prefix.
-/// `from` starting with `~` / `~*` is a regex, `$1..` usable in `to`.
 fn redirect_one(
     value: &str,
     from: &str,
@@ -57,7 +50,6 @@ pub fn rewrite_location(value: &str, route: &RouteRule, target_url: &str) -> Opt
         .find_map(|[from, to]| redirect_one(value, from, to, target_url, &route.path_prefix))
 }
 
-/// Applies the cookie rules to one `Set-Cookie` value.
 pub fn rewrite_cookie(value: &str, route: &RouteRule) -> String {
     let mut parts: Vec<String> = value.split(';').map(|s| s.trim().to_string()).collect();
     let name = parts
@@ -86,7 +78,6 @@ pub fn rewrite_cookie(value: &str, route: &RouteRule) -> String {
         }
     }
 
-    // proxy_cookie_flags <name|~regex> flags...; `*` matches every cookie.
     for [pat, flags] in &route.proxy_cookie_flags {
         let hit = if pat == "*" {
             true
@@ -144,7 +135,6 @@ pub fn apply(headers: &mut HeaderMap, route: &RouteRule, target_url: &str) {
                 continue;
             };
             let new = if name == header::REFRESH {
-                // "5; url=http://..."
                 v.split_once("url=").and_then(|(head, url)| {
                     rewrite_location(url, route, target_url).map(|u| format!("{head}url={u}"))
                 })

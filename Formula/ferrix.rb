@@ -5,23 +5,23 @@ class Ferrix < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.0/ferrix-v0.2.0-aarch64-apple-darwin.tar.gz"
-      sha256 "974d683f5e6d11cb93b85a3f4a919661ea41a98140cc38fc2b60ba85eb4fd0ac"
+      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.1/ferrix-v0.2.1-aarch64-apple-darwin.tar.gz"
+      sha256 "b9d7a8d1900171ff20603087b2ebb9b4e910ef9b323e5fb6689d43b25eeaa293"
     end
     on_intel do
-      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.0/ferrix-v0.2.0-x86_64-apple-darwin.tar.gz"
-      sha256 "9815773f67aa628dd317295b4aeb53bd2182515c6c919aa98d860e1beb22ca12"
+      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.1/ferrix-v0.2.1-x86_64-apple-darwin.tar.gz"
+      sha256 "75e3d259f5d3fb5a3ac1510122555eafe8ace73fab3da2acbe61c565c9f362f7"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.0/ferrix-v0.2.0-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "f8e83065fa9d69eb652a98558f424f97701c78110267377f0173c3078771e6fd"
+      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.1/ferrix-v0.2.1-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "a6ca12792afabf08b62847d846123bbfbb7bc11aebde46653c1d18f55634b42b"
     end
     on_intel do
-      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.0/ferrix-v0.2.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "7d2f62b6fde4b681b24ddad0c756226d999066c6e8c9f607ce76a745da63495f"
+      url "https://github.com/arthurlunkes/ferrix/releases/download/v0.2.1/ferrix-v0.2.1-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "fb867148ec686da501621c098334e254733671ca2f75aeb8ecdee9ce35641bb1"
     end
   end
 

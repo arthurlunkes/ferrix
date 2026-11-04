@@ -1,7 +1,3 @@
-//! nginx `ngx_http_auth_request_module`: before serving, ask an auth service.
-//! 2xx lets the request through, 401/403 are returned to the client, anything
-//! else (or an error) is a 500, exactly like nginx.
-
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode};
 use axum::response::IntoResponse;
@@ -11,12 +7,10 @@ use crate::config::AuthRequestConfig;
 use crate::http::upstream::{OutgoingBody, UpstreamClient};
 
 pub enum Outcome {
-    /// Allowed; these headers from the auth response go to the backend.
     Allow(Vec<(HeaderName, HeaderValue)>),
     Deny(Response<Body>),
 }
 
-/// Splits `http://host:port/path?q` into (`http://host:port`, `/path?q`).
 fn split_url(url: &str) -> Option<(&str, &str)> {
     let after = url.find("://")? + 3;
     match url[after..].find('/') {

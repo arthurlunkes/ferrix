@@ -1,10 +1,3 @@
-//! nginx `ngx_http_secure_link_module` (the `secure_link` + `secure_link_md5` form).
-//!
-//! The link carries `?md5=<hash>&expires=<unix>`; the hash is
-//! base64url(md5(template)) without padding, where the template may use
-//! `$secure_link_expires`, `$uri`, `$remote_addr`, `$host` and `$arg_<name>`.
-//! Bad hash → 403, expired → 410 (what the usual nginx config returns).
-
 use base64::Engine;
 use md5::{Digest, Md5};
 use std::net::IpAddr;
@@ -83,7 +76,6 @@ mod tests {
 
     #[test]
     fn nginx_docs_example() {
-        // echo -n '2147483647/s/link127.0.0.1 secret' | openssl md5 -binary | base64 | tr +/ -_ | tr -d =
         assert_eq!(
             hash("2147483647/s/link127.0.0.1 secret"),
             "_e4Nc3iduzkWRm01TBBNYw"

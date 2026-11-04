@@ -1,7 +1,3 @@
-//! nginx `grpc_pass`: proxies gRPC over an HTTP/2 connection to the backend
-//! (`grpc://` = cleartext h2c, `grpcs://` = TLS with ALPN h2). One multiplexed
-//! connection per target is kept and reused; trailers pass through untouched.
-
 use axum::body::Body;
 use axum::http::{header, uri::PathAndQuery, Request, Response, Uri};
 use hyper::client::conn::http2::SendRequest;
@@ -21,7 +17,6 @@ static TLS: LazyLock<tokio_rustls::TlsConnector> =
 static TLS_INSECURE: LazyLock<tokio_rustls::TlsConnector> =
     LazyLock::new(|| super::h1::tls_connector_alpn(false, b"h2"));
 
-/// `grpc://h:p` → `http://h:p`, `grpcs://` → `https://`.
 pub fn normalize(url: &str) -> String {
     if let Some(r) = url.strip_prefix("grpc://") {
         format!("http://{r}")
@@ -82,7 +77,6 @@ async fn sender(base: &str, timeout: Duration, verify: bool) -> Result<SendReque
     Ok(s)
 }
 
-/// Forwards `req` to `base` (already normalized to http/https).
 pub async fn forward(
     base: &str,
     mut req: Request<Body>,

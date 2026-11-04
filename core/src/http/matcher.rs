@@ -205,9 +205,6 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
         && !route_needs_full_path(route)
 }
 
-/// Route features the raw fast path does not implement. Any of them sends the
-/// request through the full pipeline — skipping one could, for example, bypass
-/// `auth_request` or `secure_link`.
 fn route_needs_full_path(route: &RouteRule) -> bool {
     !route.valid_referers.is_empty()
         || route.auth_request.is_some()
@@ -243,7 +240,6 @@ struct CompiledVHost {
     routes: Vec<CompiledRoute>,
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
-    /// Some `if`/`set`/`rewrite` in this vhost or its routes.
     has_rewrite_phase: bool,
 }
 
@@ -255,7 +251,6 @@ pub struct CompiledConfig {
     rings: crate::fasthash::FastMap<String, HashRing>,
     target_headers: crate::fasthash::FastMap<String, Vec<Option<HeaderValue>>>,
     pub server_header: HeaderValue,
-    /// Some json_set reads `$request_body`, so bodies are buffered for it.
     pub buffers_body_for_vars: bool,
 }
 

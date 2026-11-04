@@ -1,13 +1,8 @@
-//! nginx `ngx_http_userid_filter_module`: give each visitor a long-lived
-//! identifying cookie. A new id is also added to the request's Cookie header so
-//! the backend sees it on the very first request.
-
 use axum::http::{header, HeaderMap, HeaderValue};
 use base64::Engine;
 
 use crate::config::UserIdConfig;
 
-/// Returns the Set-Cookie to send when the visitor has no id yet.
 pub fn ensure(cfg: &UserIdConfig, req_headers: &mut HeaderMap) -> Option<HeaderValue> {
     let name = cfg.name();
     let has = req_headers

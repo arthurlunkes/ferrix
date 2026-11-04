@@ -450,7 +450,6 @@ impl ProxyEngine {
                 return (StatusCode::PAYLOAD_TOO_LARGE, "413 Payload Too Large").into_response()
             }
         };
-        // `pass` may name an upstream: use its live targets in order.
         let addrs: Vec<String> = match compiled.config.upstreams.get(&cfg.pass) {
             Some(up) => self
                 .pool_manager
@@ -578,8 +577,6 @@ impl ProxyEngine {
         }
     }
 
-    /// nginx-style subrequest: `uri` is either a full URL (fetched directly)
-    /// or a path served by this same vhost. Returns the 2xx body.
     #[allow(clippy::too_many_arguments)]
     async fn subrequest(
         &self,
@@ -637,8 +634,6 @@ impl ProxyEngine {
         axum::body::to_bytes(resp.into_body(), 4 << 20).await.ok()
     }
 
-    /// nginx rewrite phase: server-level then route-level `if`/`set`/`rewrite`,
-    /// re-matching routes after `rewrite ... last` (at most 10 times, like nginx).
     fn rewrite_phase(
         &self,
         compiled: &CompiledConfig,
@@ -917,8 +912,6 @@ impl ProxyEngine {
         };
         let compression = &compiled.config.http.compression;
         if route.sub_filter.is_some() {
-            // The backend must answer uncompressed so the text can be rewritten;
-            // Ferrix still compresses for the client afterwards.
             parts.headers.remove(header::ACCEPT_ENCODING);
         }
 
@@ -1042,7 +1035,6 @@ impl ProxyEngine {
                         .into_response();
                 };
 
-                // `$var`: upstream chosen at runtime by a map/split_clients variable.
                 let dynamic_name;
                 let upstream_name = if let Some(var) = upstream_name.strip_prefix('$') {
                     let ctx = vars::Ctx {
@@ -1105,8 +1097,6 @@ impl ProxyEngine {
                             .unwrap_or(compiled.config.http.proxy_connect_timeout_ms),
                     );
                     let req = Request::from_parts(parts, body);
-                    // gRPC bodies are streams: no retry once the request is sent,
-                    // so only the first live target is used.
                     let target = targets[0];
                     let base = upstream::grpc::normalize(&target.url);
                     match Box::pin(upstream::grpc::forward(
@@ -1297,7 +1287,6 @@ impl ProxyEngine {
     }
 }
 
-/// `//a///b?x` → `/a/b?x` (nginx `merge_slashes`).
 fn merged_slashes_uri(uri: &axum::http::Uri) -> Option<axum::http::Uri> {
     let mut path = String::with_capacity(uri.path().len());
     for c in uri.path().chars() {
@@ -1312,8 +1301,6 @@ fn merged_slashes_uri(uri: &axum::http::Uri) -> Option<axum::http::Uri> {
     pq.parse().ok()
 }
 
-/// nginx `absolute_redirect` / `port_in_redirect` / `server_name_in_redirect`
-/// for redirects Ferrix itself made (backend redirects are left alone).
 fn absolutize_redirect(
     mut resp: Response,
     http: &crate::config::HttpConfig,
@@ -1337,7 +1324,6 @@ fn absolutize_redirect(
     };
     let host_raw = host_header.to_str().unwrap_or("");
     let (host_name, port) = if let Some(rest) = host_raw.strip_prefix('[') {
-        // [v6]:port
         match rest.split_once(']') {
             Some((_, after)) => (
                 &host_raw[..host_raw.len() - after.len()],
@@ -1375,8 +1361,6 @@ fn absolutize_redirect(
     resp
 }
 
-/// Reads the request body (up to `limit` bytes) into `$request_body` for
-/// json_set, then puts it back so the backend still receives it.
 async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
     let has_body = req
         .headers()
@@ -1398,7 +1382,6 @@ async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
         if let Ok(data) = frame.into_data() {
             collected.extend_from_slice(&data);
             if collected.len() as u64 > limit {
-                // Too big for a variable: forward what was read plus the rest.
                 rest = Some(body);
                 break;
             }
@@ -1426,7 +1409,6 @@ async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
     Request::from_parts(parts, new_body)
 }
 
-/// Marks an internal subrequest (no addition filter on it, no recursion).
 #[derive(Clone, Copy)]
 struct Subrequest;
 

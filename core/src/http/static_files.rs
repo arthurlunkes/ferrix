@@ -458,7 +458,6 @@ fn load_file(
     })))
 }
 
-/// nginx `empty_gif`: the classic 43-byte transparent 1×1 GIF.
 pub const EMPTY_GIF: &[u8] = &[
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00,
     0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00,
@@ -472,7 +471,6 @@ pub fn empty_gif() -> Response<Body> {
     r
 }
 
-/// nginx `random_index`: for `dir/` returns `dir/<random visible file>`.
 pub fn random_index(root_dir: &str, path: &str) -> Option<String> {
     if !path.ends_with('/') {
         return None;
@@ -500,11 +498,8 @@ pub fn random_index(root_dir: &str, path: &str) -> Option<String> {
     Some(format!("{path}{}", files[pick]))
 }
 
-/// FLV header sent before data served from an offset (nginx `ngx_http_flv_module`).
 const FLV_HEADER: &[u8] = b"FLV\x01\x05\0\0\0\x09\0\0\0\0";
 
-/// nginx `flv`: `file.flv?start=N` streams from byte N with an FLV header in
-/// front. `None` = not applicable (no/zero start), serve the file normally.
 pub async fn flv(root_dir: &str, path: &str, query: Option<&str>) -> Option<Response<Body>> {
     if !path.ends_with(".flv") {
         return None;
@@ -548,9 +543,6 @@ pub async fn flv(root_dir: &str, path: &str, query: Option<&str>) -> Option<Resp
         .ok()
 }
 
-/// nginx `ngx_http_autoindex_module`: HTML listing of `root_dir/path` when it is a
-/// directory. Returns `None` if it isn't one (or escapes the root), so the caller
-/// answers 404. Directories that end without `/` get a 301 to `uri/`, like nginx.
 pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>> {
     let base_root = PathBuf::from(root_dir).canonicalize().ok()?;
     let dir = base_root
@@ -588,7 +580,6 @@ pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>
             Some((name, md.is_dir(), md.len(), mtime))
         })
         .collect();
-    // Directories first, then by name: same order as nginx.
     entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let title = html_escape(uri);

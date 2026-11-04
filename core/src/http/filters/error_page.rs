@@ -6,8 +6,6 @@ use tracing::warn;
 use crate::config::VirtualHost;
 use crate::http::X_FERRIX_UPSTREAM;
 
-/// Marks a backend response whose errors should use the error pages
-/// (`proxy_intercept_errors on`).
 #[derive(Clone, Copy)]
 pub struct InterceptErrors;
 

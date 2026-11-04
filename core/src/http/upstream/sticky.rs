@@ -1,6 +1,3 @@
-//! nginx `sticky cookie <name>`: pin a client to the backend that served it.
-//! The cookie holds a short hash of the target URL (not the URL itself).
-
 use axum::http::{header, HeaderMap, HeaderValue};
 use std::hash::Hasher;
 
@@ -23,7 +20,6 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v)
 }
 
-/// Moves the target named by the cookie (if still in the list) to the front.
 pub fn prefer(targets: &mut [&UpstreamTarget], headers: &HeaderMap, cfg: &StickyConfig) {
     let Some(id) = cookie_value(headers, &cfg.cookie) else {
         return;
@@ -33,7 +29,6 @@ pub fn prefer(targets: &mut [&UpstreamTarget], headers: &HeaderMap, cfg: &Sticky
     }
 }
 
-/// `Set-Cookie` for `target` unless the request already carries it.
 pub fn set_cookie(cfg: &StickyConfig, req: &HeaderMap, target_url: &str) -> Option<HeaderValue> {
     let id = target_id(target_url);
     if cookie_value(req, &cfg.cookie) == Some(id.as_str()) {
