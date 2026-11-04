@@ -225,6 +225,7 @@ mod tests {
             defs: &defs,
             set: HashMap::new(),
             captures: vec![],
+            client_cert: None,
         };
         let page = r#"<!--# set var="t" value="Hi <b>" --><!--# include virtual="/inc/h.html" -->
 <!--# if expr="$arg_x = 1" -->one<!--# elif expr="$arg_x" -->other<!--# else -->none<!--# endif -->

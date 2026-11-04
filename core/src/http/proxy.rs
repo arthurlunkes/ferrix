@@ -342,6 +342,10 @@ fn templated_headers(
             .map(|s| s.0.clone())
             .unwrap_or_default(),
         captures: Vec::new(),
+        client_cert: parts
+            .extensions
+            .get::<std::sync::Arc<crate::tls::client_cert::ClientCert>>()
+            .cloned(),
     };
     route
         .proxy_set_headers

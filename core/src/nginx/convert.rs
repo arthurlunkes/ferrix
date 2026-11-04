@@ -1121,6 +1121,8 @@ impl Converter {
         let mut saw_ssl_listen = false;
         let mut ssl_cert: Option<String> = None;
         let mut ssl_key: Option<String> = None;
+        let mut client_verify = crate::config::ClientVerify::Off;
+        let mut client_ca: Option<String> = None;
 
         let mut server_gzip: Option<bool> = None;
         let mut error_pages: Vec<&Directive> = Vec::new();
@@ -1134,6 +1136,21 @@ impl Converter {
                 "listen" => saw_ssl_listen |= self.apply_listen(item, &mut vhost),
                 "ssl_certificate" => ssl_cert = item.arg(0).map(|s| s.to_string()),
                 "ssl_certificate_key" => ssl_key = item.arg(0).map(|s| s.to_string()),
+                "ssl_verify_client" => {
+                    client_verify = match item.arg(0) {
+                        Some("on") => crate::config::ClientVerify::On,
+                        Some("optional") | Some("optional_no_ca") => {
+                            crate::config::ClientVerify::Optional
+                        }
+                        _ => crate::config::ClientVerify::Off,
+                    };
+                    self.converted(item, "virou tls.verify_client");
+                }
+                "ssl_client_certificate" | "ssl_trusted_certificate" => {
+                    if item.name == "ssl_client_certificate" || client_ca.is_none() {
+                        client_ca = item.arg(0).map(String::from);
+                    }
+                }
                 "if" => {
                     certbot_redirect = self.try_convert_certbot_https_redirect(item);
                     if certbot_redirect.is_none() {
@@ -1288,6 +1305,8 @@ impl Converter {
                     cert_path,
                     key_path,
                     acme: false,
+                    verify_client: client_verify,
+                    client_ca: client_ca.clone(),
                 });
                 if saw_ssl_listen {
                     self.report.note(

@@ -156,7 +156,7 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 0,
 
-        expected_unsupported: &["ssl_client_certificate"],
+        expected_unsupported: &[],
     },
     ExampleExpectation {
         dir_contains: "15-canary_blue_green",

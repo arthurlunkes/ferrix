@@ -48,6 +48,8 @@ pub struct Ctx<'a> {
     pub set: HashMap<String, String>,
     /// `$1`..`$9` from the last matching regex.
     pub captures: Vec<String>,
+    /// TLS client certificate, for `$ssl_client_*`.
+    pub client_cert: Option<std::sync::Arc<crate::tls::client_cert::ClientCert>>,
 }
 
 fn query_arg<'q>(q: &'q str, name: &str) -> Option<&'q str> {
@@ -101,6 +103,27 @@ impl Ctx<'_> {
             "scheme" => if self.is_tls { "https" } else { "http" }.to_string(),
             "https" => if self.is_tls { "on" } else { "" }.to_string(),
             "request_method" => self.method.to_string(),
+            "ssl_client_verify" => if self.client_cert.is_some() {
+                "SUCCESS"
+            } else {
+                "NONE"
+            }
+            .to_string(),
+            "ssl_client_s_dn" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.subject.clone())
+                .unwrap_or_default(),
+            "ssl_client_i_dn" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.issuer.clone())
+                .unwrap_or_default(),
+            "ssl_client_escaped_cert" => self
+                .client_cert
+                .as_ref()
+                .map(|c| c.escaped_pem())
+                .unwrap_or_default(),
             "content_type" => hdr("content-type"),
             "content_length" => hdr("content-length"),
             n if n.starts_with("arg_") => query_arg(q, &n[4..]).unwrap_or("").to_string(),
@@ -444,6 +467,7 @@ mod tests {
             defs,
             set: HashMap::new(),
             captures: vec![],
+            client_cert: None,
         }
     }
 

@@ -156,13 +156,19 @@ pub async fn serve(
                 }
                 Some(acceptor) => Conn::Tls(acceptor, tcp),
             };
+            // Client certificate of this TLS connection, set after the handshake.
+            let peer_cert: Arc<std::sync::OnceLock<Arc<crate::tls::client_cert::ClientCert>>> =
+                Arc::new(std::sync::OnceLock::new());
+            let peer_for_service = peer_cert.clone();
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let engine = engine.clone();
                 let alt_svc = alt_svc.clone();
+                let mut req = req.map(Body::new);
+                if let Some(c) = peer_for_service.get() {
+                    req.extensions_mut().insert(c.clone());
+                }
                 async move {
-                    let mut resp = engine
-                        .handle_request(port, is_tls, addr, req.map(Body::new))
-                        .await;
+                    let mut resp = engine.handle_request(port, is_tls, addr, req).await;
                     resp.headers_mut()
                         .entry(hyper::header::DATE)
                         .or_insert_with(crate::event::clock::http_date);
@@ -180,7 +186,19 @@ pub async fn serve(
                         Some(serve_io!(builder, io, service))
                     }
                     Conn::Tls(acceptor, tcp) => match acceptor.accept(tcp).await {
-                        Ok(stream) => Some(serve_io!(builder, stream, service)),
+                        Ok(stream) => {
+                            if let Some(der) = stream
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|c| c.first())
+                            {
+                                let _ = peer_cert.set(Arc::new(
+                                    crate::tls::client_cert::ClientCert::from_der(der),
+                                ));
+                            }
+                            Some(serve_io!(builder, stream, service))
+                        }
                         Err(e) => {
                             debug!(%addr, error = %e, "TLS handshake failed");
                             None

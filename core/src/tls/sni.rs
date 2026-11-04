@@ -196,10 +196,14 @@ pub fn quic_server_config(resolver: Arc<SniResolver>) -> Result<rustls::ServerCo
 
 pub fn tls_acceptor(resolver: Arc<SniResolver>) -> Result<TlsAcceptor, String> {
     use crate::config::HttpProtocol;
-    let http = resolver.store.config().http.clone();
-    let mut config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(resolver);
+    let cfg = resolver.store.config();
+    let http = cfg.http.clone();
+    let builder = rustls::ServerConfig::builder();
+    let mut config = match crate::tls::client_cert::verifier_for_port(&cfg, resolver.port)? {
+        Some(v) => builder.with_client_cert_verifier(v),
+        None => builder.with_no_client_auth(),
+    }
+    .with_cert_resolver(resolver.clone());
     if cfg!(feature = "http2") && http.serves(HttpProtocol::Http2) {
         config.alpn_protocols.push(b"h2".to_vec());
     }

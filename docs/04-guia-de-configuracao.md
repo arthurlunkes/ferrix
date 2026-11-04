@@ -528,3 +528,16 @@ upstreams:
       trusted_ca: /etc/ferrix/internal-ca.pem   # instead of the public web roots
       server_name: api.internal            # SNI and certificate name instead of the IP
 ```
+
+### Client certificates (`tls.verify_client`)
+
+nginx `ssl_verify_client on|optional` + `ssl_client_certificate`:
+
+```yaml
+vhosts:
+  - id: api
+    listen_port: 443
+    tls: { cert_path: /etc/ferrix/api.pem, key_path: /etc/ferrix/api.key, verify_client: on, client_ca: /etc/ferrix/clients-ca.pem }
+```
+
+`on` answers 400 without a valid certificate; `optional` lets the request through and `$ssl_client_verify` says `SUCCESS` or `NONE`. Variables for `proxy_set_headers`: `$ssl_client_verify`, `$ssl_client_s_dn`, `$ssl_client_i_dn`, `$ssl_client_escaped_cert`. Vhosts sharing a port share one trust list (the union of their CAs). Changing `verify_client` or `client_ca` takes effect after a restart.

@@ -355,6 +355,21 @@ impl ProxyEngine {
         req: Request,
         is_ws: bool,
     ) -> Response {
+        if let Some(tls) = vhost.tls.as_ref().filter(|_| is_tls) {
+            if tls.verify_client == crate::config::ClientVerify::On
+                && req
+                    .extensions()
+                    .get::<Arc<crate::tls::client_cert::ClientCert>>()
+                    .is_none()
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "400 Bad Request - No required SSL certificate was sent",
+                )
+                    .into_response();
+            }
+        }
+
         let headers = req.headers();
 
         let ip_ok = match compiled.vhost_acl(vhost_index) {
@@ -516,6 +531,10 @@ impl ProxyEngine {
                 defs: &compiled.config.http.variables,
                 set: std::collections::HashMap::new(),
                 captures: Vec::new(),
+                client_cert: req
+                    .extensions()
+                    .get::<Arc<crate::tls::client_cert::ClientCert>>()
+                    .cloned(),
             };
             let mut phase =
                 vars::run_route_phase(&mut ctx, &vhost.conditions, &[], &vhost.rewrites, None);
@@ -860,6 +879,10 @@ impl ProxyEngine {
                             .map(|s| s.0.clone())
                             .unwrap_or_default(),
                         captures: Vec::new(),
+                        client_cert: parts
+                            .extensions
+                            .get::<Arc<crate::tls::client_cert::ClientCert>>()
+                            .cloned(),
                     };
                     dynamic_name = ctx.var(var);
                     &dynamic_name
@@ -1011,6 +1034,7 @@ impl ProxyEngine {
                 defs: &compiled.config.http.variables,
                 set: std::collections::HashMap::new(),
                 captures: Vec::new(),
+                client_cert: None,
             };
             let dir = req_uri
                 .path()

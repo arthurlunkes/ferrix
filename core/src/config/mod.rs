@@ -771,6 +771,24 @@ pub struct TlsConfig {
 
     #[serde(default)]
     pub acme: bool,
+
+    /// nginx `ssl_verify_client`.
+    #[serde(default)]
+    pub verify_client: ClientVerify,
+    /// nginx `ssl_client_certificate`: PEM CA bundle for client certificates.
+    #[serde(default)]
+    pub client_ca: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientVerify {
+    #[default]
+    Off,
+    /// A valid certificate is required (400 otherwise, like nginx).
+    On,
+    /// Checked when sent; `$ssl_client_verify` tells which.
+    Optional,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -156,6 +156,14 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
         validate_vhost_routes(cfg, vhost, &base, &mut report);
 
         if let Some(tls) = &vhost.tls {
+            if tls.verify_client != crate::config::ClientVerify::Off
+                && tls.client_ca.as_deref().unwrap_or("").trim().is_empty()
+            {
+                report.error(
+                    format!("{}.tls.client_ca", base),
+                    "verify_client precisa de client_ca (o CA que assina os certificados dos clientes)",
+                );
+            }
             if tls.acme && !cfg!(feature = "acme") {
                 report.error(
                     format!("{}.tls.acme", base),
