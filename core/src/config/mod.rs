@@ -1022,6 +1022,12 @@ pub struct RouteRule {
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
 
+    /// nginx `ssi on`: process `<!--# ... -->` in text/html (and `ssi_types`).
+    #[serde(default)]
+    pub ssi: bool,
+    #[serde(default)]
+    pub ssi_types: Vec<String>,
+
     /// nginx `flv`: pseudo-streaming with `?start=<byte>` for .flv files.
     #[serde(default)]
     pub flv: bool,
@@ -1159,6 +1165,8 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            ssi: false,
+            ssi_types: Vec::new(),
             flv: false,
             dav: None,
             cgi: None,

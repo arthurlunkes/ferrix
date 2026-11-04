@@ -1691,6 +1691,8 @@ impl Converter {
                     route.cgi.get_or_insert_with(Default::default).index =
                         item.arg(0).map(String::from);
                 }
+                "ssi" => route.ssi = item.arg(0) == Some("on"),
+                "ssi_types" => route.ssi_types = item.args.clone(),
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");
