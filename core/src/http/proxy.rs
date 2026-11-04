@@ -96,7 +96,8 @@ impl ProxyEngine {
                     .unwrap_or(http.proxy_read_timeout_ms),
             ),
             upstream_cfg.verify_tls,
-        );
+        )
+        .with_tls(upstream_cfg.tls.as_ref());
 
         let attempt_deadline = next_upstream
             .timeout_ms

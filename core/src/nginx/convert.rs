@@ -491,6 +491,7 @@ impl Converter {
                     verify_tls: true,
                     hash_key: None,
                     sticky: None,
+                    tls: None,
                 },
             );
             name
@@ -1020,6 +1021,7 @@ impl Converter {
                 verify_tls: true,
                 hash_key,
                 sticky,
+                tls: None,
             },
         );
     }
@@ -1790,6 +1792,8 @@ impl Converter {
             return route.static_root.is_some().then_some(route);
         };
 
+        let mut upstream_tls = crate::config::UpstreamTlsConfig::default();
+        let mut upstream_verify: Option<bool> = None;
         let mut has_target = false;
         let mut auth_realm: Option<String> = None;
 
@@ -1876,6 +1880,12 @@ impl Converter {
                 | "proxy_cache_lock_timeout"
                 | "proxy_cache_revalidate"
                 | "proxy_cache_background_update" => {}
+                "proxy_ssl_certificate" => upstream_tls.client_cert = item.arg(0).map(String::from),
+                "proxy_ssl_certificate_key" => upstream_tls.client_key = item.arg(0).map(String::from),
+                "proxy_ssl_trusted_certificate" => upstream_tls.trusted_ca = item.arg(0).map(String::from),
+                "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
+                "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }
@@ -2248,6 +2258,23 @@ impl Converter {
             }
         }
 
+        if upstream_tls != crate::config::UpstreamTlsConfig::default() || upstream_verify.is_some()
+        {
+            if let Some(up) = route
+                .upstream_name
+                .as_ref()
+                .and_then(|n| self.config.upstreams.get_mut(n))
+            {
+                if let Some(v) = upstream_verify {
+                    up.verify_tls = v;
+                }
+                if upstream_tls != crate::config::UpstreamTlsConfig::default() {
+                    up.tls = Some(upstream_tls);
+                }
+                self.converted(d, "proxy_ssl_* virou upstreams.<nome>.tls");
+            }
+        }
+
         if route.cgi.as_ref().is_some_and(|c| !c.pass.is_empty()) {
             route.target_type = RouteTargetType::Cgi;
             if route.static_root.is_none() {
@@ -2396,6 +2423,7 @@ impl Converter {
                 verify_tls: true,
                 hash_key: None,
                 sticky: None,
+                tls: None,
             },
         );
         name

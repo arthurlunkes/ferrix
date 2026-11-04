@@ -165,7 +165,8 @@ impl HealthChecker {
                                 Duration::from_secs(hc.timeout_secs.max(1)),
                                 Duration::from_secs(hc.timeout_secs.max(1)),
                                 upstream_cfg.verify_tls,
-                            );
+                            )
+                            .with_tls(upstream_cfg.tls.as_ref());
                             let upstream_name = upstream_name.clone();
                             let target_url = target.url.clone();
                             let check_path = hc.path.clone();

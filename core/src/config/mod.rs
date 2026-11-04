@@ -677,9 +677,29 @@ pub struct UpstreamConfig {
     #[serde(default)]
     pub hash_key: Option<String>,
 
+    /// nginx `proxy_ssl_*`: client certificate, trusted CA and name for TLS targets.
+    #[serde(default)]
+    pub tls: Option<UpstreamTlsConfig>,
+
     /// nginx `sticky cookie`: keep each client on the same target.
     #[serde(default)]
     pub sticky: Option<StickyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UpstreamTlsConfig {
+    /// PEM certificate chain presented to the backend (mTLS).
+    #[serde(default)]
+    pub client_cert: Option<String>,
+    #[serde(default)]
+    pub client_key: Option<String>,
+    /// PEM CA bundle that backend certificates must chain to (instead of the
+    /// public web roots). Only used when `verify_tls` is on.
+    #[serde(default)]
+    pub trusted_ca: Option<String>,
+    /// Name used for SNI and certificate checks instead of the target host.
+    #[serde(default)]
+    pub server_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1376,6 +1396,7 @@ impl Default for FerrixConfig {
                 verify_tls: true,
                 hash_key: None,
                 sticky: None,
+                tls: None,
             },
         );
 

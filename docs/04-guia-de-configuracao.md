@@ -512,3 +512,19 @@ cache:
 - `http.proxy_protocol: true` (nginx `listen ... proxy_protocol`): every HTTP/HTTPS connection must start with a PROXY protocol v1 or v2 header (AWS NLB, HAProxy, ...); its source address becomes the client IP. Connections without it are closed.
 - `streams[].accept_proxy_protocol: true`: the same for a TCP stream.
 - `streams[].send_proxy_protocol: true` (nginx `proxy_protocol on`): send a v1 header with the client address to the upstream.
+
+### TLS to the backend (`upstreams.<name>.tls`)
+
+nginx `proxy_ssl_certificate`, `proxy_ssl_certificate_key`, `proxy_ssl_trusted_certificate`, `proxy_ssl_name` (`proxy_ssl_verify` is `verify_tls`):
+
+```yaml
+upstreams:
+  internal_api:
+    targets: [{ url: "https://10.0.0.5:8443" }]
+    verify_tls: true
+    tls:
+      client_cert: /etc/ferrix/client.pem   # mTLS: certificate shown to the backend
+      client_key: /etc/ferrix/client.key
+      trusted_ca: /etc/ferrix/internal-ca.pem   # instead of the public web roots
+      server_name: api.internal            # SNI and certificate name instead of the IP
+```

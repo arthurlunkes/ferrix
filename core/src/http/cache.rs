@@ -459,7 +459,8 @@ impl ProxyEngine {
                     Duration::from_millis(http.proxy_connect_timeout_ms),
                     Duration::from_millis(http.proxy_read_timeout_ms),
                     upstream_cfg.verify_tls,
-                );
+                )
+                .with_tls(upstream_cfg.tls.as_ref());
                 let cache = cache.clone();
                 let key = key.clone();
                 let valid = Duration::from_secs(cfg.valid_secs);
@@ -867,6 +868,7 @@ mod stale_tests {
             verify_tls: true,
             hash_key: None,
             sticky: None,
+            tls: None,
         };
         let parts = axum::extract::Request::builder()
             .uri("/x")

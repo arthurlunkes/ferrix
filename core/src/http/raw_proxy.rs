@@ -125,7 +125,8 @@ impl ProxyEngine {
                     .unwrap_or(http.proxy_read_timeout_ms),
             ),
             upstream.verify_tls,
-        );
+        )
+        .with_tls(upstream.tls.as_ref());
         let attempt_deadline = next_upstream
             .timeout_ms
             .map(|ms| crate::event::clock::now() + Duration::from_millis(ms));

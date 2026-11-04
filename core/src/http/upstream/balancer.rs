@@ -273,6 +273,7 @@ mod tests {
             verify_tls: true,
             hash_key: None,
             sticky: None,
+            tls: None,
         }
     }
 
