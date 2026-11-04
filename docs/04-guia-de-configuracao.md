@@ -108,6 +108,7 @@ websocket_enabled: false
 - `valid_referers`: list like nginx (`none`, `blocked`, `server_names`, `*.ex.com`, `ex.*`, `ex.com/path`, `~regex`). Other Referers get 403 (the nginx `if ($invalid_referer) { return 403; }` pattern).
 - `auth_request: { url, set_headers, timeout_ms }`: asks `url` (GET, original headers + `X-Original-URI`/`X-Original-Method`) before serving. 2xx passes and copies `set_headers` to the backend request; 401/403 go to the client; anything else is 500.
 - `mirror: [http://shadow:8080]`: sends a copy of each request (method, URI, headers; no body, like `mirror_request_body off`) and ignores the response.
+- `secure_link: { md5, hash_arg, expires_arg }`: nginx `secure_link`/`secure_link_md5` (base64url MD5). Wrong hash = 403, expired = 410.
 
 ### 3. HTTP Redirect Route
 

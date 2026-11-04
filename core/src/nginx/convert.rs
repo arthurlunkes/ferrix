@@ -1475,6 +1475,18 @@ impl Converter {
                         route.target_type = RouteTargetType::StaticFiles;
                     }
                 }
+                "secure_link" => {
+                    // `secure_link $arg_md5,$arg_expires;`
+                    let a = item.arg(0).unwrap_or("");
+                    let mut parts = a.split(',').map(|p| p.trim().trim_start_matches("$arg_"));
+                    let sl = route.secure_link.get_or_insert_with(Default::default);
+                    sl.hash_arg = parts.next().filter(|s| !s.is_empty()).map(String::from);
+                    sl.expires_arg = parts.next().filter(|s| !s.is_empty()).map(String::from);
+                }
+                "secure_link_md5" => {
+                    route.secure_link.get_or_insert_with(Default::default).md5 =
+                        item.arg(0).unwrap_or("").to_string();
+                }
                 "valid_referers" => {
                     route.valid_referers = item.args.clone();
                 }

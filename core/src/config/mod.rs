@@ -844,6 +844,31 @@ pub struct RouteRule {
     /// nginx `mirror`: base URLs (`http://host:port`) that get a copy of each request.
     #[serde(default)]
     pub mirror: Vec<String>,
+
+    /// nginx `secure_link` + `secure_link_md5`.
+    #[serde(default)]
+    pub secure_link: Option<SecureLinkConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecureLinkConfig {
+    /// `secure_link_md5` template, e.g. `$secure_link_expires$uri$remote_addr secret`.
+    pub md5: String,
+    /// Query argument with the hash (default `md5`).
+    #[serde(default)]
+    pub hash_arg: Option<String>,
+    /// Query argument with the expiry timestamp (default `expires`).
+    #[serde(default)]
+    pub expires_arg: Option<String>,
+}
+
+impl SecureLinkConfig {
+    pub fn hash_arg(&self) -> &str {
+        self.hash_arg.as_deref().unwrap_or("md5")
+    }
+    pub fn expires_arg(&self) -> &str {
+        self.expires_arg.as_deref().unwrap_or("expires")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -927,6 +952,7 @@ impl Default for RouteRule {
             valid_referers: Vec::new(),
             auth_request: None,
             mirror: Vec::new(),
+            secure_link: None,
         }
     }
 }
