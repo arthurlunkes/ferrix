@@ -683,6 +683,32 @@ impl Converter {
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
             "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "geoip_country" | "geoip_city" | "geoip_org" | "geoip2" => {
+                let Some(path) = d.arg(0) else { return };
+                if path.ends_with(".dat") {
+                    self.report.unsupported(
+                        &self.file,
+                        d.line,
+                        &d.name,
+                        &d.source(),
+                        "o Ferrix lê bases MaxMind .mmdb (GeoLite2); baixe a versão .mmdb e use http.geoip",
+                    );
+                    return;
+                }
+                let g = self.config.http.geoip.get_or_insert_with(Default::default);
+                let lower = path.to_ascii_lowercase();
+                if d.name == "geoip_org" || lower.contains("asn") {
+                    g.asn_db = Some(path.to_string());
+                } else if d.name == "geoip_city" || lower.contains("city") {
+                    g.city_db = Some(path.to_string());
+                } else {
+                    g.country_db = Some(path.to_string());
+                }
+                self.converted(
+                    d,
+                    "virou http.geoip; use as variáveis $geoip_country_code, $geoip_city etc.",
+                );
+            }
             "proxy_cache_use_stale"
             | "proxy_cache_lock"
             | "proxy_cache_lock_timeout"

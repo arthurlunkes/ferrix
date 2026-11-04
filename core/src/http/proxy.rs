@@ -335,7 +335,7 @@ fn templated_headers(
         headers: &parts.headers,
         client_ip,
         is_tls,
-        defs: &compiled.config.http.variables,
+        http: &compiled.config.http,
         set: parts
             .extensions
             .get::<super::vars::SetVars>()

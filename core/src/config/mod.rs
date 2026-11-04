@@ -252,6 +252,10 @@ pub struct HttpConfig {
     #[serde(default)]
     pub server_name_in_redirect: bool,
 
+    /// nginx geoip: MaxMind `.mmdb` databases behind the `$geoip_*` variables.
+    #[serde(default)]
+    pub geoip: Option<GeoIpConfig>,
+
     /// nginx `map` / `geo` / `split_clients`: named variables (without `$`).
     #[serde(default)]
     pub variables: HashMap<String, VariableDef>,
@@ -336,6 +340,19 @@ pub struct ConditionConfig {
     pub return_value: Option<String>,
     #[serde(default)]
     pub rewrite: Option<RewriteRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GeoIpConfig {
+    /// GeoLite2/GeoIP2 Country or City database (country, continent).
+    #[serde(default)]
+    pub country_db: Option<String>,
+    /// GeoLite2/GeoIP2 City database (city, region, postal code, location).
+    #[serde(default)]
+    pub city_db: Option<String>,
+    /// GeoLite2 ASN database (`$geoip_org`, `$geoip_asn`).
+    #[serde(default)]
+    pub asn_db: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -565,6 +582,7 @@ impl Default for HttpConfig {
             access_log: None,
             variables: HashMap::new(),
             proxy_protocol: false,
+            geoip: None,
             merge_slashes: true,
             absolute_redirect: true,
             port_in_redirect: true,

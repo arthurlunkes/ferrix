@@ -561,3 +561,17 @@ routes:
     target_type: memcached
     memcached: { pass: "127.0.0.1:11211", key: "$uri?$args", content_type: text/html, gzip_flag: 2 }
 ```
+
+### GeoIP (`http.geoip`, build feature `geoip`, on by default)
+
+MaxMind GeoLite2/GeoIP2 `.mmdb` files (the legacy `.dat` format of nginx's geoip module is not read):
+
+```yaml
+http:
+  geoip:
+    country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
+    city_db: /usr/share/GeoIP/GeoLite2-City.mmdb
+    asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
+```
+
+Variables (usable in `map`, `if`, `proxy_set_headers`, logs...): `$geoip_country_code`, `$geoip_country_name`, `$geoip_continent_code`, `$geoip_city`, `$geoip_city_country_code`, `$geoip_region`, `$geoip_region_name`, `$geoip_postal_code`, `$geoip_latitude`, `$geoip_longitude`, `$geoip_org`, `$geoip_asn`. They use the client IP after `real_ip`.

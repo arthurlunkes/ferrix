@@ -5,6 +5,8 @@ pub mod cache;
 pub mod dav;
 pub mod default_page;
 pub mod filters;
+#[cfg(feature = "geoip")]
+pub mod geoip;
 #[cfg(feature = "http3")]
 pub mod h3;
 pub mod limit_conn;
@@ -531,7 +533,7 @@ impl ProxyEngine {
             headers: &parts.headers,
             client_ip,
             is_tls,
-            defs: &compiled.config.http.variables,
+            http: &compiled.config.http,
             set: parts
                 .extensions
                 .get::<vars::SetVars>()
@@ -652,7 +654,7 @@ impl ProxyEngine {
                 headers: req.headers(),
                 client_ip,
                 is_tls,
-                defs: &compiled.config.http.variables,
+                http: &compiled.config.http,
                 set: std::collections::HashMap::new(),
                 captures: Vec::new(),
                 client_cert: req
@@ -1022,7 +1024,7 @@ impl ProxyEngine {
                         headers: &parts.headers,
                         client_ip,
                         is_tls,
-                        defs: &compiled.config.http.variables,
+                        http: &compiled.config.http,
                         set: parts
                             .extensions
                             .get::<vars::SetVars>()
@@ -1181,7 +1183,7 @@ impl ProxyEngine {
                 headers: &ssi_headers,
                 client_ip,
                 is_tls,
-                defs: &compiled.config.http.variables,
+                http: &compiled.config.http,
                 set: std::collections::HashMap::new(),
                 captures: Vec::new(),
                 client_cert: None,

@@ -43,7 +43,8 @@ pub struct Ctx<'a> {
     pub headers: &'a HeaderMap,
     pub client_ip: IpAddr,
     pub is_tls: bool,
-    pub defs: &'a HashMap<String, VariableDef>,
+    /// http settings: `variables` (map/geo/split_clients) and `geoip`.
+    pub http: &'a crate::config::HttpConfig,
     /// `set` results.
     pub set: HashMap<String, String>,
     /// `$1`..`$9` from the last matching regex.
@@ -71,7 +72,7 @@ impl Ctx<'_> {
         if let Some(v) = self.set.get(name) {
             return v.clone();
         }
-        if let Some(def) = self.defs.get(name) {
+        if let Some(def) = self.http.variables.get(name) {
             if depth < 8 {
                 return self.eval_def(def, depth + 1);
             }
@@ -103,6 +104,11 @@ impl Ctx<'_> {
             "scheme" => if self.is_tls { "https" } else { "http" }.to_string(),
             "https" => if self.is_tls { "on" } else { "" }.to_string(),
             "request_method" => self.method.to_string(),
+            #[cfg(feature = "geoip")]
+            n if n.starts_with("geoip_") => match &self.http.geoip {
+                Some(g) => crate::http::geoip::variable(g, n, self.client_ip).unwrap_or_default(),
+                None => String::new(),
+            },
             "ssl_client_verify" => if self.client_cert.is_some() {
                 "SUCCESS"
             } else {
@@ -458,13 +464,18 @@ mod tests {
 
     fn ctx<'a>(defs: &'a HashMap<String, VariableDef>, h: &'a HeaderMap, uri: &str) -> Ctx<'a> {
         static GET: Method = Method::GET;
+        let http: &'static crate::config::HttpConfig =
+            Box::leak(Box::new(crate::config::HttpConfig {
+                variables: defs.clone(),
+                ..Default::default()
+            }));
         Ctx {
             method: &GET,
             uri: uri.parse().unwrap(),
             headers: h,
             client_ip: "10.1.2.3".parse().unwrap(),
             is_tls: false,
-            defs,
+            http,
             set: HashMap::new(),
             captures: vec![],
             client_cert: None,
