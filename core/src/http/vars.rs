@@ -198,6 +198,10 @@ impl Ctx<'_> {
                     .map(|(_, v)| v.clone())
                     .unwrap_or_else(|| default.clone())
             }
+            VariableDef::Json { source, path } => {
+                let src = self.expand_depth(source, depth);
+                json_path(&src, path).unwrap_or_default()
+            }
             VariableDef::SplitClients { source, buckets } => {
                 let src = self.expand_depth(source, depth);
                 let mut h = crate::fasthash::FxHasher::default();
@@ -326,6 +330,41 @@ impl Ctx<'_> {
             _ => false,
         }
     }
+}
+
+/// Walks `.a.b[0]["c d"]` in a JSON document. Strings come out raw, other
+/// values as compact JSON, like nginx's json_set.
+pub fn json_path(doc: &str, path: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(doc).ok()?;
+    let mut rest = path.trim();
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('.') {
+            let end = r.find(['.', '[']).unwrap_or(r.len());
+            let key = &r[..end];
+            if !key.is_empty() {
+                v = v.get_mut(key)?.take();
+            }
+            rest = &r[end..];
+        } else if let Some(r) = rest.strip_prefix('[') {
+            let end = r.find(']')?;
+            let inner = r[..end].trim();
+            v = match inner.trim_matches('"').parse::<usize>() {
+                Ok(i) if !inner.starts_with('"') => v.get_mut(i)?.take(),
+                _ => v.get_mut(inner.trim_matches('"'))?.take(),
+            };
+            rest = &r[end + 1..];
+        } else {
+            // Leading key without a dot.
+            let end = rest.find(['.', '[']).unwrap_or(rest.len());
+            v = v.get_mut(&rest[..end])?.take();
+            rest = &rest[end..];
+        }
+    }
+    Some(match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    })
 }
 
 fn unquote(s: &str) -> &str {
@@ -597,5 +636,20 @@ mod tests {
         let mut c = ctx(&defs, &h, "/x");
         run_route_phase(&mut c, &[], &[("$v".into(), "a$uri".into())], &[], None);
         assert_eq!(c.var("v"), "a/x");
+    }
+
+    #[test]
+    fn json_paths() {
+        let doc = r#"{"user":{"name":"Ana","roles":["admin","dev"],"age":30},"a b":{"x":true}}"#;
+        assert_eq!(json_path(doc, ".user.name").as_deref(), Some("Ana"));
+        assert_eq!(json_path(doc, "user.roles[1]").as_deref(), Some("dev"));
+        assert_eq!(json_path(doc, ".user.age").as_deref(), Some("30"));
+        assert_eq!(json_path(doc, r#"["a b"].x"#).as_deref(), Some("true"));
+        assert_eq!(
+            json_path(doc, ".user.roles").as_deref(),
+            Some(r#"["admin","dev"]"#)
+        );
+        assert_eq!(json_path(doc, ".nope"), None);
+        assert_eq!(json_path("not json", ".a"), None);
     }
 }

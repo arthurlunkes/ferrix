@@ -683,6 +683,20 @@ impl Converter {
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
             "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "json_set" => match (d.arg(0), d.arg(1), d.arg(2)) {
+                (Some(name), Some(source), Some(path)) => {
+                    self.config.http.variables.insert(
+                        name.trim_start_matches('$').to_string(),
+                        crate::config::VariableDef::Json {
+                            source: source.to_string(),
+                            path: path.to_string(),
+                        },
+                    );
+                    self.converted(d, "virou uma variável json em http.variables");
+                }
+                _ => self.note_unsupported(d),
+            },
+            "json_max_depth" => {}
             "geoip_country" | "geoip_city" | "geoip_org" | "geoip2" => {
                 let Some(path) = d.arg(0) else { return };
                 if path.ends_with(".dat") {

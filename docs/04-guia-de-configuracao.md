@@ -574,4 +574,8 @@ http:
     asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
 ```
 
-Variables (usable in `map`, `if`, `proxy_set_headers`, logs...): `$geoip_country_code`, `$geoip_country_name`, `$geoip_continent_code`, `$geoip_city`, `$geoip_city_country_code`, `$geoip_region`, `$geoip_region_name`, `$geoip_postal_code`, `$geoip_latitude`, `$geoip_longitude`, `$geoip_org`, `$geoip_asn`. They use the client IP after `real_ip`.
+Variables (usable in `map`, `if`, `set`, `rewrite` and `proxy_set_headers`): `$geoip_country_code`, `$geoip_country_name`, `$geoip_continent_code`, `$geoip_city`, `$geoip_city_country_code`, `$geoip_region`, `$geoip_region_name`, `$geoip_postal_code`, `$geoip_latitude`, `$geoip_longitude`, `$geoip_org`, `$geoip_asn`. They use the client IP after `real_ip`.
+
+### JSON variables (`type: json`)
+
+nginx `json_set $user_id $request_body .user.id;` → `http.variables.user_id: { type: json, source: $request_body, path: .user.id }`. Paths use `.key`, `[index]` and `["key with spaces"]`; strings come out raw, other values as compact JSON, missing ones empty. When a variable reads `$request_body`, request bodies up to `http.proxy_request_buffer_size` are read into it (and still forwarded unchanged); larger ones leave it empty.

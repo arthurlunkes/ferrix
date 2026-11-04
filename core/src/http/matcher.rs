@@ -255,6 +255,8 @@ pub struct CompiledConfig {
     rings: crate::fasthash::FastMap<String, HashRing>,
     target_headers: crate::fasthash::FastMap<String, Vec<Option<HeaderValue>>>,
     pub server_header: HeaderValue,
+    /// Some json_set reads `$request_body`, so bodies are buffered for it.
+    pub buffers_body_for_vars: bool,
 }
 
 impl CompiledConfig {
@@ -315,6 +317,9 @@ impl CompiledConfig {
         } else {
             HeaderValue::from_static("ferrix")
         };
+        let buffers_body_for_vars = config.http.variables.values().any(|v| {
+            matches!(v, crate::config::VariableDef::Json { source, .. } if source.contains("$request_body"))
+        });
         Self {
             config,
             real_ip,
@@ -322,6 +327,7 @@ impl CompiledConfig {
             rings,
             target_headers,
             server_header,
+            buffers_body_for_vars,
         }
     }
 

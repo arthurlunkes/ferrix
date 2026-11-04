@@ -284,6 +284,9 @@ pub enum VariableDef {
         source: String,
         buckets: Vec<SplitBucket>,
     },
+    /// nginx `json_set $name $source path`: a value from the JSON in `source`
+    /// (`$request_body`, `$http_x`, `$arg_x`...). Path: `.a.b[0].c`.
+    Json { source: String, path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

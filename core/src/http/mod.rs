@@ -655,7 +655,11 @@ impl ProxyEngine {
                 client_ip,
                 is_tls,
                 http: &compiled.config.http,
-                set: std::collections::HashMap::new(),
+                set: req
+                    .extensions()
+                    .get::<vars::SetVars>()
+                    .map(|s| s.0.clone())
+                    .unwrap_or_default(),
                 captures: Vec::new(),
                 client_cert: req
                     .extensions()
@@ -719,6 +723,10 @@ impl ProxyEngine {
             if let Some(u) = merged_slashes_uri(req.uri()) {
                 *req.uri_mut() = u;
             }
+        }
+        if compiled.buffers_body_for_vars && req.extensions().get::<Subrequest>().is_none() {
+            req =
+                buffer_request_body_var(req, compiled.config.http.proxy_request_buffer_size).await;
         }
         if compiled.has_rewrite_phase(vhost_index) {
             if let Err(resp) =
@@ -1348,6 +1356,57 @@ fn absolutize_redirect(
     resp
 }
 
+/// Reads the request body (up to `limit` bytes) into `$request_body` for
+/// json_set, then puts it back so the backend still receives it.
+async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
+    let has_body = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > 0 && n <= limit)
+        || req.headers().contains_key(header::TRANSFER_ENCODING);
+    if !has_body {
+        return req;
+    }
+    let (mut parts, body) = req.into_parts();
+    use http_body_util::BodyExt;
+    let mut collected = Vec::new();
+    let mut body = body;
+    let mut rest: Option<Body> = None;
+    while let Some(frame) = body.frame().await {
+        let Ok(frame) = frame else { break };
+        if let Ok(data) = frame.into_data() {
+            collected.extend_from_slice(&data);
+            if collected.len() as u64 > limit {
+                // Too big for a variable: forward what was read plus the rest.
+                rest = Some(body);
+                break;
+            }
+        }
+    }
+    let bytes = Bytes::from(collected);
+    let new_body = match rest {
+        Some(tail) => {
+            let head = futures_util::stream::once(async move { Ok::<_, axum::Error>(bytes) });
+            Body::from_stream(head.chain(tail.into_data_stream()))
+        }
+        None => {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                let mut set = parts
+                    .extensions
+                    .get::<vars::SetVars>()
+                    .map(|s| s.0.clone())
+                    .unwrap_or_default();
+                set.insert("request_body".into(), text.to_string());
+                parts.extensions.insert(vars::SetVars(set));
+            }
+            Body::from(bytes)
+        }
+    };
+    Request::from_parts(parts, new_body)
+}
+
 /// Marks an internal subrequest (no addition filter on it, no recursion).
 #[derive(Clone, Copy)]
 struct Subrequest;
@@ -1447,6 +1506,54 @@ fn limit_response(status: u16, what: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn json_set_reads_the_request_body() {
+        use crate::config::{
+            ConditionConfig, FerrixConfig, RouteRule, RouteTargetType, VariableDef,
+        };
+        let mut cfg = FerrixConfig::default();
+        cfg.http.variables.insert(
+            "user".into(),
+            VariableDef::Json {
+                source: "$request_body".into(),
+                path: ".user.name".into(),
+            },
+        );
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "r".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(204),
+            conditions: vec![ConditionConfig {
+                condition: "$user".into(),
+                return_code: Some(200),
+                return_value: Some("hi $user".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let body = r#"{"user":{"name":"Ana"}}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("host", "x")
+            .header("content-length", body.len())
+            .body(Body::from(body))
+            .unwrap();
+        let r = engine
+            .handle_request(port, false, "127.0.0.1:1".parse().unwrap(), req)
+            .await;
+        assert_eq!(r.status(), 200);
+        let b = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
+        assert_eq!(&b[..], b"hi Ana");
+    }
 
     #[tokio::test]
     async fn addition_wraps_html_with_subrequests() {
