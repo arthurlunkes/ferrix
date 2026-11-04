@@ -444,3 +444,18 @@ routes:
     static_root: /var/www/html
     cgi: { protocol: fastcgi, pass: "unix:/run/php/php8.3-fpm.sock", index: index.php }
 ```
+
+### WebDAV (`dav`)
+
+nginx `dav_methods PUT DELETE MKCOL COPY MOVE;` on a static route. Paths stay inside `static_root`; PUT writes atomically (temp file + rename). Protect the route (basic auth / IP list) — it lets clients change files.
+
+```yaml
+routes:
+  - id: uploads
+    path_prefix: /dav/
+    strip_prefix: true
+    target_type: static_files
+    static_root: /srv/dav
+    dav: { methods: [PUT, DELETE, MKCOL, COPY, MOVE], create_full_put_path: true, access: 0o644 }
+    basic_auth: { username: admin, password: "$2b$..." }
+```
