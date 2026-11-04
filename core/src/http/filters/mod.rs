@@ -3,6 +3,7 @@ pub mod cors;
 pub mod error_page;
 pub mod headers;
 pub mod request_id;
+pub mod sub;
 
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method};

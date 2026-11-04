@@ -1487,6 +1487,28 @@ impl Converter {
                     route.secure_link.get_or_insert_with(Default::default).md5 =
                         item.arg(0).unwrap_or("").to_string();
                 }
+                "sub_filter" => {
+                    if let (Some(from), Some(to)) = (item.arg(0), item.arg(1)) {
+                        route
+                            .sub_filter
+                            .get_or_insert_with(|| crate::config::SubFilterConfig {
+                                once: true,
+                                ..Default::default()
+                            })
+                            .replacements
+                            .push([from.to_string(), to.to_string()]);
+                    }
+                }
+                "sub_filter_once" => {
+                    if let Some(sf) = route.sub_filter.as_mut() {
+                        sf.once = item.arg(0) != Some("off");
+                    }
+                }
+                "sub_filter_types" => {
+                    if let Some(sf) = route.sub_filter.as_mut() {
+                        sf.types = item.args.clone();
+                    }
+                }
                 "valid_referers" => {
                     route.valid_referers = item.args.clone();
                 }
