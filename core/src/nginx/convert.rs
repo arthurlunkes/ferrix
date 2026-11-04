@@ -640,6 +640,20 @@ impl Converter {
             "proxy_cache" | "proxy_cache_valid" | "proxy_cache_bypass" => {}
             "server" => self.convert_server(d),
             "map" | "geo" | "split_clients" => self.convert_variable(d),
+            "merge_slashes"
+            | "absolute_redirect"
+            | "port_in_redirect"
+            | "server_name_in_redirect" => {
+                let on = d.arg(0) == Some("on");
+                let h = &mut self.config.http;
+                match d.name.as_str() {
+                    "merge_slashes" => h.merge_slashes = on,
+                    "absolute_redirect" => h.absolute_redirect = on,
+                    "port_in_redirect" => h.port_in_redirect = on,
+                    _ => h.server_name_in_redirect = on,
+                }
+                self.converted(d, "virou uma opção global em http");
+            }
             "log_format" => {
                 let args: Vec<&str> = d
                     .args

@@ -265,6 +265,8 @@ impl ProxyEngine {
                         is_ws,
                     )
                     .await;
+                let resp =
+                    absolutize_redirect(resp, &compiled.config.http, vhost, &host_header, is_tls);
                 Box::pin(filters::error_page::apply(vhost, resp)).await
             }
             None if compiled.config.http.default_page => {
@@ -568,6 +570,11 @@ impl ProxyEngine {
         is_ws: bool,
     ) -> Response {
         let mut req = req;
+        if compiled.config.http.merge_slashes && req.uri().path().contains("//") {
+            if let Some(u) = merged_slashes_uri(req.uri()) {
+                *req.uri_mut() = u;
+            }
+        }
         if compiled.has_rewrite_phase(vhost_index) {
             if let Err(resp) =
                 self.rewrite_phase(compiled, vhost_index, vhost, is_tls, client_ip, &mut req)
@@ -1051,6 +1058,84 @@ impl ProxyEngine {
     }
 }
 
+/// `//a///b?x` → `/a/b?x` (nginx `merge_slashes`).
+fn merged_slashes_uri(uri: &axum::http::Uri) -> Option<axum::http::Uri> {
+    let mut path = String::with_capacity(uri.path().len());
+    for c in uri.path().chars() {
+        if !(c == '/' && path.ends_with('/')) {
+            path.push(c);
+        }
+    }
+    let pq = match uri.query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path,
+    };
+    pq.parse().ok()
+}
+
+/// nginx `absolute_redirect` / `port_in_redirect` / `server_name_in_redirect`
+/// for redirects Ferrix itself made (backend redirects are left alone).
+fn absolutize_redirect(
+    mut resp: Response,
+    http: &crate::config::HttpConfig,
+    vhost: &VirtualHost,
+    host_header: &HeaderValue,
+    is_tls: bool,
+) -> Response {
+    if !resp.status().is_redirection()
+        || !http.absolute_redirect
+        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
+    {
+        return resp;
+    }
+    let Some(loc) = resp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|l| l.starts_with('/') && !l.starts_with("//"))
+    else {
+        return resp;
+    };
+    let host_raw = host_header.to_str().unwrap_or("");
+    let (host_name, port) = if let Some(rest) = host_raw.strip_prefix('[') {
+        // [v6]:port
+        match rest.split_once(']') {
+            Some((_, after)) => (
+                &host_raw[..host_raw.len() - after.len()],
+                after.strip_prefix(':'),
+            ),
+            None => (host_raw, None),
+        }
+    } else {
+        match host_raw.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (host_raw, None),
+        }
+    };
+    let name = if http.server_name_in_redirect {
+        vhost
+            .server_names
+            .iter()
+            .find(|n| !n.contains('*') && !n.starts_with('~') && n.as_str() != "_")
+            .map(String::as_str)
+            .unwrap_or(host_name)
+    } else {
+        host_name
+    };
+    if name.is_empty() {
+        return resp;
+    }
+    let port = port.filter(|_| http.port_in_redirect);
+    let abs = match port {
+        Some(p) => format!("{}://{}:{}{}", scheme_str(is_tls), name, p, loc),
+        None => format!("{}://{}{}", scheme_str(is_tls), name, loc),
+    };
+    if let Ok(v) = HeaderValue::from_str(&abs) {
+        resp.headers_mut().insert(header::LOCATION, v);
+    }
+    resp
+}
+
 fn phase_response(code: u16, value: String) -> Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     if status.is_redirection() {
@@ -1146,6 +1231,81 @@ fn limit_response(status: u16, what: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_slashes_keeping_the_query() {
+        let u: axum::http::Uri = "//a///b/?x=//y".parse().unwrap();
+        assert_eq!(merged_slashes_uri(&u).unwrap().to_string(), "/a/b/?x=//y");
+    }
+
+    #[test]
+    fn own_relative_redirects_become_absolute() {
+        let vhost = crate::config::FerrixConfig::default().vhosts[0].clone();
+        let mut http = crate::config::HttpConfig::default();
+        let redirect = |loc: &str| {
+            let mut r = (StatusCode::MOVED_PERMANENTLY, "").into_response();
+            r.headers_mut()
+                .insert(header::LOCATION, HeaderValue::from_str(loc).unwrap());
+            r
+        };
+        let host = HeaderValue::from_static("ex.com:8080");
+        let loc = |r: Response| r.headers()[header::LOCATION].to_str().unwrap().to_string();
+        assert_eq!(
+            loc(absolutize_redirect(
+                redirect("/d/"),
+                &http,
+                &vhost,
+                &host,
+                true
+            )),
+            "https://ex.com:8080/d/"
+        );
+        http.port_in_redirect = false;
+        assert_eq!(
+            loc(absolutize_redirect(
+                redirect("/d/"),
+                &http,
+                &vhost,
+                &host,
+                false
+            )),
+            "http://ex.com/d/"
+        );
+        assert_eq!(
+            loc(absolutize_redirect(
+                redirect("https://x/"),
+                &http,
+                &vhost,
+                &host,
+                false
+            )),
+            "https://x/"
+        );
+        http.absolute_redirect = false;
+        assert_eq!(
+            loc(absolutize_redirect(
+                redirect("/d/"),
+                &http,
+                &vhost,
+                &host,
+                false
+            )),
+            "/d/"
+        );
+        let v6 = HeaderValue::from_static("[::1]:81");
+        http.absolute_redirect = true;
+        http.port_in_redirect = true;
+        assert_eq!(
+            loc(absolutize_redirect(
+                redirect("/d"),
+                &http,
+                &vhost,
+                &v6,
+                false
+            )),
+            "http://[::1]:81/d"
+        );
+    }
 
     fn route_with_prefix(prefix: &str, strip: bool) -> RouteRule {
         RouteRule {

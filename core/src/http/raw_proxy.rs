@@ -45,6 +45,7 @@ impl ProxyEngine {
         if config.metrics.enabled
             || !config.real_ip.trusted_proxies.is_empty()
             || path.starts_with(crate::tls::acme::CHALLENGE_PREFIX)
+            || (config.http.merge_slashes && path.contains("//"))
         {
             return None;
         }

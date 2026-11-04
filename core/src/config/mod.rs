@@ -228,6 +228,19 @@ pub struct HttpConfig {
     #[serde(default)]
     pub access_log: Option<AccessLogConfig>,
 
+    /// nginx `merge_slashes`: `//a///b` is matched as `/a/b`.
+    #[serde(default = "default_true")]
+    pub merge_slashes: bool,
+    /// nginx `absolute_redirect`: Ferrix's own relative redirects get scheme://host.
+    #[serde(default = "default_true")]
+    pub absolute_redirect: bool,
+    /// nginx `port_in_redirect`: keep the port of the Host header in those redirects.
+    #[serde(default = "default_true")]
+    pub port_in_redirect: bool,
+    /// nginx `server_name_in_redirect`: use the vhost's first server name instead of Host.
+    #[serde(default)]
+    pub server_name_in_redirect: bool,
+
     /// nginx `map` / `geo` / `split_clients`: named variables (without `$`).
     #[serde(default)]
     pub variables: HashMap<String, VariableDef>,
@@ -540,6 +553,10 @@ impl Default for HttpConfig {
             protocols: default_protocols(),
             access_log: None,
             variables: HashMap::new(),
+            merge_slashes: true,
+            absolute_redirect: true,
+            port_in_redirect: true,
+            server_name_in_redirect: false,
         }
     }
 }

@@ -482,3 +482,10 @@ routes:
 ### `least_time` balancing
 
 `algorithm: least_time` (nginx `least_time header`): each target keeps a moving average of its response time; the pool picks the lowest `average × (active connections + 1)`. Targets not measured yet are tried first.
+
+### URL and redirect normalization (`http`)
+
+- `merge_slashes` (default `true`, like nginx): `//a///b` is routed and forwarded as `/a/b`.
+- `absolute_redirect` (default `true`): redirects Ferrix builds itself with a relative target (`/new`, directory slash redirects, `rewrite ... redirect`, `return 301 /x`) get `scheme://host`. Backend redirects are untouched (see `proxy_redirect`).
+- `port_in_redirect` (default `true`): keep the Host port in those redirects.
+- `server_name_in_redirect` (default `false`): use the vhost's first concrete server name instead of the Host header.
