@@ -979,6 +979,10 @@ pub struct RouteRule {
     /// nginx `rewrite`.
     #[serde(default)]
     pub rewrites: Vec<RewriteRule>,
+
+    /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
+    #[serde(default)]
+    pub grpc: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1101,6 +1105,7 @@ impl Default for RouteRule {
             set: Vec::new(),
             conditions: Vec::new(),
             rewrites: Vec::new(),
+            grpc: false,
         }
     }
 }

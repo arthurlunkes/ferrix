@@ -564,7 +564,14 @@ impl ProxyEngine {
 
         let mut req = req;
         if let Some(cfg) = &route.auth_request {
-            match auth_request::check(cfg, req.method(), req.uri(), req.headers()).await {
+            match Box::pin(auth_request::check(
+                cfg,
+                req.method(),
+                req.uri(),
+                req.headers(),
+            ))
+            .await
+            {
                 auth_request::Outcome::Allow(pass) => {
                     for (n, v) in pass {
                         req.headers_mut().insert(n, v);
@@ -736,6 +743,50 @@ impl ProxyEngine {
                         .into_response();
                 }
 
+                #[cfg(feature = "http2")]
+                if route.grpc {
+                    let connect = Duration::from_millis(
+                        route
+                            .proxy_connect_timeout_ms
+                            .unwrap_or(compiled.config.http.proxy_connect_timeout_ms),
+                    );
+                    let req = Request::from_parts(parts, body);
+                    // gRPC bodies are streams: no retry once the request is sent,
+                    // so only the first live target is used.
+                    let target = targets[0];
+                    let base = upstream::grpc::normalize(&target.url);
+                    match Box::pin(upstream::grpc::forward(
+                        &base,
+                        req,
+                        connect,
+                        upstream_cfg.verify_tls,
+                    ))
+                    .await
+                    {
+                        Ok(r) => {
+                            self.health_checker
+                                .mark_success(upstream_name, &target.url, 0.0);
+                            return r;
+                        }
+                        Err(e) => {
+                            self.health_checker.mark_failure(
+                                upstream_name,
+                                &target.url,
+                                target.max_fails,
+                            );
+                            warn!(target = %target.url, error = %e, "gRPC upstream failed");
+                        }
+                    }
+                    let mut r = (StatusCode::OK, "").into_response();
+                    r.headers_mut().insert(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/grpc"),
+                    );
+                    r.headers_mut()
+                        .insert("grpc-status", HeaderValue::from_static("14"));
+                    return r;
+                }
+
                 if is_ws && route.websocket_enabled {
                     let target = &targets[0];
                     let ws_path = build_target_path(&parts.uri, &req_path, route);
@@ -801,7 +852,7 @@ impl ProxyEngine {
         };
 
         let resp = match &route.sub_filter {
-            Some(cfg) => filters::sub::apply(cfg, resp).await,
+            Some(cfg) => Box::pin(filters::sub::apply(cfg, resp)).await,
             None => resp,
         };
 

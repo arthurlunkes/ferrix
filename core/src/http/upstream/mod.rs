@@ -1,4 +1,6 @@
 pub mod balancer;
+#[cfg(feature = "http2")]
+pub mod grpc;
 pub mod h1;
 pub mod hash;
 pub mod sticky;
