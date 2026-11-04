@@ -20,6 +20,7 @@ pub mod referer;
 pub mod secure_link;
 pub mod server;
 pub mod static_files;
+pub mod tunnel;
 pub mod upstream;
 pub mod vars;
 pub mod websocket;
@@ -735,7 +736,11 @@ impl ProxyEngine {
                 return *resp;
             }
         }
-        let req_path = req.uri().path().to_string();
+        let req_path = if req.method() == Method::CONNECT {
+            "/".to_string()
+        } else {
+            req.uri().path().to_string()
+        };
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
             if (vhost.routes.is_empty() || req_path == "/") && compiled.config.http.default_page {
@@ -777,6 +782,20 @@ impl ProxyEngine {
                     return resp;
                 }
             }
+        }
+
+        if req.method() == Method::CONNECT {
+            return match &route.tunnel {
+                Some(cfg) => {
+                    let connect = Duration::from_millis(
+                        route
+                            .proxy_connect_timeout_ms
+                            .unwrap_or(compiled.config.http.proxy_connect_timeout_ms),
+                    );
+                    Box::pin(tunnel::handle(cfg, req, connect)).await
+                }
+                None => (StatusCode::METHOD_NOT_ALLOWED, "405 Method Not Allowed").into_response(),
+            };
         }
 
         if route.empty_gif {

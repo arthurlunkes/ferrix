@@ -985,6 +985,22 @@ impl UserIdConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunnelConfig {
+    /// Fixed `host:port` for every CONNECT (nginx `tunnel_pass host:port`);
+    /// empty = the host:port the client asks for.
+    #[serde(default)]
+    pub pass: Option<String>,
+    /// Ports clients may CONNECT to (default 443 only).
+    #[serde(default)]
+    pub allowed_ports: Vec<u16>,
+    /// Hosts clients may CONNECT to (`*.example.com` allowed); empty = any.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub idle_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DavConfig {
     /// Any of PUT, DELETE, MKCOL, COPY, MOVE.
     #[serde(default)]
@@ -1341,6 +1357,10 @@ pub struct RouteRule {
     #[serde(default)]
     pub memcached: Option<MemcachedConfig>,
 
+    /// nginx `tunnel_pass`: CONNECT forward proxy on this route.
+    #[serde(default)]
+    pub tunnel: Option<TunnelConfig>,
+
     /// nginx `grpc_pass`: talk HTTP/2 to the upstream (`grpc://` / `grpcs://` targets).
     #[serde(default)]
     pub grpc: bool,
@@ -1492,6 +1512,7 @@ impl Default for RouteRule {
             override_charset: false,
             charset_types: Vec::new(),
             memcached: None,
+            tunnel: None,
             grpc: false,
         }
     }

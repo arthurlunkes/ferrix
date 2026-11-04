@@ -579,3 +579,19 @@ Variables (usable in `map`, `if`, `set`, `rewrite` and `proxy_set_headers`): `$g
 ### JSON variables (`type: json`)
 
 nginx `json_set $user_id $request_body .user.id;` → `http.variables.user_id: { type: json, source: $request_body, path: .user.id }`. Paths use `.key`, `[index]` and `["key with spaces"]`; strings come out raw, other values as compact JSON, missing ones empty. When a variable reads `$request_body`, request bodies up to `http.proxy_request_buffer_size` are read into it (and still forwarded unchanged); larger ones leave it empty.
+
+### CONNECT forward proxy (`tunnel`)
+
+nginx `tunnel_pass`: `CONNECT host:port` requests on the route open a TCP connection and relay bytes both ways (HTTPS through a forward proxy). Other methods get the route's normal target.
+
+```yaml
+routes:
+  - id: forward-proxy
+    path_prefix: /
+    target_type: return
+    redirect_code: 405
+    tunnel: { allowed_ports: [443], allowed_hosts: ["*.example.com"], idle_timeout_ms: 600000 }
+    allowed_ips: [10.0.0.0/8]   # keep a forward proxy private
+```
+
+`pass: "10.0.0.5:5432"` sends every tunnel to one fixed target.

@@ -251,6 +251,9 @@ fn parse(
         }
     }
 
+    if method == Method::CONNECT {
+        needs_hyper = true;
+    }
     let raw_route = if needs_hyper || method == Method::HEAD {
         None
     } else {

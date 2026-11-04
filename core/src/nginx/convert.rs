@@ -2152,6 +2152,21 @@ impl Converter {
                     }
                 }
                 "memcached_buffer_size" | "memcached_send_timeout" | "memcached_bind" | "memcached_socket_keepalive" => {}
+                "tunnel_pass" => {
+                    route.tunnel.get_or_insert_with(Default::default).pass =
+                        item.arg(0).map(String::from);
+                    route.target_type = RouteTargetType::Return;
+                    route.redirect_code = Some(405);
+                    has_target = true;
+                    self.converted(item, "virou route.tunnel (CONNECT); outros métodos recebem 405");
+                }
+                "tunnel_connect_timeout" => route.proxy_connect_timeout_ms = item.arg(0).and_then(parse_time_ms),
+                "tunnel_read_timeout" => {
+                    route.tunnel.get_or_insert_with(Default::default).idle_timeout_ms =
+                        item.arg(0).and_then(parse_time_ms)
+                }
+                "tunnel_send_timeout" | "tunnel_buffer_size" | "tunnel_bind" | "tunnel_socket_keepalive"
+                | "tunnel_next_upstream" | "tunnel_next_upstream_tries" | "tunnel_next_upstream_timeout" => {}
                 "flv" => {
                     route.flv = true;
                     self.converted(item, "virou route.flv");
