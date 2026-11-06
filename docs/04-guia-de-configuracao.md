@@ -636,3 +636,12 @@ http:
 ```
 
 They apply after a restart (the reload warns about it).
+
+### Request validation (nginx behaviour)
+
+- Ambiguous requests get 400 and never reach a backend: `Content-Length` with `Transfer-Encoding`, two different `Content-Length`s, two `Host` headers, HTTP/1.1 without `Host`, lowercase or non-token methods.
+- `http.allowed_methods`: methods accepted at all (default: HTTP and WebDAV methods, without TRACE); others get 405. Static routes answer only GET and HEAD (405 with `Allow: GET, HEAD` otherwise), unless WebDAV handles the method.
+- `http.underscores_in_headers: false` (default): request headers with `_` are dropped, like nginx.
+- `http.ignore_invalid_headers: true` (default): malformed header lines are skipped instead of 400.
+- `http.max_header_line_bytes: 8192`: longer request lines get 414 and longer header lines 400.
+- HTTP/0.9 (`GET /path` with no version) is answered with the bare body on plain HTTP ports, like nginx.
