@@ -27,6 +27,80 @@ pub struct FerrixConfig {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub streams: Vec<StreamConfig>,
+    #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub error: ErrorLogConfig,
+    #[serde(default)]
+    pub access: AccessLogTargets,
+}
+
+impl LoggingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ErrorLogConfig {
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub format: LogFormat,
+    #[serde(default)]
+    pub targets: Option<Vec<LogTarget>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccessLogTargets {
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub targets: Vec<LogTarget>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum LogTarget {
+    Off,
+    Stdout,
+    Stderr,
+    File {
+        path: String,
+        #[serde(default)]
+        max_bytes: u64,
+        #[serde(default)]
+        keep: u32,
+    },
+    Syslog {
+        #[serde(default)]
+        addr: Option<String>,
+        #[serde(default)]
+        facility: Option<String>,
+        #[serde(default)]
+        tag: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        batch_size: Option<usize>,
+        #[serde(default)]
+        flush_ms: Option<u64>,
+        #[serde(default)]
+        headers: std::collections::BTreeMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1701,6 +1775,7 @@ impl Default for FerrixConfig {
             acme: Default::default(),
             metrics: Default::default(),
             streams: Vec::new(),
+            logging: LoggingConfig::default(),
         }
     }
 }

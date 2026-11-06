@@ -256,8 +256,10 @@ impl ProxyEngine {
             .cloned()
             .unwrap_or_else(|| HeaderValue::from_static(""));
         let user_agent = req_headers.get(header::USER_AGENT).cloned();
-        let access_log = compiled.config.http.access_log.as_ref();
-        let referer = access_log.and_then(|_| req_headers.get(header::REFERER).cloned());
+        let access_log = access_log::enabled(&compiled.config);
+        let referer = access_log
+            .then(|| req_headers.get(header::REFERER).cloned())
+            .flatten();
 
         let is_ws = WebSocketProxy::is_websocket_request(req_headers);
 
@@ -305,7 +307,7 @@ impl ProxyEngine {
                 .into_response(),
         };
 
-        if !metrics_on && access_log.is_none() {
+        if !metrics_on && !access_log {
             return response;
         }
 
@@ -334,13 +336,13 @@ impl ProxyEngine {
             is_websocket: is_ws,
         };
 
-        if let Some(al) = access_log.filter(|_| !skip_log) {
+        if access_log && !skip_log {
             let extra = access_log::Extra {
                 referer: referer.as_ref().and_then(|v| v.to_str().ok()).unwrap_or(""),
                 remote_user: "",
                 scheme: scheme_str(is_tls),
             };
-            access_log::write(&al.path, &al.format, &log, &extra);
+            access_log::emit(&compiled.config, &log, &extra);
         }
 
         if !metrics_on {

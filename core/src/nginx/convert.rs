@@ -81,6 +81,31 @@ struct Converter {
     http_cache_baseline: (bool, u64, Vec<String>, Vec<String>, Vec<String>),
 }
 
+fn syslog_target(dest: &str) -> crate::config::LogTarget {
+    let mut addr = None;
+    let mut facility = None;
+    let mut tag = None;
+    for part in dest.trim_start_matches("syslog:").split(',') {
+        match part.split_once('=') {
+            Some(("server", v)) => {
+                addr = Some(match v.strip_prefix("unix:") {
+                    Some(p) => p.to_string(),
+                    None if v.contains(':') => v.to_string(),
+                    None => format!("{}:514", v),
+                })
+            }
+            Some(("facility", v)) => facility = Some(v.to_string()),
+            Some(("tag", v)) => tag = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    crate::config::LogTarget::Syslog {
+        addr,
+        facility,
+        tag,
+    }
+}
+
 impl Converter {
     fn new(file: &str, search_root: PathBuf) -> Self {
         let config = FerrixConfig {
@@ -92,6 +117,7 @@ impl Converter {
             acme: Default::default(),
             metrics: Default::default(),
             streams: Vec::new(),
+            logging: Default::default(),
         };
         Self {
             config,
@@ -301,6 +327,7 @@ impl Converter {
                     self.config.http.worker_cpu_affinity = parse_cpu_affinity(&d.args);
                     self.converted(d, "virou http.worker_cpu_affinity");
                 }
+                "error_log" => self.convert_error_log(d),
                 "stream" => self.convert_stream(d),
                 "load_module" | "pid" | "user" | "daemon" => {
                     self.report.note(
@@ -916,8 +943,20 @@ impl Converter {
                     self.converted(d, "guardado para o access_log que usar este nome");
                 }
             }
+            "error_log" => self.convert_error_log(d),
             "access_log" => match d.arg(0) {
                 Some("off") => self.converted(d, "sem log em arquivo"),
+                Some(path) if path.starts_with("syslog:") => {
+                    let name = d.arg(1).unwrap_or("combined");
+                    let format = self
+                        .log_formats
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| "combined".to_string());
+                    self.config.logging.access.format = format;
+                    self.config.logging.access.targets.push(syslog_target(path));
+                    self.converted(d, "virou logging.access.targets (syslog)");
+                }
                 Some(path) if !path.starts_with("syslog:") => {
                     let name = d.arg(1).unwrap_or("combined");
                     let format = if name == "combined" {
@@ -1738,6 +1777,44 @@ impl Converter {
         route.path_prefix = "/".to_string();
         route.match_type = RouteMatchType::PrefixLiteral;
         Some(route)
+    }
+
+    fn convert_error_log(&mut self, d: &Directive) {
+        let Some(dest) = d.arg(0) else {
+            return self.note_unsupported(d);
+        };
+        let target = if dest == "stderr" {
+            crate::config::LogTarget::Stderr
+        } else if dest == "/dev/null" {
+            crate::config::LogTarget::Off
+        } else if dest.starts_with("syslog:") {
+            syslog_target(dest)
+        } else if dest.starts_with("memory:") {
+            return self.converted(
+                d,
+                "o Ferrix já guarda eventos recentes em memória (/api/logs)",
+            );
+        } else {
+            crate::config::LogTarget::File {
+                path: dest.to_string(),
+                max_bytes: 0,
+                keep: 0,
+            }
+        };
+        let err = &mut self.config.logging.error;
+        if let Some(level) = d.arg(1) {
+            let level = match level {
+                "crit" | "alert" | "emerg" => "error",
+                "notice" => "info",
+                l => l,
+            };
+            err.level = Some(level.to_string());
+        }
+        let targets = err.targets.get_or_insert_with(Vec::new);
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+        self.converted(d, "virou logging.error");
     }
 
     fn apply_access_log(&mut self, d: &Directive, route: &mut RouteRule) {
@@ -3605,6 +3682,41 @@ mod tests {
         assert_eq!(route.target_type, RouteTargetType::Return);
         assert_eq!(route.redirect_code, Some(200));
         assert_eq!(route.return_body.as_deref(), Some("tudo certo"));
+    }
+
+    #[test]
+    fn error_log_and_syslog_access_log_are_converted() {
+        let r = convert(
+            r#"error_log /var/log/nginx/error.log warn;
+            http {
+                error_log syslog:server=10.0.0.5,facility=local3,tag=web notice;
+                access_log syslog:server=unix:/dev/log;
+                server { listen 80; location / { root /srv; } }
+            }"#,
+        );
+        let e = &r.config.logging.error;
+        assert_eq!(e.level.as_deref(), Some("info"));
+        let t = e.targets.as_ref().unwrap();
+        assert_eq!(
+            t[0],
+            crate::config::LogTarget::File {
+                path: "/var/log/nginx/error.log".into(),
+                max_bytes: 0,
+                keep: 0
+            }
+        );
+        assert_eq!(
+            t[1],
+            crate::config::LogTarget::Syslog {
+                addr: Some("10.0.0.5:514".into()),
+                facility: Some("local3".into()),
+                tag: Some("web".into())
+            }
+        );
+        assert!(matches!(
+            &r.config.logging.access.targets[0],
+            crate::config::LogTarget::Syslog { addr: Some(a), .. } if a == "/dev/log"
+        ));
     }
 
     #[test]
