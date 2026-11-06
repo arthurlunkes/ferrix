@@ -62,6 +62,7 @@ struct Converter {
 
     http_headers: HashMap<String, String>,
     http_headers_always: HashMap<String, String>,
+    recursive_error_pages: bool,
 
     log_formats: HashMap<String, String>,
 
@@ -103,6 +104,7 @@ impl Converter {
             route_seq: 0,
             http_headers: HashMap::new(),
             http_headers_always: HashMap::new(),
+            recursive_error_pages: false,
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
             internal_locations: HashMap::new(),
@@ -322,6 +324,8 @@ impl Converter {
                 listen_port: 8000,
                 headers: HashMap::new(),
                 headers_always: Default::default(),
+                error_redirects: Vec::new(),
+                recursive_error_pages: false,
                 rate_limit: None,
                 limit_conn: None,
                 allowed_ips: Vec::new(),
@@ -812,6 +816,10 @@ impl Converter {
                 }
                 self.converted(d, "virou http.mime_types");
             }
+            "recursive_error_pages" => {
+                self.recursive_error_pages = d.arg(0) == Some("on");
+                self.converted(d, "virou recursive_error_pages nos hosts");
+            }
             "underscores_in_headers" => {
                 self.config.http.underscores_in_headers = d.arg(0) == Some("on");
                 self.converted(d, "virou http.underscores_in_headers");
@@ -1290,6 +1298,8 @@ impl Converter {
             listen_port: 80,
             headers: self.http_headers.clone(),
             headers_always: self.http_headers_always.clone(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: self.recursive_error_pages,
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),
@@ -1455,6 +1465,11 @@ impl Converter {
         }
 
         for item in error_pages {
+            if let Some(rule) = parse_error_redirect(item) {
+                vhost.error_redirects.push(rule);
+                self.converted(item, "virou error_redirects (redirecionamento interno)");
+                continue;
+            }
             let Some(uri) = item.args.last().filter(|u| u.starts_with('/')) else {
                 self.note_unsupported(item);
                 continue;
@@ -1998,16 +2013,11 @@ impl Converter {
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
         let (match_type, pattern) = parse_location_args(&d.args)?;
 
-        if pattern.starts_with('@') {
-            self.report.unsupported(
-                &self.file,
-                d.line,
-                "location @nomeada",
-                &d.source(),
-                "locations nomeadas, usadas por error_page e try_files, não existem no Ferrix",
-            );
-            return None;
-        }
+        let match_type = if pattern.starts_with('@') {
+            RouteMatchType::Named
+        } else {
+            match_type
+        };
 
         let mut route = RouteRule {
             id: self.next_route_id(),
@@ -2114,6 +2124,20 @@ impl Converter {
                 "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
                 "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
                 "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
+                "internal" => route.internal = true,
+                "error_page" => match parse_error_redirect(item).or_else(|| {
+                    let target = item.args.last()?;
+                    let codes: Vec<u16> =
+                        item.args.iter().filter_map(|a| a.parse().ok()).collect();
+                    (!codes.is_empty()).then(|| crate::config::ErrorRedirect {
+                        codes,
+                        target: target.clone(),
+                        status: Some(String::new()),
+                    })
+                }) {
+                    Some(rule) => route.error_redirects.push(rule),
+                    None => self.note_unsupported(item),
+                },
                 "proxy_hide_header" => route.proxy_hide_headers.extend(item.arg(0).map(String::from)),
                 "proxy_pass_header" => route.proxy_pass_headers.extend(item.arg(0).map(String::from)),
                 "proxy_method" => route.proxy_method = item.arg(0).map(String::from),
@@ -3057,13 +3081,11 @@ fn reason_for(name: &str) -> String {
             "não é seguido ao colar texto na tela; use 'ferrix import --from arquivo.conf' na \
              máquina onde os arquivos estão, que resolve os includes automaticamente"
         }
-        "error_page" => "só páginas em arquivo (error_page 404 /404.html) são convertidas",
         "stub_status" => "use /api/metrics e o painel do Ferrix",
         "access_log" | "error_log" | "log_format" => {
             "o Ferrix registra as requisições em memória; veja /api/logs e a tela Live Requests"
         }
         "resolver" => "o Ferrix resolve nomes de backend a cada conexão",
-        "internal" => "não existe o conceito de location interna",
         "expires" => "use add_header Cache-Control para o mesmo efeito",
         "sendfile" | "tcp_nopush" | "tcp_nodelay" | "send_timeout" => {
             "detalhe de entrega que o Ferrix trata internamente"
@@ -3133,6 +3155,32 @@ fn normalize_upstream_url(addr: &str) -> String {
     } else {
         format!("http://{}", addr)
     }
+}
+
+fn parse_error_redirect(d: &Directive) -> Option<crate::config::ErrorRedirect> {
+    let target = d.args.last()?.clone();
+    let mut codes = Vec::new();
+    let mut status = None;
+    for a in &d.args[..d.args.len() - 1] {
+        if let Some(s) = a.strip_prefix('=') {
+            status = Some(if s.is_empty() {
+                "=".to_string()
+            } else {
+                s.to_string()
+            });
+        } else if let Ok(c) = a.parse::<u16>() {
+            codes.push(c);
+        }
+    }
+    let internal = status.is_some()
+        || target.starts_with('@')
+        || target.starts_with("http://")
+        || target.starts_with("https://");
+    (internal && !codes.is_empty()).then_some(crate::config::ErrorRedirect {
+        codes,
+        target,
+        status: status.or(Some(String::new())),
+    })
 }
 
 pub fn parse_time_ms(value: &str) -> Option<u64> {

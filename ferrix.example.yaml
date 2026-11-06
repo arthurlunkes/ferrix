@@ -81,6 +81,9 @@ http:
   ## Add X-Real-IP, X-Forwarded-For and X-Forwarded-Proto to every proxied request
   ## (Ferrix's behaviour before 0.3). Off = nginx behaviour: only `proxy_set_headers`.
   # proxy_forwarded_headers: false
+  ## Follow X-Accel-Redirect from backends (nginx internal redirect). Off by default here:
+  ## turning it on keeps a copy of each request's headers on hosts that may need it.
+  # x_accel_redirect: false
 
   ## Request validation (nginx defaults). Ambiguous requests always get 400: two Host
   ## headers, HTTP/1.1 without Host, Content-Length with Transfer-Encoding.
@@ -262,6 +265,12 @@ vhosts:
     # error_pages:
     #   "404": /var/www/errors/404.html
     #   5xx: /var/www/errors/50x.html
+    ## Internal redirects on error (nginx `error_page 404 =200 @fallback`). target is a
+    ## named route (@name), a URI served by this site, or an external URL (302).
+    ## status: empty keeps the original code, "=" uses the target's, or a number.
+    # error_redirects:
+    #   - { codes: [404], target: "@fallback", status: "=" }
+    # recursive_error_pages: false
 
     ## Rewrites and if-conditions that run before route matching.
     # rewrites:
@@ -277,8 +286,13 @@ vhosts:
         target_type: proxy_upstream
         upstream_name: backend
         strip_prefix: true
-        ## prefix, prefix_literal, exact, prefix_priority, regex, regex_case_insensitive
+        ## prefix, prefix_literal, exact, prefix_priority, regex, regex_case_insensitive,
+        ## or named (path_prefix "@name", nginx `location @name`).
         # match_type: prefix
+        ## Only reachable through error_redirects, try_files or X-Accel-Redirect.
+        # internal: false
+        ## Per-route error redirects (override the site's).
+        # error_redirects: []
         # websocket_enabled: true
         # access_log: true
 
