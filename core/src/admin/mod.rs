@@ -329,6 +329,7 @@ fn authorized(state: &AdminState, headers: &HeaderMap, uri: &Uri) -> bool {
                 &crate::config::BasicAuthConfig {
                     username: u.clone(),
                     password: p.clone(),
+                    ..Default::default()
                 },
             ),
             _ => false,

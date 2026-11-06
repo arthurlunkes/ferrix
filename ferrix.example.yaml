@@ -237,9 +237,13 @@ vhosts:
     ## Access control (CIDRs allowed) and password protection.
     # allowed_ips: [192.168.0.0/16]
     # denied_ips: [192.168.1.13]
+    ## password is plain text or a hash (bcrypt $2y$, $apr1$, {SHA}, {SSHA}, $5$, $6$).
+    ## user_file is an htpasswd file (nginx `auth_basic_user_file`), reloaded when it changes.
     # basic_auth:
     #   username: admin
     #   password: change-me
+    #   user_file: /etc/ferrix/htpasswd
+    #   realm: Restricted
     # satisfy: all                  ## all: IP and password; any: either is enough
 
     ## Request rate and concurrent connections per client IP.
