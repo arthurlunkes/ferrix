@@ -319,9 +319,11 @@ impl ProxyEngine {
         resp: Response,
     ) -> Response {
         let status = resp.status();
+        let ignores = |h: &str| cfg.ignore_headers.iter().any(|i| i.eq_ignore_ascii_case(h));
         let cacheable = status == StatusCode::OK
-            && !crate::http::cache::has_set_cookie(resp.headers())
-            && !crate::http::cache::upstream_forbids_cache(resp.headers())
+            && (ignores("Set-Cookie") || !crate::http::cache::has_set_cookie(resp.headers()))
+            && (ignores("Cache-Control")
+                || !crate::http::cache::upstream_forbids_cache(resp.headers()))
             && resp
                 .headers()
                 .get(header::CONTENT_LENGTH)
@@ -442,7 +444,14 @@ impl ProxyEngine {
                 let base = target.url.clone();
                 let path = super::build_target_path(&parts.uri, parts.uri.path(), route);
                 let mut headers = parts.headers.clone();
-                super::proxy::prepare_forwarded_headers(&mut headers, route, client_ip, is_tls);
+                super::proxy::prepare_forwarded_headers(
+                    &mut headers,
+                    route,
+                    client_ip,
+                    is_tls,
+                    super::proxy::proxy_host(upstream_cfg),
+                    compiled.config.http.proxy_forwarded_headers,
+                );
                 let http = &compiled.config.http;
                 let client = crate::http::upstream::UpstreamClient::new(
                     Duration::from_millis(http.proxy_connect_timeout_ms),
@@ -855,6 +864,7 @@ mod stale_tests {
             health_check: None,
             verify_tls: true,
             hash_key: None,
+            host_header: None,
             sticky: None,
             tls: None,
         };

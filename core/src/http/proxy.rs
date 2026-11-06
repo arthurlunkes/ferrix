@@ -22,25 +22,19 @@ impl ProxyEngine {
     ) -> Response {
         let http = &compiled.config.http;
         let (mut parts, body) = req.into_parts();
-        let method = &parts.method;
+        let method_override = route
+            .proxy_method
+            .as_deref()
+            .and_then(|m| axum::http::Method::from_bytes(m.as_bytes()).ok());
+        let method = method_override.as_ref().unwrap_or(&parts.method).clone();
+        let method = &method;
         let path_and_query = parts
             .uri
             .path_and_query()
             .map(|pq| pq.as_str())
             .unwrap_or("/");
 
-        let target_path: std::borrow::Cow<str> = if route.strip_prefix {
-            let stripped = path_and_query
-                .strip_prefix(&route.path_prefix)
-                .unwrap_or(path_and_query);
-            if stripped.starts_with('/') {
-                stripped.into()
-            } else {
-                format!("/{}", stripped).into()
-            }
-        } else {
-            path_and_query.into()
-        };
+        let target_path = upstream_path(route, path_and_query);
 
         if let Some(declared) = parts
             .headers
@@ -103,15 +97,53 @@ impl ProxyEngine {
             .timeout_ms
             .map(|ms| crate::event::clock::now() + Duration::from_millis(ms));
 
-        let (buffered_body, mut streaming_body) = match request_body {
+        let (buffered_body, streaming_body) = match request_body {
             RequestBody::Buffered(b) => (Some(b), None),
             RequestBody::Streaming(b) => (None, Some(b)),
         };
 
+        let set_body = route.proxy_set_body.as_deref().map(|t| {
+            let ctx = super::vars::Ctx {
+                method: &parts.method,
+                uri: parts.uri.clone(),
+                headers: &parts.headers,
+                client_ip,
+                is_tls,
+                http: &compiled.config.http,
+                set: parts
+                    .extensions
+                    .get::<super::vars::SetVars>()
+                    .map(|s| s.0.clone())
+                    .unwrap_or_default(),
+                captures: Vec::new(),
+                client_cert: None,
+            };
+            Bytes::from(ctx.expand(t))
+        });
+        let (buffered_body, mut streaming_body) = match (&set_body, route.proxy_pass_request_body) {
+            (Some(b), _) => (Some(b.clone()), None),
+            (None, false) => (None, None),
+            (None, true) => (buffered_body, streaming_body),
+        };
         let templated = templated_headers(&parts, route, client_ip, is_tls, compiled);
-        prepare_forwarded_headers(&mut parts.headers, route, client_ip, is_tls);
+        prepare_forwarded_headers(
+            &mut parts.headers,
+            route,
+            client_ip,
+            is_tls,
+            proxy_host(upstream_cfg),
+            http.proxy_forwarded_headers,
+        );
+        if set_body.is_some() || !route.proxy_pass_request_body {
+            parts.headers.remove(header::CONTENT_LENGTH);
+            parts.headers.remove(header::TRANSFER_ENCODING);
+        }
         for (n, v) in templated {
-            parts.headers.insert(n, v);
+            if v.is_empty() {
+                parts.headers.remove(&n);
+            } else {
+                parts.headers.insert(n, v);
+            }
         }
         let headers = &parts.headers;
         let track_conns = upstream_cfg.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn
@@ -180,6 +212,7 @@ impl ProxyEngine {
                     let mut resp = build_upstream_response(
                         upstream_res,
                         compiled.target_header(upstream_name, target_index),
+                        route,
                     );
                     if route.proxy_intercept_errors && resp.status().as_u16() >= 400 {
                         resp.extensions_mut()
@@ -255,18 +288,96 @@ pub(super) fn strip_hop_by_hop(headers: &mut HeaderMap) {
 const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
-pub const X_FERRIX_UPSTREAM: HeaderName = HeaderName::from_static("x-ferrix-upstream");
+#[derive(Clone, Debug)]
+pub struct UpstreamAddr(pub HeaderValue);
+
+pub fn upstream_addr(resp: &Response) -> Option<&HeaderValue> {
+    resp.extensions().get::<UpstreamAddr>().map(|u| &u.0)
+}
+
+const HIDDEN_BY_DEFAULT: [&str; 7] = [
+    "x-pad",
+    "x-accel-expires",
+    "x-accel-redirect",
+    "x-accel-limit-rate",
+    "x-accel-buffering",
+    "x-accel-charset",
+    "status",
+];
 
 pub(super) fn build_upstream_response(
     upstream_res: Response,
     upstream_header: Option<&HeaderValue>,
+    route: &RouteRule,
 ) -> Response {
     let (mut parts, body) = upstream_res.into_parts();
     strip_hop_by_hop(&mut parts.headers);
+    for name in HIDDEN_BY_DEFAULT {
+        if parts.headers.contains_key(name)
+            && !route
+                .proxy_pass_headers
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(name))
+        {
+            parts.headers.remove(name);
+        }
+    }
+    for name in &route.proxy_hide_headers {
+        parts.headers.remove(name.as_str());
+    }
     if let Some(v) = upstream_header {
-        parts.headers.insert(X_FERRIX_UPSTREAM, v.clone());
+        parts.extensions.insert(UpstreamAddr(v.clone()));
     }
     Response::from_parts(parts, body)
+}
+
+pub fn upstream_path(route: &RouteRule, path_and_query: &str) -> String {
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path_and_query, None),
+    };
+    let base = if route.strip_prefix {
+        let normalized = super::uri_path::normalize(path).ok().map(|p| {
+            let mut merged = String::with_capacity(p.len());
+            for c in p.chars() {
+                if !(c == '/' && merged.ends_with('/')) {
+                    merged.push(c);
+                }
+            }
+            reencode_path(&merged)
+        });
+        let n = normalized.unwrap_or_else(|| path.to_string());
+        let stripped = n.strip_prefix(route.path_prefix.as_str()).unwrap_or(&n);
+        if stripped.starts_with('/') {
+            stripped.to_string()
+        } else {
+            format!("/{stripped}")
+        }
+    } else {
+        path.to_string()
+    };
+    match query {
+        Some(q) => format!("{base}?{q}"),
+        None => base,
+    }
+}
+
+pub fn proxy_host(upstream: &crate::config::UpstreamConfig) -> &str {
+    upstream.host_header.as_deref().unwrap_or(&upstream.name)
+}
+
+const URI_SAFE: &[u8] = b"-._~!$&'()*+,;=:@/";
+
+pub fn reencode_path(decoded: &str) -> String {
+    let mut out = String::with_capacity(decoded.len() + 8);
+    for b in decoded.bytes() {
+        if b.is_ascii_alphanumeric() || URI_SAFE.contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 pub(super) fn prepare_forwarded_headers(
@@ -274,31 +385,48 @@ pub(super) fn prepare_forwarded_headers(
     route: &RouteRule,
     client_ip: IpAddr,
     is_tls: bool,
+    proxy_host: &str,
+    legacy_forwarded: bool,
 ) {
     let scheme = scheme_str(is_tls);
-    headers.reserve(3 + route.proxy_set_headers.len());
     let host = headers.remove(header::HOST);
     strip_hop_by_hop(headers);
+    if !route.proxy_pass_request_headers {
+        headers.clear();
+    }
 
     let ip = client_ip.to_string();
     let xff = RealIpResolver::proxy_add_x_forwarded_for(headers, &ip);
     let ip_value = HeaderValue::from_str(&ip).ok();
     let xff_value = HeaderValue::from_str(&xff).ok();
 
-    if let Some(v) = &ip_value {
-        headers.insert(X_REAL_IP, v.clone());
+    if legacy_forwarded {
+        if let Some(v) = &ip_value {
+            headers.insert(X_REAL_IP, v.clone());
+        }
+        if let Some(v) = &xff_value {
+            headers.insert(X_FORWARDED_FOR, v.clone());
+        }
+        headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static(scheme));
     }
-    if let Some(v) = &xff_value {
-        headers.insert(X_FORWARDED_FOR, v.clone());
+    if let Ok(v) = HeaderValue::from_str(proxy_host) {
+        headers.insert(header::HOST, v);
     }
-    headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static(scheme));
 
     for (k, v) in &route.proxy_set_headers {
         let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
             continue;
         };
+        if v.is_empty() {
+            headers.remove(&name);
+            continue;
+        }
         let value = match v.as_str() {
-            "$host" => host.clone(),
+            "$host" => host
+                .clone()
+                .or_else(|| HeaderValue::from_str(proxy_host).ok()),
+            "$http_host" => host.clone(),
+            "$proxy_host" => HeaderValue::from_str(proxy_host).ok(),
             "$remote_addr" => ip_value.clone(),
             "$proxy_add_x_forwarded_for" => xff_value.clone(),
             "$scheme" => Some(HeaderValue::from_static(scheme)),
@@ -321,7 +449,12 @@ fn templated_headers(
         v.contains('$')
             && !matches!(
                 v,
-                "$host" | "$remote_addr" | "$proxy_add_x_forwarded_for" | "$scheme"
+                "$host"
+                    | "$http_host"
+                    | "$proxy_host"
+                    | "$remote_addr"
+                    | "$proxy_add_x_forwarded_for"
+                    | "$scheme"
             )
     };
     if !route.proxy_set_headers.values().any(|v| complex(v)) {

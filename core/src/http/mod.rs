@@ -52,7 +52,7 @@ use limit_conn::ConnLimiter;
 use limit_req::{RateLimitDecision, RateLimiter};
 use matcher::CompiledConfig;
 use proxy::scheme_str;
-pub use proxy::X_FERRIX_UPSTREAM;
+pub use proxy::{upstream_addr, UpstreamAddr};
 use realip::RealIpResolver;
 use static_files::{StaticFileServer, StaticRequest};
 use upstream::balancer::UpstreamPoolManager;
@@ -327,7 +327,7 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            upstream: response.headers().get(X_FERRIX_UPSTREAM).cloned(),
+            upstream: upstream_addr(&response).cloned(),
             user_agent,
             is_websocket: is_ws,
         };
@@ -1369,9 +1369,7 @@ fn absolutize_redirect(
     host_header: &HeaderValue,
     is_tls: bool,
 ) -> Response {
-    if !resp.status().is_redirection()
-        || !http.absolute_redirect
-        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
+    if !resp.status().is_redirection() || !http.absolute_redirect || upstream_addr(&resp).is_some()
     {
         return resp;
     }
