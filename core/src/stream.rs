@@ -497,6 +497,7 @@ mod stream_feature_tests {
                     health_check: None,
                     verify_tls: true,
                     hash_key: None,
+                    host_header: None,
                     sticky: None,
                     tls: None,
                 },

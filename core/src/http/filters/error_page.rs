@@ -4,17 +4,31 @@ use axum::response::Response;
 use tracing::warn;
 
 use crate::config::VirtualHost;
-use crate::http::X_FERRIX_UPSTREAM;
+use crate::http::upstream_addr;
 
 #[derive(Clone, Copy)]
 pub struct InterceptErrors;
+
+pub fn plain_status(code: axum::http::StatusCode) -> Response {
+    let body = format!(
+        "{} {}\n",
+        code.as_u16(),
+        code.canonical_reason().unwrap_or("")
+    );
+    let mut r = Response::new(Body::from(body));
+    *r.status_mut() = code;
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    r
+}
 
 pub async fn apply(vhost: &VirtualHost, resp: Response) -> Response {
     let status = resp.status();
     if status.as_u16() < 400
         || vhost.error_pages.is_empty()
-        || (resp.headers().contains_key(X_FERRIX_UPSTREAM)
-            && resp.extensions().get::<InterceptErrors>().is_none())
+        || (upstream_addr(&resp).is_some() && resp.extensions().get::<InterceptErrors>().is_none())
     {
         return resp;
     }

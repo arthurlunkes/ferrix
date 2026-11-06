@@ -425,6 +425,11 @@ pub async fn exchange_raw(
 }
 
 fn dropped_response_header(name: &[u8]) -> bool {
+    if name.len() > 8 && name[..8].eq_ignore_ascii_case(b"x-accel-")
+        || name.eq_ignore_ascii_case(b"x-pad")
+    {
+        return true;
+    }
     const DROPPED: [&[u8]; 11] = [
         b"connection",
         b"keep-alive",

@@ -49,6 +49,7 @@ pub async fn serve(
     let mut buf = BytesMut::with_capacity(2 * 1024);
     let mut out: Vec<u8> = Vec::with_capacity(1024);
     let mut first = true;
+    let limits = Limits::from(engine);
 
     loop {
         if !first && buf.is_empty() && buf.capacity() > 0 {
@@ -61,11 +62,23 @@ pub async fn serve(
         } else {
             settings.header_timeout
         };
-        let head = match read_head(&mut tcp, &mut buf, wait, engine, port).await {
+        let head = match read_head(&mut tcp, &mut buf, wait, engine, port, &limits).await {
             Ok(Some(h)) => h,
             Ok(None) => return Outcome::Done,
+            Err(HeadError::Http09(uri)) => {
+                let mut req = Request::new(Body::empty());
+                *req.uri_mut() = uri;
+                *req.version_mut() = Version::HTTP_09;
+                let resp = Box::pin(engine.handle_request(port, false, addr, req)).await;
+                if let Ok(body) = resp.into_body().collect().await {
+                    let _ = tcp.write_all(&body.to_bytes()).await;
+                }
+                let _ = tcp.shutdown().await;
+                return Outcome::Done;
+            }
             Err(HeadError::Bad(status)) => {
-                let _ = write_error(&mut tcp, status).await;
+                let _ =
+                    write_error(&mut tcp, status, engine.store.config().http.server_tokens).await;
                 return Outcome::Done;
             }
             Err(HeadError::Handoff) => return Outcome::Handoff(tcp, buf.freeze()),
@@ -140,6 +153,48 @@ struct Head {
 enum HeadError {
     Bad(StatusCode),
     Handoff,
+    Http09(Uri),
+}
+
+struct Limits {
+    cfg: std::sync::Arc<crate::config::FerrixConfig>,
+}
+
+impl Limits {
+    #[cfg(test)]
+    fn test() -> Self {
+        Self {
+            cfg: std::sync::Arc::new(crate::config::FerrixConfig::default()),
+        }
+    }
+
+    fn from(engine: &ProxyEngine) -> Self {
+        Self {
+            cfg: engine.store.config(),
+        }
+    }
+
+    fn max_line(&self) -> usize {
+        self.cfg.http.max_header_line_bytes.max(256)
+    }
+}
+
+fn first_line_has_version(buf: &[u8]) -> bool {
+    let end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
+    buf[..end].windows(5).any(|w| w == b"HTTP/")
+}
+
+fn http09_target(buf: &[u8]) -> Option<Option<Uri>> {
+    let end = buf.iter().position(|&b| b == b'\n')?;
+    let line = buf[..end].strip_suffix(b"\r").unwrap_or(&buf[..end]);
+    let mut parts = line.split(|&b| b == b' ').filter(|p| !p.is_empty());
+    let (Some(m), Some(path), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Some(None);
+    };
+    if m != b"GET" || !path.starts_with(b"/") {
+        return Some(None);
+    }
+    Some(Uri::try_from(path).ok())
 }
 
 async fn read_head(
@@ -148,6 +203,7 @@ async fn read_head(
     wait: Duration,
     engine: &ProxyEngine,
     port: u16,
+    limits: &Limits,
 ) -> Result<Option<Head>, HeadError> {
     let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
     loop {
@@ -158,9 +214,24 @@ async fn read_head(
                 if buf.len() >= 14 {
                     return Err(HeadError::Handoff);
                 }
-            } else if let Some(head) = parse(buf, |host, path| engine.raw_route(port, host, path))?
+            } else if let Some(head) =
+                parse(buf, limits, |host, path| engine.raw_route(port, host, path))?
             {
                 return Ok(Some(head));
+            } else if let Some(target) = http09_target(buf) {
+                if !first_line_has_version(buf) {
+                    return Err(match target {
+                        Some(uri) => HeadError::Http09(uri),
+                        None => HeadError::Bad(StatusCode::BAD_REQUEST),
+                    });
+                }
+            }
+            if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                if nl > limits.max_line() {
+                    return Err(HeadError::Bad(StatusCode::URI_TOO_LONG));
+                }
+            } else if buf.len() > limits.max_line() {
+                return Err(HeadError::Bad(StatusCode::URI_TOO_LONG));
             }
         }
         if buf.len() >= MAX_HEAD {
@@ -178,6 +249,7 @@ async fn read_head(
 
 fn parse(
     buf: &mut BytesMut,
+    limits: &Limits,
     raw_route: impl FnOnce(&str, &str) -> Option<crate::http::raw_proxy::RawRoute>,
 ) -> Result<Option<Head>, HeadError> {
     let mut spans = [(0usize, 0usize, 0usize, 0usize); MAX_HEADERS];
@@ -185,23 +257,38 @@ fn parse(
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
         let base = buf.as_ptr() as usize;
-        let len = match req.parse(buf) {
+        let mut cfg = httparse::ParserConfig::default();
+        cfg.ignore_invalid_headers_in_requests(limits.cfg.http.ignore_invalid_headers);
+        let len = match cfg.parse_request(&mut req, buf) {
             Ok(httparse::Status::Complete(n)) => n,
             Ok(httparse::Status::Partial) => return Ok(None),
+            Err(_) if !first_line_has_version(buf) => return Ok(None),
             Err(httparse::Error::TooManyHeaders) => {
                 return Err(HeadError::Bad(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE))
             }
             Err(_) => return Err(HeadError::Bad(StatusCode::BAD_REQUEST)),
         };
+        let max_line = limits.max_line();
         let mut count = 0;
         for h in req.headers.iter() {
+            if h.name.len() + h.value.len() + 2 > max_line {
+                return Err(HeadError::Bad(StatusCode::BAD_REQUEST));
+            }
             let n = h.name.as_ptr() as usize - base;
             let v = h.value.as_ptr() as usize - base;
             spans[count] = (n, n + h.name.len(), v, v + h.value.len());
             count += 1;
         }
-        let method = Method::from_bytes(req.method.unwrap_or("").as_bytes())
-            .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
+        let mbytes = req.method.unwrap_or("").as_bytes();
+        if !crate::http::request_check::method_token_ok(mbytes) {
+            return Err(HeadError::Bad(StatusCode::BAD_REQUEST));
+        }
+        let method =
+            Method::from_bytes(mbytes).map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
+        if !crate::http::request_check::method_allowed(&limits.cfg.http, &method) {
+            return Err(HeadError::Bad(StatusCode::METHOD_NOT_ALLOWED));
+        }
+
         let path = req.path.unwrap_or("/");
         let p = path.as_ptr() as usize - base;
         (
@@ -220,17 +307,31 @@ fn parse(
     let mut keep_alive = minor == 1;
     let mut needs_hyper = false;
     let mut host: &[u8] = b"";
+    let mut hosts = 0;
+    let mut content_length: Option<&[u8]> = None;
+    let mut has_te = false;
+    let mut underscore = false;
     for &(ns, ne, vs, ve) in &spans[..count] {
         let name = &raw[ns..ne];
         let value = &raw[vs..ve];
+        underscore |= name.contains(&b'_');
         if name.eq_ignore_ascii_case(b"content-length") {
+            if content_length.is_some_and(|c| c != value)
+                || std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .is_none()
+            {
+                return Err(HeadError::Bad(StatusCode::BAD_REQUEST));
+            }
+            content_length = Some(value);
             if value != b"0" {
                 needs_hyper = true;
             }
-        } else if name.eq_ignore_ascii_case(b"transfer-encoding")
-            || name.eq_ignore_ascii_case(b"upgrade")
-            || name.eq_ignore_ascii_case(b"expect")
-        {
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+            has_te = true;
+            needs_hyper = true;
+        } else if name.eq_ignore_ascii_case(b"upgrade") || name.eq_ignore_ascii_case(b"expect") {
             needs_hyper = true;
         } else if name.eq_ignore_ascii_case(b"connection") {
             for token in std::str::from_utf8(value)
@@ -248,13 +349,20 @@ fn parse(
             }
         } else if name.eq_ignore_ascii_case(b"host") {
             host = value;
+            hosts += 1;
         }
+    }
+    if hosts > 1 || (hosts == 0 && minor == 1) || (has_te && content_length.is_some()) {
+        return Err(HeadError::Bad(StatusCode::BAD_REQUEST));
     }
 
     if method == Method::CONNECT {
         needs_hyper = true;
     }
-    let raw_route = if needs_hyper || method == Method::HEAD {
+    let raw_route = if needs_hyper
+        || method == Method::HEAD
+        || (underscore && !limits.cfg.http.underscores_in_headers)
+    {
         None
     } else {
         raw_route(std::str::from_utf8(host).unwrap_or(""), uri.path())
@@ -516,15 +624,26 @@ pub(super) async fn write_response(
     }
 }
 
-async fn write_error(tcp: &mut TcpStream, status: StatusCode) -> io::Result<()> {
-    let mut out = Vec::new();
+async fn write_error(
+    tcp: &mut TcpStream,
+    status: StatusCode,
+    server_tokens: bool,
+) -> io::Result<()> {
+    let page = crate::http::filters::default_pages::render(status, None, server_tokens);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    let mut out = Vec::with_capacity(page.len() + 128);
     encode_head(
         &mut out,
         status,
-        &HeaderMap::new(),
-        Framing::Length(0),
+        &headers,
+        Framing::Length(page.len() as u64),
         false,
     );
+    out.extend_from_slice(page.as_bytes());
     tcp.write_all(&out).await
 }
 
@@ -650,7 +769,7 @@ mod tests {
 
     fn parse_str(s: &str) -> Result<Option<Head>, HeadError> {
         let mut buf = BytesMut::from(s.as_bytes());
-        parse(&mut buf, |_, _| None)
+        parse(&mut buf, &Limits::test(), |_, _| None)
     }
 
     #[test]
@@ -667,16 +786,54 @@ mod tests {
     #[test]
     fn bodies_and_upgrades_go_to_hyper() {
         for req in [
-            "POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\n",
-            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
-            "GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
-            "PUT / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 9\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            "PUT / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 9\r\n\r\n",
         ] {
             let Ok(Some(h)) = parse_str(req) else {
                 panic!("{req}")
             };
             assert!(h.needs_hyper, "{req}");
         }
+    }
+
+    #[test]
+    fn ambiguous_requests_are_rejected_like_nginx() {
+        for req in [
+            "GET / HTTP/1.1\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\n",
+            "get / HTTP/1.1\r\nHost: a\r\n\r\n",
+        ] {
+            assert!(
+                matches!(parse_str(req), Err(HeadError::Bad(StatusCode::BAD_REQUEST))),
+                "{req}"
+            );
+        }
+        assert!(matches!(
+            parse_str("TRACE / HTTP/1.1\r\nHost: a\r\n\r\n"),
+            Err(HeadError::Bad(StatusCode::METHOD_NOT_ALLOWED))
+        ));
+        let Ok(Some(h)) = parse_str("GET / HTTP/1.1\r\nHost: a\r\nNoColonHere\r\nX: 1\r\n\r\n")
+        else {
+            panic!("invalid header lines are skipped")
+        };
+        assert_eq!(h.headers["x"], "1");
+        let big = format!(
+            "GET / HTTP/1.1\r\nHost: a\r\nX-Big: {}\r\n\r\n",
+            "a".repeat(9000)
+        );
+        assert!(matches!(
+            parse_str(&big),
+            Err(HeadError::Bad(StatusCode::BAD_REQUEST))
+        ));
+        assert!(matches!(
+            http09_target(b"GET /index.html\r\n"),
+            Some(Some(_))
+        ));
+        assert!(matches!(http09_target(b"POST /x\r\n"), Some(None)));
     }
 
     #[test]
@@ -694,10 +851,8 @@ mod tests {
     #[test]
     fn partial_and_malformed_heads() {
         assert!(matches!(parse_str("GET / HTTP/1.1\r\nHost:"), Ok(None)));
-        assert!(matches!(
-            parse_str("GARBAGE\r\n\r\n"),
-            Err(HeadError::Bad(StatusCode::BAD_REQUEST))
-        ));
+        assert!(matches!(parse_str("GARBAGE\r\n\r\n"), Ok(None)));
+        assert!(matches!(http09_target(b"GARBAGE\r\n\r\n"), Some(None)));
     }
 
     #[test]

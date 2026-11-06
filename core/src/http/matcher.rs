@@ -111,18 +111,28 @@ impl ServerNamePattern {
 fn compile_response_headers(
     vhost: &VirtualHost,
     route: &RouteRule,
-) -> Vec<(HeaderName, HeaderValue)> {
-    let mut merged: Vec<(HeaderName, HeaderValue)> = Vec::new();
-    for (k, v) in vhost.headers.iter().chain(route.add_headers.iter()) {
+) -> Vec<(HeaderName, HeaderValue, bool)> {
+    let mut merged: Vec<(HeaderName, HeaderValue, bool)> = Vec::new();
+    let all = vhost
+        .headers
+        .iter()
+        .map(|kv| (kv, false))
+        .chain(vhost.headers_always.iter().map(|kv| (kv, true)))
+        .chain(route.add_headers.iter().map(|kv| (kv, false)))
+        .chain(route.add_headers_always.iter().map(|kv| (kv, true)));
+    for ((k, v), always) in all {
         let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
         ) else {
             continue;
         };
-        match merged.iter_mut().find(|(n, _)| *n == name) {
-            Some(slot) => slot.1 = value,
-            None => merged.push((name, value)),
+        match merged.iter_mut().find(|(n, _, _)| *n == name) {
+            Some(slot) => {
+                slot.1 = value;
+                slot.2 = always;
+            }
+            None => merged.push((name, value, always)),
         }
     }
     merged
@@ -137,7 +147,7 @@ struct CompiledRoute {
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
 
-    response_headers: Vec<(HeaderName, HeaderValue)>,
+    response_headers: Vec<(HeaderName, HeaderValue, bool)>,
     plain_proxy: bool,
 }
 
@@ -183,6 +193,8 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
             })
         && vhost.allowed_ips.is_empty()
         && vhost.conditions.is_empty()
+        && vhost.error_redirects.is_empty()
+        && !config.http.x_accel_redirect
         && vhost.rewrites.is_empty()
         && vhost.denied_ips.is_empty()
         && vhost.basic_auth.is_none()
@@ -196,6 +208,8 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
         && route.limit_conn.is_none()
         && route.rate_limit.is_none()
         && route.add_headers.is_empty()
+        && route.add_headers_always.is_empty()
+        && vhost.headers_always.is_empty()
         && route.proxy_set_headers.is_empty()
         && route.cache.is_none()
         && route.cors.is_none()
@@ -231,6 +245,14 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || route.add_after_body.is_some()
         || route.gunzip
         || route.charset.is_some()
+        || !route.proxy_hide_headers.is_empty()
+        || !route.proxy_pass_headers.is_empty()
+        || route.proxy_method.is_some()
+        || route.proxy_set_body.is_some()
+        || !route.proxy_pass_request_headers
+        || !route.proxy_pass_request_body
+        || route.internal
+        || !route.error_redirects.is_empty()
 }
 
 #[derive(Debug)]
@@ -241,6 +263,7 @@ struct CompiledVHost {
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
     has_rewrite_phase: bool,
+    internal_redirects: bool,
 }
 
 #[derive(Debug)]
@@ -273,6 +296,16 @@ impl CompiledConfig {
                     .collect(),
                 allowed_ips: IpMatcher::compile(&v.allowed_ips).0,
                 denied_ips: IpMatcher::compile(&v.denied_ips).0,
+                internal_redirects: config.http.x_accel_redirect
+                    || !v.error_redirects.is_empty()
+                    || v.routes.iter().any(|r| {
+                        !r.error_redirects.is_empty()
+                            || r.try_files.as_deref().is_some_and(|t| {
+                                t.split_whitespace()
+                                    .last()
+                                    .is_some_and(|l| l.starts_with('@') || l.starts_with('/'))
+                            })
+                    }),
                 has_rewrite_phase: !v.conditions.is_empty()
                     || !v.rewrites.is_empty()
                     || v.routes.iter().any(|r| {
@@ -369,7 +402,7 @@ impl CompiledConfig {
         &self,
         vhost_index: usize,
         route_index: usize,
-    ) -> &[(HeaderName, HeaderValue)] {
+    ) -> &[(HeaderName, HeaderValue, bool)] {
         self.vhosts
             .get(vhost_index)
             .and_then(|v| v.routes.get(route_index))
@@ -465,6 +498,21 @@ impl CompiledConfig {
         })
     }
 
+    pub fn named_route(&self, vhost_index: usize, name: &str) -> Option<usize> {
+        self.config
+            .vhosts
+            .get(vhost_index)?
+            .routes
+            .iter()
+            .position(|r| r.match_type == RouteMatchType::Named && r.path_prefix == name)
+    }
+
+    pub fn has_internal_redirects(&self, vhost_index: usize) -> bool {
+        self.vhosts
+            .get(vhost_index)
+            .is_some_and(|v| v.internal_redirects)
+    }
+
     pub fn match_route(&self, vhost_index: usize, path: &str) -> Option<RouteMatch> {
         let vhost = self.vhosts.get(vhost_index)?;
 
@@ -492,7 +540,9 @@ impl CompiledConfig {
                         }
                     }
                 }
-                RouteMatchType::Regex | RouteMatchType::RegexCaseInsensitive => {}
+                RouteMatchType::Regex
+                | RouteMatchType::RegexCaseInsensitive
+                | RouteMatchType::Named => {}
             }
         }
 
@@ -566,6 +616,9 @@ mod tests {
             server_names: names.iter().map(|s| s.to_string()).collect(),
             listen_port: 8000,
             headers: Default::default(),
+            headers_always: Default::default(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: false,
             rate_limit: None,
             limit_conn: None,
             allowed_ips: vec![],

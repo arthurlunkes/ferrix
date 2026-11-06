@@ -136,7 +136,7 @@ const EXPECTATIONS: &[ExampleExpectation] = &[
         min_vhosts: 1,
         min_upstreams: 1,
 
-        expected_unsupported: &["proxy_cache_key", "proxy_no_cache"],
+        expected_unsupported: &[],
     },
     ExampleExpectation {
         dir_contains: "12-compressao_estaticos_spa",
@@ -286,8 +286,8 @@ fn locations_protected_by_htpasswd_stay_protected_after_migration() {
     for route in protected_routes {
         if let Some(auth) = &route.basic_auth {
             assert!(
-                !auth.password.is_empty(),
-                "rota '{}' ficou com senha vazia",
+                !auth.password.is_empty() || auth.user_file.is_some(),
+                "rota '{}' ficou sem credenciais",
                 route.path_prefix
             );
         }

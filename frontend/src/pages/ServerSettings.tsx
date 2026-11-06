@@ -215,6 +215,41 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         )}
       </Section>
 
+      <Section title="Cache storage (cache_store)" hint="Where route caches live: memory, disk (proxy_cache_path) or Redis / Dragonfly / KeyDB / Valkey">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <Field label="Kind">
+            <Select
+              value={http.cache_store?.kind ?? "memory"}
+              onChange={(e) => setHttp({ cache_store: { ...(http.cache_store ?? { kind: "memory" }), kind: e.target.value as any } })}
+            >
+              <option value="memory">memory</option>
+              <option value="disk">disk</option>
+              <option value="redis">redis / dragonfly</option>
+            </Select>
+          </Field>
+          {http.cache_store?.kind === "disk" && (
+            <>
+              <Field label="Directory" className="md:col-span-2">
+                <Input value={http.cache_store.path ?? ""} onChange={(e) => setHttp({ cache_store: { ...http.cache_store!, path: e.target.value || null } })} placeholder="/var/cache/ferrix" mono className="text-xs" />
+              </Field>
+              <Field label="Max bytes" hint="0 = no limit">
+                <Input type="number" value={http.cache_store.max_bytes ?? 0} onChange={(e) => setHttp({ cache_store: { ...http.cache_store!, max_bytes: parseInt(e.target.value) || 0 } })} mono />
+              </Field>
+            </>
+          )}
+          {http.cache_store?.kind === "redis" && (
+            <>
+              <Field label="URL" className="md:col-span-2">
+                <Input value={http.cache_store.url ?? ""} onChange={(e) => setHttp({ cache_store: { ...http.cache_store!, url: e.target.value || null } })} placeholder="redis://:password@127.0.0.1:6379/0" mono className="text-xs" />
+              </Field>
+              <Field label="Key prefix">
+                <Input value={http.cache_store.prefix ?? ""} onChange={(e) => setHttp({ cache_store: { ...http.cache_store!, prefix: e.target.value || null } })} placeholder="ferrix:cache:" mono className="text-xs" />
+              </Field>
+            </>
+          )}
+        </div>
+      </Section>
+
       <Section title="Connections and URLs">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Toggle checked={!!http.proxy_protocol} onChange={(v) => setHttp({ proxy_protocol: v })} label="PROXY protocol on HTTP listeners" description="listen ... proxy_protocol (AWS NLB, HAProxy); applies after a restart" />
@@ -222,6 +257,8 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
           <Toggle checked={http.absolute_redirect !== false} onChange={(v) => setHttp({ absolute_redirect: v })} label="absolute_redirect" description="Ferrix's own redirects get scheme://host" />
           <Toggle checked={http.port_in_redirect !== false} onChange={(v) => setHttp({ port_in_redirect: v })} label="port_in_redirect" />
           <Toggle checked={!!http.server_name_in_redirect} onChange={(v) => setHttp({ server_name_in_redirect: v })} label="server_name_in_redirect" />
+          <Toggle checked={!!http.proxy_forwarded_headers} onChange={(v) => setHttp({ proxy_forwarded_headers: v })} label="Automatic X-Forwarded-* headers" description="Off = nginx behaviour: only the route's proxy_set_headers" />
+          <Toggle checked={!!http.x_accel_redirect} onChange={(v) => setHttp({ x_accel_redirect: v })} label="Follow X-Accel-Redirect" description="Backends can hand a request to another route" />
         </div>
       </Section>
 

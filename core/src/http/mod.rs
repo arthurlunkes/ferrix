@@ -2,6 +2,7 @@ pub mod access;
 pub mod access_log;
 pub mod auth_request;
 pub mod cache;
+pub mod cache_store;
 pub mod dav;
 pub mod default_page;
 pub mod filters;
@@ -9,6 +10,7 @@ pub mod filters;
 pub mod geoip;
 #[cfg(feature = "http3")]
 pub mod h3;
+pub mod htpasswd;
 pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
@@ -17,11 +19,13 @@ mod proxy;
 mod raw_proxy;
 pub mod realip;
 pub mod referer;
+pub mod request_check;
 pub mod secure_link;
 pub mod server;
 pub mod static_files;
 pub mod tunnel;
 pub mod upstream;
+pub mod uri_path;
 pub mod vars;
 pub mod websocket;
 
@@ -50,7 +54,7 @@ use limit_conn::ConnLimiter;
 use limit_req::{RateLimitDecision, RateLimiter};
 use matcher::CompiledConfig;
 use proxy::scheme_str;
-pub use proxy::X_FERRIX_UPSTREAM;
+pub use proxy::{upstream_addr, UpstreamAddr};
 use realip::RealIpResolver;
 use static_files::{StaticFileServer, StaticRequest};
 use upstream::balancer::UpstreamPoolManager;
@@ -116,6 +120,24 @@ impl ProxyEngine {
     ) -> Response {
         let compiled = self.store.compiled();
         let metrics_on = compiled.config.metrics.enabled;
+        let mut req = req;
+        let (method, version) = (req.method().clone(), req.version());
+        if req.uri().path_and_query().is_some_and(|pq| {
+            pq.as_str().len() > compiled.config.http.max_header_line_bytes.max(256)
+        }) {
+            return filters::default_pages::apply(
+                filters::error_page::plain_status(StatusCode::URI_TOO_LONG),
+                compiled.config.http.server_tokens,
+            );
+        }
+        if let Err(code) =
+            request_check::check(&compiled.config.http, &method, version, req.headers_mut())
+        {
+            return filters::default_pages::apply(
+                filters::error_page::plain_status(code),
+                compiled.config.http.server_tokens,
+            );
+        }
 
         let req = if metrics_on {
             req
@@ -234,8 +256,10 @@ impl ProxyEngine {
             .cloned()
             .unwrap_or_else(|| HeaderValue::from_static(""));
         let user_agent = req_headers.get(header::USER_AGENT).cloned();
-        let access_log = compiled.config.http.access_log.as_ref();
-        let referer = access_log.and_then(|_| req_headers.get(header::REFERER).cloned());
+        let access_log = access_log::enabled(&compiled.config);
+        let referer = access_log
+            .then(|| req_headers.get(header::REFERER).cloned())
+            .flatten();
 
         let is_ws = WebSocketProxy::is_websocket_request(req_headers);
 
@@ -270,7 +294,8 @@ impl ProxyEngine {
                     .await;
                 let resp =
                     absolutize_redirect(resp, &compiled.config.http, vhost, &host_header, is_tls);
-                Box::pin(filters::error_page::apply(vhost, resp)).await
+                let resp = Box::pin(filters::error_page::apply(vhost, resp)).await;
+                filters::default_pages::apply(resp, compiled.config.http.server_tokens)
             }
             None if compiled.config.http.default_page => {
                 default_page::render(compiled.config.http.server_tokens)
@@ -282,7 +307,7 @@ impl ProxyEngine {
                 .into_response(),
         };
 
-        if !metrics_on && access_log.is_none() {
+        if !metrics_on && !access_log {
             return response;
         }
 
@@ -306,18 +331,18 @@ impl ProxyEngine {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            upstream: response.headers().get(X_FERRIX_UPSTREAM).cloned(),
+            upstream: upstream_addr(&response).cloned(),
             user_agent,
             is_websocket: is_ws,
         };
 
-        if let Some(al) = access_log.filter(|_| !skip_log) {
+        if access_log && !skip_log {
             let extra = access_log::Extra {
                 referer: referer.as_ref().and_then(|v| v.to_str().ok()).unwrap_or(""),
                 remote_user: "",
                 scheme: scheme_str(is_tls),
             };
-            access_log::write(&al.path, &al.format, &log, &extra);
+            access_log::emit(&compiled.config, &log, &extra);
         }
 
         if !metrics_on {
@@ -394,7 +419,7 @@ impl ProxyEngine {
                 let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                 resp.headers_mut().insert(
                     header::WWW_AUTHENTICATE,
-                    HeaderValue::from_static("Basic realm=\"Ferrix Protected Area\""),
+                    realm_header(vhost.basic_auth.as_ref()),
                 );
                 return resp;
             }
@@ -423,8 +448,137 @@ impl ProxyEngine {
             }
         }
 
-        self.process_vhost_routes(compiled, vhost_index, vhost, is_tls, client_ip, req, is_ws)
-            .await
+        if !compiled.has_internal_redirects(vhost_index) {
+            return self
+                .process_vhost_routes(compiled, vhost_index, vhost, is_tls, client_ip, req, is_ws)
+                .await;
+        }
+        let saved = (
+            req.method().clone(),
+            req.uri().clone(),
+            req.headers().clone(),
+        );
+        let resp = self
+            .process_vhost_routes(compiled, vhost_index, vhost, is_tls, client_ip, req, is_ws)
+            .await;
+        Box::pin(self.follow_internal_redirects(
+            compiled,
+            vhost_index,
+            vhost,
+            is_tls,
+            client_ip,
+            saved,
+            resp,
+        ))
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn follow_internal_redirects(
+        &self,
+        compiled: &CompiledConfig,
+        vhost_index: usize,
+        vhost: &VirtualHost,
+        is_tls: bool,
+        client_ip: IpAddr,
+        saved: (Method, axum::http::Uri, HeaderMap),
+        mut resp: Response,
+    ) -> Response {
+        let (method, uri, headers) = saved;
+        let mut error_hops = 0;
+        for _ in 0..10 {
+            let (target, status_mode) =
+                if let Some(r) = resp.extensions_mut().remove::<InternalRedirect>() {
+                    (r.0, None)
+                } else if let Some(v) = resp
+                    .headers()
+                    .get("x-accel-redirect")
+                    .filter(|_| compiled.config.http.x_accel_redirect)
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from)
+                {
+                    (v, Some(String::from("=")))
+                } else {
+                    let route_rules = resp
+                        .extensions()
+                        .get::<MatchedRoute>()
+                        .and_then(|m| vhost.routes.get(m.0))
+                        .map(|r| &r.error_redirects)
+                        .filter(|r| !r.is_empty());
+                    let rules = route_rules.unwrap_or(&vhost.error_redirects);
+                    let code = resp.status().as_u16();
+                    let Some(rule) = rules.iter().find(|r| r.codes.contains(&code)) else {
+                        return resp;
+                    };
+                    if error_hops > 0 && !vhost.recursive_error_pages {
+                        return resp;
+                    }
+                    error_hops += 1;
+                    (
+                        rule.target.clone(),
+                        Some(rule.status.clone().unwrap_or_default()),
+                    )
+                };
+            let original = resp.status();
+            if target.starts_with("http://") || target.starts_with("https://") {
+                let code = match status_mode.as_deref().and_then(|s| s.parse::<u16>().ok()) {
+                    Some(c @ 301..=308) => StatusCode::from_u16(c).unwrap_or(StatusCode::FOUND),
+                    _ => StatusCode::FOUND,
+                };
+                let mut r = filters::error_page::plain_status(code);
+                if let Ok(v) = HeaderValue::from_str(&target) {
+                    r.headers_mut().insert(header::LOCATION, v);
+                }
+                return r;
+            }
+            let mut req = Request::new(Body::empty());
+            *req.method_mut() = if method == Method::HEAD {
+                Method::HEAD
+            } else {
+                Method::GET
+            };
+            *req.headers_mut() = headers.clone();
+            req.headers_mut().remove(header::CONTENT_LENGTH);
+            req.headers_mut().remove(header::TRANSFER_ENCODING);
+            req.extensions_mut().insert(Internal);
+            if target.starts_with('@') {
+                let Some(i) = compiled.named_route(vhost_index, &target) else {
+                    return filters::error_page::plain_status(StatusCode::INTERNAL_SERVER_ERROR);
+                };
+                *req.uri_mut() = uri.clone();
+                req.extensions_mut().insert(ForcedRoute(i));
+            } else {
+                let Ok(u) = target.parse::<axum::http::Uri>() else {
+                    return filters::error_page::plain_status(StatusCode::INTERNAL_SERVER_ERROR);
+                };
+                *req.uri_mut() = u;
+            }
+            let mut next = Box::pin(self.process_vhost_routes(
+                compiled,
+                vhost_index,
+                vhost,
+                is_tls,
+                client_ip,
+                req,
+                false,
+            ))
+            .await;
+            match status_mode.as_deref() {
+                Some("=") | None => {}
+                Some("") => *next.status_mut() = original,
+                Some(code) => {
+                    if let Some(c) = code
+                        .parse::<u16>()
+                        .ok()
+                        .and_then(|c| StatusCode::from_u16(c).ok())
+                    {
+                        *next.status_mut() = c;
+                    }
+                }
+            }
+            resp = next;
+        }
+        resp
     }
 
     async fn serve_cgi(
@@ -734,16 +888,31 @@ impl ProxyEngine {
         let req_path = if req.method() == Method::CONNECT {
             "/".to_string()
         } else {
-            req.uri().path().to_string()
+            match uri_path::normalize(req.uri().path()) {
+                Ok(p) => p,
+                Err(code) => return filters::error_page::plain_status(code),
+            }
         };
 
-        let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
+        let forced = req.extensions().get::<ForcedRoute>().map(|f| f.0);
+        let matched = match forced {
+            Some(i) => Some(matcher::RouteMatch {
+                route_index: i,
+                reason: matcher::RouteMatchReason::Exact,
+            }),
+            None => compiled.match_route(vhost_index, &req_path),
+        };
+        let Some(matched) = matched else {
             if (vhost.routes.is_empty() || req_path == "/") && compiled.config.http.default_page {
                 return default_page::render(compiled.config.http.server_tokens);
             }
             return (StatusCode::NOT_FOUND, "404 Not Found - No route matched").into_response();
         };
         let route = &vhost.routes[matched.route_index];
+        if route.internal && req.extensions().get::<Internal>().is_none() {
+            return filters::error_page::plain_status(StatusCode::NOT_FOUND);
+        }
+        let route_index = matched.route_index;
 
         if !route.allowed_ips.is_empty()
             || !route.denied_ips.is_empty()
@@ -772,7 +941,7 @@ impl ProxyEngine {
                     let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                     resp.headers_mut().insert(
                         header::WWW_AUTHENTICATE,
-                        HeaderValue::from_static("Basic realm=\"Ferrix Protected Area\""),
+                        realm_header(route.basic_auth.as_ref()),
                     );
                     return resp;
                 }
@@ -942,11 +1111,20 @@ impl ProxyEngine {
                     .as_deref()
                     .map(|b| interpolate_redirect_url(b, &parts, is_tls))
                     .unwrap_or_default();
+                let keep = !body.is_empty();
                 let mut r = (status, body).into_response();
-                r.headers_mut().insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/plain; charset=utf-8"),
-                );
+                let ct = compiled
+                    .config
+                    .http
+                    .default_type
+                    .as_deref()
+                    .unwrap_or("text/plain");
+                if let Ok(v) = HeaderValue::from_str(ct) {
+                    r.headers_mut().insert(header::CONTENT_TYPE, v);
+                }
+                if keep {
+                    r.extensions_mut().insert(filters::default_pages::KeepBody);
+                }
                 r
             }
             RouteTargetType::StaticFiles
@@ -975,6 +1153,14 @@ impl ProxyEngine {
                 ))
                 .await
             }
+            RouteTargetType::StaticFiles
+                if parts.method != Method::GET && parts.method != Method::HEAD =>
+            {
+                let mut r = filters::error_page::plain_status(StatusCode::METHOD_NOT_ALLOWED);
+                r.headers_mut()
+                    .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+                r
+            }
             RouteTargetType::StaticFiles => {
                 let root_dir = route.static_root.as_deref().unwrap_or("./public");
                 let file_path = if route.strip_prefix {
@@ -984,11 +1170,31 @@ impl ProxyEngine {
                 } else {
                     &req_path
                 };
+                if !file_path.is_empty()
+                    && !file_path.ends_with('/')
+                    && std::path::Path::new(root_dir)
+                        .join(file_path.trim_start_matches('/'))
+                        .is_dir()
+                {
+                    let target = match parts.uri.query() {
+                        Some(q) => format!("{}/?{}", parts.uri.path(), q),
+                        None => format!("{}/", parts.uri.path()),
+                    };
+                    let mut r = filters::error_page::plain_status(StatusCode::MOVED_PERMANENTLY);
+                    if let Ok(v) = HeaderValue::from_str(&target) {
+                        r.headers_mut().insert(header::LOCATION, v);
+                    }
+                    return r;
+                }
 
                 let static_req = StaticRequest {
                     headers: &parts.headers,
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
+                    types: static_files::MimeTypes {
+                        map: Some(&compiled.config.http.mime_types).filter(|m| !m.is_empty()),
+                        default: compiled.config.http.default_type.as_deref(),
+                    },
                 };
                 let random_pick;
                 let file_path = if route.random_index {
@@ -1020,6 +1226,22 @@ impl ProxyEngine {
                                 (StatusCode::NOT_FOUND, "404 Static File Error").into_response()
                             }
                         }
+                    }
+                    Err(StatusCode::NOT_FOUND)
+                        if route
+                            .try_files
+                            .as_deref()
+                            .and_then(|t| t.split_whitespace().last())
+                            .is_some_and(|l| {
+                                l.starts_with('@') || l.starts_with('=') || l.starts_with('/')
+                            }) =>
+                    {
+                        let last = route
+                            .try_files
+                            .as_deref()
+                            .and_then(|t| t.split_whitespace().last())
+                            .unwrap_or("");
+                        try_files_fallback(last, &req_path, parts.uri.query())
                     }
                     Err(code) => {
                         (code, format!("{} Static File Error", code.as_u16())).into_response()
@@ -1147,15 +1369,59 @@ impl ProxyEngine {
                     }
                 }
 
-                let cacheable_method = parts.method == Method::GET || parts.method == Method::HEAD;
                 let cache_cfg = route
                     .cache
                     .as_ref()
-                    .filter(|_| cacheable_method)
+                    .filter(|cfg| {
+                        if cfg.methods.is_empty() {
+                            parts.method == Method::GET || parts.method == Method::HEAD
+                        } else {
+                            cfg.methods.iter().any(|m| m == parts.method.as_str())
+                        }
+                    })
                     .filter(|cfg| !cache_bypass_matches(cfg, &parts));
+                let templates = cache_cfg
+                    .filter(|c| c.key.is_some() || !c.bypass.is_empty() || !c.no_cache.is_empty())
+                    .map(|_| vars::Ctx {
+                        method: &parts.method,
+                        uri: parts.uri.clone(),
+                        headers: &parts.headers,
+                        client_ip,
+                        is_tls,
+                        http: &compiled.config.http,
+                        set: parts
+                            .extensions
+                            .get::<vars::SetVars>()
+                            .map(|s| s.0.clone())
+                            .unwrap_or_default(),
+                        captures: Vec::new(),
+                        client_cert: None,
+                    });
+                let truthy = |v: String| !v.is_empty() && v != "0";
+                let bypassed = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) => c.bypass.iter().any(|t| truthy(ctx.expand(t))),
+                    _ => false,
+                };
+                let no_store_cfg = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) if c.no_cache.iter().any(|t| truthy(ctx.expand(t))) => {
+                        Some(crate::config::CacheConfig {
+                            min_uses: u32::MAX,
+                            ..c.clone()
+                        })
+                    }
+                    _ => None,
+                };
+                let custom_key = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) => c.key.as_deref().map(|k| ctx.expand(k)),
+                    _ => None,
+                };
+                drop(templates);
+                let cache_cfg = cache_cfg
+                    .filter(|_| !bypassed)
+                    .map(|c| no_store_cfg.as_ref().unwrap_or(c));
 
                 if let Some(cfg) = cache_cfg {
-                    let key = cache_key_for(vhost, &parts);
+                    let key = custom_key.unwrap_or_else(|| cache_key_for(vhost, &parts));
                     Box::pin(self.serve_with_cache(
                         compiled,
                         route,
@@ -1282,6 +1548,9 @@ impl ProxyEngine {
         if !route.access_log {
             resp.extensions_mut().insert(SkipAccessLog);
         }
+        if compiled.has_internal_redirects(vhost_index) {
+            resp.extensions_mut().insert(MatchedRoute(route_index));
+        }
 
         resp
     }
@@ -1308,9 +1577,7 @@ fn absolutize_redirect(
     host_header: &HeaderValue,
     is_tls: bool,
 ) -> Response {
-    if !resp.status().is_redirection()
-        || !http.absolute_redirect
-        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
+    if !resp.status().is_redirection() || !http.absolute_redirect || upstream_addr(&resp).is_some()
     {
         return resp;
     }
@@ -1412,6 +1679,49 @@ async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
 #[derive(Clone, Copy)]
 struct Subrequest;
 
+#[derive(Clone, Copy)]
+struct Internal;
+
+#[derive(Clone, Copy)]
+struct ForcedRoute(usize);
+
+#[derive(Clone, Copy)]
+pub struct MatchedRoute(pub usize);
+
+#[derive(Clone)]
+pub struct InternalRedirect(pub String);
+
+fn try_files_fallback(last: &str, uri: &str, query: Option<&str>) -> Response {
+    if let Some(code) = last.strip_prefix('=') {
+        let status = code
+            .parse::<u16>()
+            .ok()
+            .and_then(|c| StatusCode::from_u16(c).ok())
+            .unwrap_or(StatusCode::NOT_FOUND);
+        return filters::error_page::plain_status(status);
+    }
+    let q = query.unwrap_or("");
+    let target = last
+        .replace("$uri", uri)
+        .replace("$query_string", q)
+        .replace("$args", q)
+        .replace("$is_args", if q.is_empty() { "" } else { "?" });
+    let target = target.trim_end_matches('?').to_string();
+    let mut r = filters::error_page::plain_status(StatusCode::NOT_FOUND);
+    r.extensions_mut().insert(InternalRedirect(target));
+    r
+}
+
+fn realm_header(auth: Option<&crate::config::BasicAuthConfig>) -> HeaderValue {
+    let realm = auth
+        .and_then(|a| a.realm.as_deref())
+        .unwrap_or("Ferrix Protected Area")
+        .replace(['"', '\\'], "");
+    HeaderValue::from_str(&format!("Basic realm=\"{realm}\"")).unwrap_or(HeaderValue::from_static(
+        "Basic realm=\"Ferrix Protected Area\"",
+    ))
+}
+
 fn phase_response(code: u16, value: String) -> Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     if status.is_redirection() {
@@ -1421,7 +1731,12 @@ fn phase_response(code: u16, value: String) -> Response {
         }
         r
     } else {
-        (status, value).into_response()
+        let keep = !value.is_empty();
+        let mut r = (status, value).into_response();
+        if keep {
+            r.extensions_mut().insert(filters::default_pages::KeepBody);
+        }
+        r
     }
 }
 
@@ -1507,6 +1822,228 @@ fn limit_response(status: u16, what: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn static_paths_behave_like_nginx() {
+        use crate::config::{FerrixConfig, RouteRule, RouteTargetType};
+        let dir = std::env::temp_dir().join(format!("ferrix-st-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/index.html"), "sub").unwrap();
+        std::fs::write(dir.join("meu arquivo.txt"), "spaces").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "s".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::StaticFiles,
+            static_root: Some(dir.to_string_lossy().into()),
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let call = |m: &str, uri: &str| {
+            Request::builder()
+                .method(m)
+                .uri(uri)
+                .header("host", "x")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/sub?a=1"))
+            .await;
+        assert_eq!(r.status(), 301);
+        assert_eq!(r.headers()[header::LOCATION], "http://x/sub/?a=1");
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/meu%20arquivo.txt"))
+            .await;
+        assert_eq!(r.status(), 200);
+        let r = engine
+            .handle_request(port, false, addr, call("POST", "/sub/"))
+            .await;
+        assert_eq!(r.status(), 405);
+        assert_eq!(r.headers()[header::ALLOW], "GET, HEAD");
+        assert!(r.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/%2e%2e/etc/passwd"))
+            .await;
+        assert_eq!(r.status(), 400);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn htpasswd_file_protects_a_route() {
+        use crate::config::{BasicAuthConfig, FerrixConfig, RouteRule, RouteTargetType};
+        use base64::Engine;
+        let file = std::env::temp_dir().join(format!("ferrix-ht-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "ana:$apr1$abcd1234$8GMkM2CfYzVxlmcajk1me/\n").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "r".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(200),
+            return_body: Some("in".into()),
+            basic_auth: Some(BasicAuthConfig {
+                user_file: Some(file.to_string_lossy().into()),
+                realm: Some("Team".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let call = |cred: Option<&str>| {
+            let mut b = Request::builder().uri("/").header("host", "x");
+            if let Some(c) = cred {
+                let v = base64::engine::general_purpose::STANDARD.encode(c);
+                b = b.header("authorization", format!("Basic {v}"));
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let r = engine.handle_request(port, false, addr, call(None)).await;
+        assert_eq!(r.status(), 401);
+        assert_eq!(
+            r.headers()[header::WWW_AUTHENTICATE],
+            "Basic realm=\"Team\""
+        );
+        let r = engine
+            .handle_request(port, false, addr, call(Some("ana:wrong")))
+            .await;
+        assert_eq!(r.status(), 401);
+        let r = engine
+            .handle_request(port, false, addr, call(Some("ana:s3cret")))
+            .await;
+        assert_eq!(r.status(), 200);
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn named_locations_error_redirects_and_try_files_fallbacks() {
+        use crate::config::{
+            ErrorRedirect, FerrixConfig, RouteMatchType, RouteRule, RouteTargetType,
+        };
+        let dir = std::env::temp_dir().join(format!("ferrix-nl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ret = |id: &str, prefix: &str, mt: RouteMatchType, code: u16, body: &str| RouteRule {
+            id: id.into(),
+            path_prefix: prefix.into(),
+            match_type: mt,
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(code),
+            return_body: Some(body.into()),
+            ..Default::default()
+        };
+        let mut cfg = FerrixConfig::default();
+        let mut missing = ret("m", "/missing", RouteMatchType::Prefix, 404, "");
+        missing.return_body = None;
+        let mut secret = ret("i", "/secret", RouteMatchType::Prefix, 200, "inside");
+        secret.internal = true;
+        let mut fallback = ret(
+            "n",
+            "@fallback",
+            RouteMatchType::Named,
+            200,
+            "from fallback $uri",
+        );
+        fallback.return_body = Some("fallback".into());
+        let mut php = ret("p", "/index.php", RouteMatchType::Exact, 200, "php");
+        php.return_body = Some("php".into());
+        let mut st = RouteRule {
+            id: "s".into(),
+            path_prefix: "/app/".into(),
+            target_type: RouteTargetType::StaticFiles,
+            static_root: Some(dir.to_string_lossy().into()),
+            strip_prefix: true,
+            try_files: Some("$uri /index.php?$args".into()),
+            ..Default::default()
+        };
+        st.websocket_enabled = false;
+        let mut gone = ret("g", "/gone", RouteMatchType::Prefix, 410, "");
+        gone.return_body = None;
+        gone.error_redirects = vec![ErrorRedirect {
+            codes: vec![410],
+            target: "/secret".into(),
+            status: Some("=".into()),
+        }];
+        cfg.vhosts[0].routes = vec![missing, secret, fallback, php, st, gone];
+        cfg.vhosts[0].error_redirects = vec![ErrorRedirect {
+            codes: vec![404],
+            target: "@fallback".into(),
+            status: Some("200".into()),
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let get = |uri: &str| {
+            Request::builder()
+                .uri(uri)
+                .header("host", "x")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let body = |r: Response| async move {
+            let s = r.status().as_u16();
+            (
+                s,
+                String::from_utf8(
+                    axum::body::to_bytes(r.into_body(), 1 << 16)
+                        .await
+                        .unwrap()
+                        .to_vec(),
+                )
+                .unwrap(),
+            )
+        };
+        assert_eq!(
+            body(
+                engine
+                    .handle_request(port, false, addr, get("/missing"))
+                    .await
+            )
+            .await,
+            (200, "fallback".into())
+        );
+        assert_eq!(
+            body(
+                engine
+                    .handle_request(port, false, addr, get("/secret"))
+                    .await
+            )
+            .await,
+            (200, "fallback".into())
+        );
+        assert_eq!(
+            body(
+                engine
+                    .handle_request(port, false, addr, get("/app/nope?x=1"))
+                    .await
+            )
+            .await,
+            (200, "php".into())
+        );
+        assert_eq!(
+            body(engine.handle_request(port, false, addr, get("/gone")).await).await,
+            (200, "inside".into())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[tokio::test]
     async fn json_set_reads_the_request_body() {

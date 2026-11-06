@@ -1,6 +1,7 @@
 pub mod charset;
 pub mod compress;
 pub mod cors;
+pub mod default_pages;
 pub mod error_page;
 pub mod gunzip;
 pub mod headers;
@@ -83,7 +84,14 @@ pub fn run(
             resp = compress::compress(resp, algo, compression.level);
         }
     }
-    headers::add(compiled, vhost_index, route_index, resp.headers_mut());
+    let status = resp.status();
+    headers::add(
+        compiled,
+        vhost_index,
+        route_index,
+        status,
+        resp.headers_mut(),
+    );
     if let Some(cors_cfg) = &route.cors {
         cors::decorate(cors_cfg, info.origin.as_ref(), &mut resp);
     }
