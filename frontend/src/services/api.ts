@@ -238,6 +238,14 @@ export interface CacheConfig {
   lock_timeout_ms?: number | null;
   revalidate: boolean;
   background_update: boolean;
+  ignore_headers?: string[];
+  key?: string | null;
+  valid_by_status?: Record<string, number>;
+  methods?: string[];
+  min_uses?: number;
+  no_cache?: string[];
+  bypass?: string[];
+  max_body_bytes?: number | null;
 }
 
 export interface UserIdConfig {
@@ -405,6 +413,9 @@ export interface HttpConfig {
   access_log?: AccessLogConfig | null;
   variables?: Record<string, VariableDef>;
   proxy_protocol?: boolean;
+  cache_store?: { kind: "memory" | "disk" | "redis"; path?: string | null; max_bytes?: number; url?: string | null; prefix?: string | null };
+  proxy_forwarded_headers?: boolean;
+  x_accel_redirect?: boolean;
   merge_slashes?: boolean;
   absolute_redirect?: boolean;
   port_in_redirect?: boolean;

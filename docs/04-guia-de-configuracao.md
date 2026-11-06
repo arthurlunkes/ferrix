@@ -676,3 +676,13 @@ They apply after a restart (the reload warns about it).
 - `try_files` whose last item is `@name`, `=code` or a URI (`/index.php?$args`) behaves like nginx: the URI is an internal redirect, not a file lookup.
 - `http.x_accel_redirect: true` follows `X-Accel-Redirect` from backends (off by default to keep the request path lean).
 - The importer converts `location @name`, `internal`, `error_page` with `=`/`@name`/URLs at server and location level, and `recursive_error_pages`.
+
+### Cache: keys, validity rules and storage (memory, disk, Redis/Dragonfly)
+
+Route `cache:` now also takes `key` (nginx `proxy_cache_key`, variables allowed), `valid_by_status` (nginx `proxy_cache_valid` per code, `any` included), `methods` (`proxy_cache_methods`), `min_uses`, `no_cache` and `bypass` (lists of variables: any non-empty value other than `0` triggers them) and `max_body_bytes`. Validity follows nginx: `X-Accel-Expires`, then `Cache-Control: s-maxage/max-age` (`no-store`, `no-cache`, `private` mean "do not cache"), then `Expires`, then `valid_by_status`, then `valid_secs` for 200/301/302; responses with `Set-Cookie` or `Vary: *` are not stored. `ignore_headers` disables any of those checks.
+
+`http.cache_store` chooses where entries live:
+
+- `kind: memory` (default): in-process table, fastest.
+- `kind: disk` (nginx `proxy_cache_path`): files under `path` in nginx's `levels=1:2` layout, written atomically; expired entries are swept every minute and the oldest go first above `max_bytes`. Survives restarts.
+- `kind: redis` with `url: redis://[user:]password@host:port/db`: Redis, Dragonfly, KeyDB or Valkey, with pooled connections, `AUTH`, `SELECT` and per-entry TTL; keys are `prefix` + cache key. Several Ferrix instances can share one cache.
