@@ -46,6 +46,53 @@ fn writer_for(path: &str) -> Option<Sender<String>> {
     Some(tx)
 }
 
+pub fn enabled(cfg: &crate::config::FerrixConfig) -> bool {
+    !cfg.logging.access.targets.is_empty() || cfg.http.access_log.is_some()
+}
+
+pub fn emit(cfg: &crate::config::FerrixConfig, log: &RequestLog, extra: &Extra<'_>) {
+    let access = &cfg.logging.access;
+    if access.targets.is_empty() {
+        if let Some(al) = &cfg.http.access_log {
+            write(&al.path, &al.format, log, extra);
+        }
+        return;
+    }
+    let line = if access.format == "json" {
+        render_json(log, extra)
+    } else {
+        render(&access.format, log, extra)
+    };
+    for t in &access.targets {
+        crate::log_sink::send(t, 6, line.clone());
+    }
+}
+
+pub fn render_json(log: &RequestLog, extra: &Extra<'_>) -> String {
+    let mut m = serde_json::Map::new();
+    for k in [
+        "time_iso8601",
+        "remote_addr",
+        "remote_user",
+        "request_method",
+        "request_uri",
+        "status",
+        "body_bytes_sent",
+        "request_time",
+        "host",
+        "http_referer",
+        "http_user_agent",
+        "upstream_addr",
+        "scheme",
+        "request_id",
+    ] {
+        if let Some(v) = variable(k, log, extra) {
+            m.insert(k.into(), v.into());
+        }
+    }
+    serde_json::Value::Object(m).to_string()
+}
+
 pub fn write(path: &str, format: &str, log: &RequestLog, extra: &Extra<'_>) {
     let mut line = render(format, log, extra);
     line.push('\n');

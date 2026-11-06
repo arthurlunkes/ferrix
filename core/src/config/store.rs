@@ -33,6 +33,7 @@ impl ConfigStore {
 
     pub fn apply(&self, mut config: FerrixConfig) {
         config.resolve_ports();
+        crate::log::configure(&config.logging.error);
         let compiled = CompiledConfig::build(Arc::new(config));
         self.compiled.store(Arc::new(compiled));
     }
