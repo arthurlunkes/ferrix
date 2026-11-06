@@ -9,6 +9,7 @@ pub mod filters;
 pub mod geoip;
 #[cfg(feature = "http3")]
 pub mod h3;
+pub mod htpasswd;
 pub mod limit_conn;
 pub mod limit_req;
 pub mod matcher;
@@ -415,7 +416,7 @@ impl ProxyEngine {
                 let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                 resp.headers_mut().insert(
                     header::WWW_AUTHENTICATE,
-                    HeaderValue::from_static("Basic realm=\"Ferrix Protected Area\""),
+                    realm_header(vhost.basic_auth.as_ref()),
                 );
                 return resp;
             }
@@ -796,7 +797,7 @@ impl ProxyEngine {
                     let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                     resp.headers_mut().insert(
                         header::WWW_AUTHENTICATE,
-                        HeaderValue::from_static("Basic realm=\"Ferrix Protected Area\""),
+                        realm_header(route.basic_auth.as_ref()),
                     );
                     return resp;
                 }
@@ -1471,6 +1472,16 @@ async fn buffer_request_body_var(req: Request, limit: u64) -> Request {
 #[derive(Clone, Copy)]
 struct Subrequest;
 
+fn realm_header(auth: Option<&crate::config::BasicAuthConfig>) -> HeaderValue {
+    let realm = auth
+        .and_then(|a| a.realm.as_deref())
+        .unwrap_or("Ferrix Protected Area")
+        .replace(['"', '\\'], "");
+    HeaderValue::from_str(&format!("Basic realm=\"{realm}\"")).unwrap_or(HeaderValue::from_static(
+        "Basic realm=\"Ferrix Protected Area\"",
+    ))
+}
+
 fn phase_response(code: u16, value: String) -> Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     if status.is_redirection() {
@@ -1625,6 +1636,58 @@ mod tests {
             .await;
         assert_eq!(r.status(), 400);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn htpasswd_file_protects_a_route() {
+        use crate::config::{BasicAuthConfig, FerrixConfig, RouteRule, RouteTargetType};
+        use base64::Engine;
+        let file = std::env::temp_dir().join(format!("ferrix-ht-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "ana:$apr1$abcd1234$8GMkM2CfYzVxlmcajk1me/\n").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "r".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::Return,
+            redirect_code: Some(200),
+            return_body: Some("in".into()),
+            basic_auth: Some(BasicAuthConfig {
+                user_file: Some(file.to_string_lossy().into()),
+                realm: Some("Team".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let call = |cred: Option<&str>| {
+            let mut b = Request::builder().uri("/").header("host", "x");
+            if let Some(c) = cred {
+                let v = base64::engine::general_purpose::STANDARD.encode(c);
+                b = b.header("authorization", format!("Basic {v}"));
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let r = engine.handle_request(port, false, addr, call(None)).await;
+        assert_eq!(r.status(), 401);
+        assert_eq!(
+            r.headers()[header::WWW_AUTHENTICATE],
+            "Basic realm=\"Team\""
+        );
+        let r = engine
+            .handle_request(port, false, addr, call(Some("ana:wrong")))
+            .await;
+        assert_eq!(r.status(), 401);
+        let r = engine
+            .handle_request(port, false, addr, call(Some("ana:s3cret")))
+            .await;
+        assert_eq!(r.status(), 200);
+        let _ = std::fs::remove_file(file);
     }
 
     #[tokio::test]

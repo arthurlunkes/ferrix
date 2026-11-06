@@ -2924,24 +2924,14 @@ impl Converter {
     }
 
     fn placeholder_basic_auth(&mut self, d: &Directive, realm: Option<&str>) -> BasicAuthConfig {
-        self.report.unsupported(
-            &self.file,
-            d.line,
-            "auth_basic_user_file",
-            &d.source(),
-            format!(
-                "o arquivo htpasswd guarda hashes e não pode ser convertido{}. \
-                 A rota ficou protegida com uma senha aleatória — defina usuário e senha no painel \
-                 antes de colocar no ar.",
-                realm
-                    .map(|r| format!(" (área '{}')", r))
-                    .unwrap_or_default()
-            ),
+        self.converted(
+            d,
+            "virou basic_auth.user_file (bcrypt, apr1, SHA, SHA-crypt e texto puro; relido quando muda)",
         );
-
         BasicAuthConfig {
-            username: "admin".to_string(),
-            password: uuid::Uuid::new_v4().simple().to_string(),
+            user_file: d.arg(0).map(String::from),
+            realm: realm.map(String::from),
+            ..Default::default()
         }
     }
 
@@ -3904,7 +3894,7 @@ mod tests {
     }
 
     #[test]
-    fn htpasswd_leaves_the_route_closed_not_open() {
+    fn htpasswd_file_is_used_with_its_realm() {
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -3915,16 +3905,12 @@ mod tests {
                 }
             } }"#,
         );
-        let auth = first_route(&r).basic_auth.as_ref();
-        assert!(auth.is_some(), "a rota deve continuar protegida");
-        assert!(!auth.unwrap().password.is_empty());
-        assert!(
-            r.report
-                .notes
-                .iter()
-                .any(|n| n.directive == "auth_basic_user_file"
-                    && n.reason.contains("senha aleatória"))
-        );
+        let auth = first_route(&r)
+            .basic_auth
+            .as_ref()
+            .expect("route stays protected");
+        assert_eq!(auth.user_file.as_deref(), Some("/etc/nginx/htpasswd"));
+        assert_eq!(auth.realm.as_deref(), Some("Area administrativa"));
     }
 
     #[test]

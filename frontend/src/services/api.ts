@@ -121,6 +121,8 @@ export interface LimitConnConfig {
 export interface BasicAuthConfig {
   username: string;
   password: string;
+  user_file?: string | null;
+  realm?: string | null;
 }
 
 export type Satisfy = "all" | "any";

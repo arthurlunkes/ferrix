@@ -186,13 +186,28 @@ const BasicAuthEditor: React.FC<{
         <Field label="Username">
           <Input value={value.username} onChange={(e) => onChange({ ...value, username: e.target.value })} />
         </Field>
-        <Field label="Password">
+        <Field label="Password" hint="Plain text or a hash: bcrypt, $apr1$, {SHA}, $5$, $6$">
           <Input
             type="text"
             value={value.password}
             onChange={(e) => onChange({ ...value, password: e.target.value })}
             mono
-            placeholder="visible in plaintext — treat as a secret"
+            placeholder="$2y$10$... or plain text"
+          />
+        </Field>
+        <Field label="htpasswd file" hint="Optional; reloaded when it changes">
+          <Input
+            value={value.user_file ?? ""}
+            onChange={(e) => onChange({ ...value, user_file: e.target.value || null })}
+            mono
+            placeholder="/etc/ferrix/htpasswd"
+          />
+        </Field>
+        <Field label="Realm">
+          <Input
+            value={value.realm ?? ""}
+            onChange={(e) => onChange({ ...value, realm: e.target.value || null })}
+            placeholder="Ferrix Protected Area"
           />
         </Field>
       </div>
