@@ -277,6 +277,8 @@ pub struct HttpConfig {
 
     #[serde(default)]
     pub proxy_forwarded_headers: bool,
+    #[serde(default)]
+    pub x_accel_redirect: bool,
 
     #[serde(default)]
     pub underscores_in_headers: bool,
@@ -649,6 +651,7 @@ impl Default for HttpConfig {
             default_type: None,
             mime_types: HashMap::new(),
             proxy_forwarded_headers: false,
+            x_accel_redirect: false,
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),
@@ -814,6 +817,10 @@ pub struct VirtualHost {
     #[serde(default)]
     pub headers_always: HashMap<String, String>,
     #[serde(default)]
+    pub error_redirects: Vec<ErrorRedirect>,
+    #[serde(default)]
+    pub recursive_error_pages: bool,
+    #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
     pub limit_conn: Option<LimitConnConfig>,
@@ -879,6 +886,14 @@ pub enum Satisfy {
     #[default]
     All,
     Any,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ErrorRedirect {
+    pub codes: Vec<u16>,
+    pub target: String,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1089,6 +1104,8 @@ pub enum RouteMatchType {
     Regex,
 
     RegexCaseInsensitive,
+
+    Named,
 }
 
 impl RouteMatchType {
@@ -1228,6 +1245,10 @@ pub struct RouteRule {
     pub return_body: Option<String>,
     #[serde(default = "default_true")]
     pub websocket_enabled: bool,
+    #[serde(default)]
+    pub internal: bool,
+    #[serde(default)]
+    pub error_redirects: Vec<ErrorRedirect>,
     #[serde(default)]
     pub proxy_set_headers: HashMap<String, String>,
     #[serde(default)]
@@ -1465,6 +1486,8 @@ impl Default for RouteRule {
             redirect_code: None,
             return_body: None,
             websocket_enabled: true,
+            internal: false,
+            error_redirects: Vec::new(),
             proxy_set_headers: HashMap::new(),
             proxy_hide_headers: Vec::new(),
             proxy_pass_headers: Vec::new(),
@@ -1580,6 +1603,8 @@ impl Default for FerrixConfig {
             ],
             listen_port: 80,
             headers_always: Default::default(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: false,
             headers: {
                 let mut h = HashMap::new();
                 h.insert("X-Powered-By".to_string(), "Ferrix/0.1.0".to_string());

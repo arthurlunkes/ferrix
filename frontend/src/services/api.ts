@@ -133,7 +133,8 @@ export type RouteMatchType =
   | "exact"
   | "prefix_priority"
   | "regex"
-  | "regex_case_insensitive";
+  | "regex_case_insensitive"
+  | "named";
 
 export type NextUpstreamCondition =
   | "error"
@@ -215,6 +216,15 @@ export interface RouteRule {
   charset_types?: string[];
   memcached?: MemcachedConfig | null;
   tunnel?: TunnelConfig | null;
+  internal?: boolean;
+  error_redirects?: ErrorRedirect[];
+  proxy_hide_headers?: string[];
+  proxy_pass_headers?: string[];
+  proxy_method?: string | null;
+  proxy_set_body?: string | null;
+  proxy_pass_request_headers?: boolean;
+  proxy_pass_request_body?: boolean;
+  add_headers_always?: Record<string, string>;
 }
 
 export interface CacheConfig {
@@ -331,6 +341,12 @@ export interface CgiConfig {
   params: Record<string, string>;
 }
 
+export interface ErrorRedirect {
+  codes: number[];
+  target: string;
+  status?: string | null;
+}
+
 export interface VirtualHost {
   id: string;
   name: string;
@@ -348,6 +364,8 @@ export interface VirtualHost {
   error_pages?: Record<string, string>;
   conditions?: ConditionConfig[];
   rewrites?: RewriteRule[];
+  error_redirects?: ErrorRedirect[];
+  recursive_error_pages?: boolean;
 }
 
 export type AdminAuthMode = "none" | "token" | "basic";

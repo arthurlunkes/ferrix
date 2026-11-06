@@ -29,7 +29,7 @@ import { Tabs, TabItem } from "./ui/Tabs";
 import { Badge } from "./ui/Badge";
 import { KeyValueEditor } from "./ui/KeyValueEditor";
 import { CidrListEditor } from "./ui/CidrListEditor";
-import { ExtraTargetFields, RouteModulesEditor, ConditionsEditor, RewriteRulesEditor } from "./RouteModules";
+import { ExtraTargetFields, RouteModulesEditor, ConditionsEditor, RewriteRulesEditor, ErrorRedirectsEditor } from "./RouteModules";
 
 interface VHostModalProps {
   vhost: VirtualHost | null;
@@ -45,6 +45,7 @@ const MATCH_TYPE_OPTIONS: { value: RouteMatchType; label: string; hint: string }
   { value: "prefix_priority", label: "Priority prefix (^~)", hint: "takes precedence over any regex" },
   { value: "regex", label: "Regular expression", hint: "case-sensitive" },
   { value: "regex_case_insensitive", label: "Regex (i)", hint: "case-insensitive" },
+  { value: "named", label: "Named (@name)", hint: "never matched by URL; reached by error_redirects or try_files @name" },
 ];
 
 const NEXT_UPSTREAM_CONDITIONS: { value: NextUpstreamCondition; label: string }[] = [
@@ -893,6 +894,21 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
               valuePlaceholder="/var/www/errors/404.html"
               addLabel="Add error page"
             />
+            <div className="mt-6 space-y-3">
+              <span className="block text-xs font-medium text-content-secondary">
+                Internal redirects on error (error_page 404 =200 @fallback)
+              </span>
+              <ErrorRedirectsEditor
+                value={formData.error_redirects ?? []}
+                onChange={(v) => setFormData({ ...formData, error_redirects: v })}
+              />
+              <Toggle
+                checked={!!formData.recursive_error_pages}
+                onChange={(v) => setFormData({ ...formData, recursive_error_pages: v })}
+                label="recursive_error_pages"
+                description="Let the target of a redirect be redirected again on error"
+              />
+            </div>
           </div>
         )}
 

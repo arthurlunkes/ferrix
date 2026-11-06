@@ -8,6 +8,7 @@ import {
   CgiProtocol,
   ImageOp,
   UpstreamWithHealth,
+  ErrorRedirect,
 } from "../services/api";
 import { Field } from "./ui/Field";
 import { Input, Select, Toggle } from "./ui/Input";
@@ -189,7 +190,32 @@ export const ConditionsEditor: React.FC<{ value: ConditionConfig[]; onChange: (v
 const VARS_HINT =
   "Variables: $uri $request_uri $args $arg_x $http_x $cookie_x $host $remote_addr $scheme $1..$9 and http.variables";
 
-// ---------- all nginx-module options of a route ----------
+export const ErrorRedirectsEditor: React.FC<{ value: ErrorRedirect[]; onChange: (v: ErrorRedirect[]) => void }> = ({ value, onChange }) => (
+  <div className="space-y-2">
+    {value.map((r, i) => {
+      const set = (p: Partial<ErrorRedirect>) => onChange(value.map((x, j) => (j === i ? { ...x, ...p } : x)));
+      return (
+        <div key={i} className="flex flex-wrap items-center gap-2">
+          <Input
+            value={r.codes.join(", ")}
+            onChange={(e) => set({ codes: e.target.value.split(",").map((c) => parseInt(c.trim())).filter((n) => !Number.isNaN(n)) })}
+            placeholder="404, 500"
+            mono
+            className="w-32 text-xs"
+          />
+          <Input value={r.status ?? ""} onChange={(e) => set({ status: e.target.value || null })} placeholder="= or 200 (empty: keep)" mono className="w-40 text-xs" />
+          <Input value={r.target} onChange={(e) => set({ target: e.target.value })} placeholder="@fallback, /50x.html or https://..." mono className="flex-1 min-w-[160px] text-xs" />
+          <button type="button" onClick={() => onChange(value.filter((_, j) => j !== i))} className="p-2 text-content-muted hover:text-danger-400" aria-label="Remove">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      );
+    })}
+    <Button type="button" variant="ghost" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => onChange([...value, { codes: [404], target: "@fallback", status: null }])}>
+      Add error redirect
+    </Button>
+  </div>
+);
 
 export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }> = ({ route, onChange }) => {
   const isStatic = route.target_type === "static_files";
@@ -578,6 +604,32 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
         )}
       </Section>
 
+      <Section title="Internal only (internal)" hint="Reachable only through error_redirects, try_files or X-Accel-Redirect" enabled={!!route.internal} onToggle={(on) => onChange({ internal: on })} />
+      <Section title="Error redirects for this route (error_page)" hint="Override the host's rules for this route">
+        <ErrorRedirectsEditor value={route.error_redirects ?? []} onChange={(v) => onChange({ error_redirects: v })} />
+      </Section>
+      {isProxy && (
+        <Section title="Request to the backend (proxy_method / proxy_set_body / proxy_hide_header)">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Method override">
+              <Input value={route.proxy_method ?? ""} onChange={(e) => onChange({ proxy_method: e.target.value.toUpperCase() || null })} placeholder="POST" mono />
+            </Field>
+            <Field label="Body (variables allowed)">
+              <Input value={route.proxy_set_body ?? ""} onChange={(e) => onChange({ proxy_set_body: e.target.value || null })} placeholder="user=$arg_user" mono className="text-xs" />
+            </Field>
+            <Field label="Hide response headers" hint="comma-separated">
+              <Input value={(route.proxy_hide_headers ?? []).join(", ")} onChange={(e) => onChange({ proxy_hide_headers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} mono className="text-xs" />
+            </Field>
+            <Field label="Pass hidden headers" hint="e.g. X-Accel-Redirect">
+              <Input value={(route.proxy_pass_headers ?? []).join(", ")} onChange={(e) => onChange({ proxy_pass_headers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} mono className="text-xs" />
+            </Field>
+          </div>
+          <div className="flex flex-wrap gap-6">
+            <Toggle checked={route.proxy_pass_request_headers !== false} onChange={(v) => onChange({ proxy_pass_request_headers: v })} label="Pass client headers" />
+            <Toggle checked={route.proxy_pass_request_body !== false} onChange={(v) => onChange({ proxy_pass_request_body: v })} label="Pass client body" />
+          </div>
+        </Section>
+      )}
       <Section title="1×1 transparent GIF (empty_gif)" enabled={!!route.empty_gif} onToggle={(on) => onChange({ empty_gif: on })} />
       {isStatic && (
         <Section title="Random index file (random_index)" hint="A directory request serves a random file from it" enabled={!!route.random_index} onToggle={(on) => onChange({ random_index: on })} />

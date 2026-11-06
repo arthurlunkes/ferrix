@@ -317,6 +317,8 @@ mod tests {
             listen_port: 443,
             headers: Default::default(),
             headers_always: Default::default(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: false,
             rate_limit: None,
             limit_conn: None,
             allowed_ips: vec![],

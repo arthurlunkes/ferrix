@@ -667,3 +667,12 @@ They apply after a restart (the reload warns about it).
 ### Basic auth with htpasswd files
 
 `basic_auth.user_file` reads an htpasswd file (nginx `auth_basic_user_file`), reloaded whenever it changes, and `basic_auth.realm` sets the realm (nginx `auth_basic "..."`). Both the file and the inline `password` accept bcrypt (`$2y$`/`$2a$`/`$2b$`, e.g. `htpasswd -B`), Apache MD5 (`$apr1$`), `{SHA}`, `{SSHA}`, SHA-crypt (`$5$`, `$6$`, e.g. `openssl passwd -6`) and plain text (`{PLAIN}x` or just `x`). Comparisons are constant-time. An unreadable file denies everyone. The hash formats beyond `$apr1$` and plain text come with the `htpasswd` build feature (on by default).
+
+### Named routes, internal redirects and `try_files` fallbacks
+
+- `match_type: named` with `path_prefix: "@fallback"` (nginx `location @fallback`): never matched by URL.
+- `internal: true` (nginx `internal`): answers 404 unless reached through an internal redirect.
+- `error_redirects` on the vhost or a route (nginx `error_page`): `{ codes: [404, 502], target: "@fallback" | "/50x.html" | "https://...", status: "" | "=" | "200" }`. An empty status keeps the original code (nginx default), `=` uses the target's code, a number forces it. External URLs answer 302 (or the given 3xx). The redirected request is a GET (HEAD stays HEAD) with the original headers and no body. `recursive_error_pages` lets a redirected response be redirected again (up to 10 hops).
+- `try_files` whose last item is `@name`, `=code` or a URI (`/index.php?$args`) behaves like nginx: the URI is an internal redirect, not a file lookup.
+- `http.x_accel_redirect: true` follows `X-Accel-Redirect` from backends (off by default to keep the request path lean).
+- The importer converts `location @name`, `internal`, `error_page` with `=`/`@name`/URLs at server and location level, and `recursive_error_pages`.
