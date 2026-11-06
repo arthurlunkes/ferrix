@@ -214,9 +214,9 @@ async fn read_head(
                 if buf.len() >= 14 {
                     return Err(HeadError::Handoff);
                 }
-            } else if let Some(head) = parse(buf, &limits, |host, path| {
-                engine.raw_route(port, host, path)
-            })? {
+            } else if let Some(head) =
+                parse(buf, limits, |host, path| engine.raw_route(port, host, path))?
+            {
                 return Ok(Some(head));
             } else if let Some(target) = http09_target(buf) {
                 if !first_line_has_version(buf) {

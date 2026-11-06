@@ -554,6 +554,7 @@ impl Converter {
                     health_check: None,
                     verify_tls: true,
                     hash_key: None,
+                    host_header: None,
                     sticky: None,
                     tls: None,
                 },
@@ -1205,6 +1206,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key,
+                host_header: None,
                 sticky,
                 tls: None,
             },
@@ -1966,6 +1968,7 @@ impl Converter {
             bypass_headers: self.cache_bypass_headers.clone(),
             bypass_cookies: self.cache_bypass_cookies.clone(),
             bypass_query_params: self.cache_bypass_query.clone(),
+            ignore_headers: self.cache_tuning.ignore_headers.clone(),
             use_stale: self.cache_tuning.use_stale.clone(),
             stale_keep_secs: self.cache_tuning.stale_keep_secs,
             lock: self.cache_tuning.lock,
@@ -2111,6 +2114,20 @@ impl Converter {
                 "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
                 "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
                 "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
+                "proxy_hide_header" => route.proxy_hide_headers.extend(item.arg(0).map(String::from)),
+                "proxy_pass_header" => route.proxy_pass_headers.extend(item.arg(0).map(String::from)),
+                "proxy_method" => route.proxy_method = item.arg(0).map(String::from),
+                "proxy_set_body" => route.proxy_set_body = item.arg(0).map(String::from),
+                "proxy_pass_request_headers" => {
+                    route.proxy_pass_request_headers = item.arg(0) != Some("off")
+                }
+                "proxy_pass_request_body" => route.proxy_pass_request_body = item.arg(0) != Some("off"),
+                "proxy_ignore_headers" => {
+                    self.cache_tuning.ignore_headers = item.args.clone();
+                    if let Some(c) = route.cache.as_mut() {
+                        c.ignore_headers = item.args.clone();
+                    }
+                }
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }
@@ -2736,6 +2753,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key: None,
+                host_header: Some(host.to_string()),
                 sticky: None,
                 tls: None,
             },

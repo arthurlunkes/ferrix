@@ -18,7 +18,14 @@ pub struct RawRoute {
     route_index: usize,
 }
 
-fn dropped_request_header(name: &[u8]) -> bool {
+fn dropped_request_header(name: &[u8], forwarded: bool) -> bool {
+    if !forwarded
+        && (name.eq_ignore_ascii_case(b"x-real-ip")
+            || name.eq_ignore_ascii_case(b"x-forwarded-for")
+            || name.eq_ignore_ascii_case(b"x-forwarded-proto"))
+    {
+        return false;
+    }
     const DROPPED: [&[u8]; 14] = [
         b"host",
         b"connection",
@@ -134,8 +141,10 @@ impl ProxyEngine {
         let track_conns = upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastConn
             || upstream.algorithm == crate::config::LoadBalanceAlgorithm::LeastTime;
         let target_path = target_path(route, path);
-        let encode = |authority: &str, req: &mut Vec<u8>| {
-            encode_request(req, head, method, &target_path, authority, client_ip)
+        let host = super::proxy::proxy_host(upstream);
+        let forwarded = http.proxy_forwarded_headers;
+        let encode = |_authority: &str, req: &mut Vec<u8>| {
+            encode_request(req, head, method, &target_path, host, client_ip, forwarded)
         };
 
         let mut last_error: Option<String> = None;
@@ -178,19 +187,7 @@ impl ProxyEngine {
                         self.pool_manager.record_latency(&target.url, elapsed_ms);
                     }
 
-                    let target_index = upstream
-                        .targets
-                        .iter()
-                        .position(|t| std::ptr::eq(t, *target))
-                        .unwrap_or(0);
                     push_header(out, b"server", compiled.server_header.as_bytes());
-                    if let Some(v) = compiled.target_header(upstream_name, target_index) {
-                        push_header(
-                            out,
-                            super::X_FERRIX_UPSTREAM.as_str().as_bytes(),
-                            v.as_bytes(),
-                        );
-                    }
                     if !resp.has_date {
                         push_header(
                             out,
@@ -235,17 +232,7 @@ impl ProxyEngine {
 }
 
 fn target_path(route: &RouteRule, path: &str) -> String {
-    let stripped = if route.strip_prefix {
-        path.strip_prefix(route.path_prefix.as_str())
-            .unwrap_or(path)
-    } else {
-        path
-    };
-    if stripped.starts_with('/') {
-        stripped.to_string()
-    } else {
-        format!("/{}", stripped)
-    }
+    super::proxy::upstream_path(route, path)
 }
 
 fn push_header(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
@@ -262,6 +249,7 @@ fn encode_request(
     path: &str,
     authority: &str,
     client_ip: IpAddr,
+    forwarded: bool,
 ) {
     out.clear();
     out.extend_from_slice(method.as_str().as_bytes());
@@ -277,7 +265,7 @@ fn encode_request(
     let mut xff = String::new();
     for h in req.headers.iter() {
         let name = h.name.as_bytes();
-        if name.eq_ignore_ascii_case(b"x-forwarded-for") {
+        if forwarded && name.eq_ignore_ascii_case(b"x-forwarded-for") {
             for part in std::str::from_utf8(h.value)
                 .unwrap_or("")
                 .split(',')
@@ -288,24 +276,26 @@ fn encode_request(
                 xff.push_str(", ");
             }
         }
-        if dropped_request_header(name) {
+        if dropped_request_header(name, forwarded) {
             continue;
         }
         push_header(out, name, h.value);
     }
-    let mut ip = [0u8; 64];
-    let ip = {
-        use std::io::Write;
-        let mut cur = std::io::Cursor::new(&mut ip[..]);
-        let _ = write!(cur, "{}", client_ip);
-        let n = cur.position() as usize;
-        &ip[..n]
-    };
-    push_header(out, b"x-real-ip", ip);
-    out.extend_from_slice(b"x-forwarded-for: ");
-    out.extend_from_slice(xff.as_bytes());
-    out.extend_from_slice(ip);
-    out.extend_from_slice(b"\r\nx-forwarded-proto: http\r\n");
+    if forwarded {
+        let mut ip = [0u8; 64];
+        let ip = {
+            use std::io::Write;
+            let mut cur = std::io::Cursor::new(&mut ip[..]);
+            let _ = write!(cur, "{}", client_ip);
+            let n = cur.position() as usize;
+            &ip[..n]
+        };
+        push_header(out, b"x-real-ip", ip);
+        out.extend_from_slice(b"x-forwarded-for: ");
+        out.extend_from_slice(xff.as_bytes());
+        out.extend_from_slice(ip);
+        out.extend_from_slice(b"\r\nx-forwarded-proto: http\r\n");
+    }
     if matches!(*method, Method::POST | Method::PUT | Method::PATCH) {
         out.extend_from_slice(b"content-length: 0\r\n");
     }
@@ -325,6 +315,7 @@ mod tests {
             "/a?b=1",
             "10.0.0.1:8080",
             ip.parse().unwrap(),
+            true,
         );
         String::from_utf8(out).unwrap()
     }
@@ -346,6 +337,27 @@ mod tests {
         assert!(!req.contains("keep-alive"));
         assert!(!req.contains("6.6.6.6"));
         assert!(req.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn nginx_mode_passes_client_headers_and_sends_the_upstream_name() {
+        let mut out = Vec::new();
+        encode_request(
+            &mut out,
+            b"GET /a HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 1.1.1.1\r\n\r\n",
+            &Method::GET,
+            "/a",
+            "backend",
+            "9.9.9.9".parse().unwrap(),
+            false,
+        );
+        let req = String::from_utf8(out).unwrap();
+        assert!(
+            req.starts_with("GET /a HTTP/1.1\r\nhost: backend\r\n"),
+            "{req}"
+        );
+        assert!(req.contains("X-Forwarded-For: 1.1.1.1\r\n"));
+        assert!(!req.contains("x-real-ip") && !req.contains("9.9.9.9"));
     }
 
     #[test]

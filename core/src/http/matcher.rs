@@ -243,6 +243,12 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || route.add_after_body.is_some()
         || route.gunzip
         || route.charset.is_some()
+        || !route.proxy_hide_headers.is_empty()
+        || !route.proxy_pass_headers.is_empty()
+        || route.proxy_method.is_some()
+        || route.proxy_set_body.is_some()
+        || !route.proxy_pass_request_headers
+        || !route.proxy_pass_request_body
 }
 
 #[derive(Debug)]
