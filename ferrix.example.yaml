@@ -61,6 +61,15 @@ http:
   #   algorithms: [zstd, br, gzip]
   #   types: [text/*, application/json, application/javascript, application/xml, image/svg+xml]
 
+  ## Where route `cache:` entries live: memory (default), disk (nginx proxy_cache_path)
+  ## or redis (Redis, Dragonfly, KeyDB, Valkey: anything speaking RESP).
+  # cache_store:
+  #   kind: memory                    ## memory, disk or redis
+  #   path: /var/cache/ferrix         ## disk: directory, nginx levels=1:2 layout
+  #   max_bytes: 0                    ## disk: oldest entries go first above this size; 0 = no limit
+  #   url: redis://:password@127.0.0.1:6379/0   ## redis: user, password and db are optional
+  #   prefix: "ferrix:cache:"         ## redis: key prefix
+
   ## In-memory cache for small static files.
   # static_cache:
   #   max_file_bytes: 1048576     ## 0 turns the cache off
@@ -334,9 +343,19 @@ vhosts:
         #   tries: 3
         #   timeout_ms: 10000
 
-        ## Cache upstream responses in memory.
+        ## Cache upstream responses (where: http.cache_store). Validity follows nginx:
+        ## X-Accel-Expires, then Cache-Control max-age/s-maxage, then Expires, then
+        ## valid_by_status (or valid_secs for 200, 301 and 302).
         # cache:
         #   valid_secs: 60
+        #   valid_by_status: { "200": 600, "404": 30, any: 5 }
+        #   key: "$scheme$host$request_uri"   ## nginx proxy_cache_key; default method+host+URI
+        #   methods: [GET, HEAD]
+        #   min_uses: 1                       ## store after this many requests for the key
+        #   no_cache: ["$cookie_session"]     ## any non-empty, non-"0" value: do not store
+        #   bypass: ["$arg_preview"]          ## any non-empty, non-"0" value: skip the cache
+        #   max_body_bytes: 2097152
+        #   ignore_headers: [Cache-Control, Expires, Set-Cookie, Vary, X-Accel-Expires]
         #   bypass_headers: [Authorization]
         #   bypass_cookies: [session]
         #   bypass_query_params: [nocache]

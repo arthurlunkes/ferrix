@@ -453,3 +453,56 @@ async fn proxy_request_controls_like_nginx() {
     assert_eq!(header(got, "x-who"), Some("127.0.0.1"));
     assert!(got.ends_with("\r\n\r\na=7"), "{got}");
 }
+
+#[tokio::test]
+async fn cache_key_min_uses_no_cache_and_disk_store() {
+    let (up, seen) = upstream(Reply::Fixed("cached")).await;
+    let port = closed_port().await;
+    let dir = std::env::temp_dir().join(format!("ferrix-e2e-cache-{}", uuid::Uuid::new_v4()));
+    let yaml = site(
+        port,
+        &[format!("http://{up}")],
+        "      - id: c\n        path_prefix: /c/\n        target_type: proxy_upstream\n        upstream_name: be\n        websocket_enabled: false\n        cache:\n          valid_secs: 60\n          key: \"$uri\"\n          min_uses: 2\n          no_cache: [\"$arg_nocache\"]\n",
+    )
+    .replacen(
+        "http:\n",
+        &format!("http:\n  cache_store: {{ kind: disk, path: \"{}\" }}\n", dir.display()),
+        1,
+    );
+    let addr = ferrix(yaml).await;
+    let get = |q: &str| format!("GET /c/a{q} HTTP/1.1\r\nHost: x\r\n\r\n");
+    let r = request(addr, &get("?v=1")).await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, &get("?v=2")).await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, &get("?v=3")).await;
+    assert_eq!(
+        r.headers["x-cache-status"], "HIT",
+        "key is $uri only; stored on the 2nd use"
+    );
+    assert_eq!(r.body, "cached");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let r = request(addr, "GET /c/b?nocache=1 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, "GET /c/b?nocache=1 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert_eq!(r.headers["x-cache-status"], "MISS", "no_cache never stores");
+    let files = walk(&dir);
+    assert_eq!(files, 1, "one entry on disk");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn walk(d: &std::path::Path) -> usize {
+    std::fs::read_dir(d)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| {
+                    if e.path().is_dir() {
+                        walk(&e.path())
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}

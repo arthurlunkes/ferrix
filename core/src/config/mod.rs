@@ -276,6 +276,9 @@ pub struct HttpConfig {
     pub mime_types: HashMap<String, String>,
 
     #[serde(default)]
+    pub cache_store: CacheStoreConfig,
+
+    #[serde(default)]
     pub proxy_forwarded_headers: bool,
     #[serde(default)]
     pub x_accel_redirect: bool,
@@ -650,6 +653,7 @@ impl Default for HttpConfig {
             http3: Http3Limits::default(),
             default_type: None,
             mime_types: HashMap::new(),
+            cache_store: CacheStoreConfig::default(),
             proxy_forwarded_headers: false,
             x_accel_redirect: false,
             underscores_in_headers: false,
@@ -1173,6 +1177,20 @@ pub struct CacheConfig {
 
     #[serde(default)]
     pub ignore_headers: Vec<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub valid_by_status: HashMap<String, u64>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default = "default_min_uses")]
+    pub min_uses: u32,
+    #[serde(default)]
+    pub no_cache: Vec<String>,
+    #[serde(default)]
+    pub bypass: Vec<String>,
+    #[serde(default)]
+    pub max_body_bytes: Option<u64>,
 
     #[serde(default)]
     pub use_stale: Vec<String>,
@@ -1192,6 +1210,33 @@ fn default_header_line_bytes() -> usize {
     8 * 1024
 }
 
+fn default_min_uses() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheStoreKind {
+    #[default]
+    Memory,
+    Disk,
+    Redis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CacheStoreConfig {
+    #[serde(default)]
+    pub kind: CacheStoreKind,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_bytes: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
 fn default_stale_keep_secs() -> u64 {
     86_400
 }
@@ -1208,6 +1253,13 @@ impl Default for CacheConfig {
             bypass_cookies: Vec::new(),
             bypass_query_params: Vec::new(),
             ignore_headers: Vec::new(),
+            key: None,
+            valid_by_status: HashMap::new(),
+            methods: Vec::new(),
+            min_uses: 1,
+            no_cache: Vec::new(),
+            bypass: Vec::new(),
+            max_body_bytes: None,
             use_stale: Vec::new(),
             stale_keep_secs: default_stale_keep_secs(),
             lock: false,

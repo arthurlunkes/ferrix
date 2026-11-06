@@ -486,6 +486,36 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
                   <Toggle checked={c.background_update} onChange={(v) => set({ background_update: v })} label="Background update" />
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Field label="Cache key" hint="proxy_cache_key; empty = method+host+URI">
+                    <Input value={c.key ?? ""} onChange={(e) => set({ key: e.target.value || null })} placeholder="$scheme$host$request_uri" mono className="text-xs" />
+                  </Field>
+                  <Field label="Methods" hint="comma-separated; empty = GET, HEAD">
+                    <Input value={(c.methods ?? []).join(", ")} onChange={(e) => set({ methods: csv(e.target.value).map((m) => m.toUpperCase()) })} mono className="text-xs" />
+                  </Field>
+                  <Field label="Min uses">
+                    <Input type="number" value={c.min_uses ?? 1} onChange={(e) => set({ min_uses: parseInt(e.target.value) || 1 })} mono />
+                  </Field>
+                  <Field label="Don't store when (no_cache)" hint="variables, comma-separated">
+                    <Input value={(c.no_cache ?? []).join(", ")} onChange={(e) => set({ no_cache: csv(e.target.value) })} placeholder="$cookie_session" mono className="text-xs" />
+                  </Field>
+                  <Field label="Skip cache when (bypass)" hint="variables, comma-separated">
+                    <Input value={(c.bypass ?? []).join(", ")} onChange={(e) => set({ bypass: csv(e.target.value) })} placeholder="$arg_preview" mono className="text-xs" />
+                  </Field>
+                  <Field label="Ignore headers" hint="Cache-Control, Expires, Set-Cookie, Vary">
+                    <Input value={(c.ignore_headers ?? []).join(", ")} onChange={(e) => set({ ignore_headers: csv(e.target.value) })} mono className="text-xs" />
+                  </Field>
+                </div>
+                <div>
+                  <span className="block text-[11px] font-medium text-content-secondary mb-1.5">Validity per status (seconds; "any" for the rest)</span>
+                  <KeyValueEditor
+                    value={Object.fromEntries(Object.entries(c.valid_by_status ?? {}).map(([k, v]) => [k, String(v)]))}
+                    onChange={(v) => set({ valid_by_status: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, parseInt(x) || 0])) })}
+                    keyPlaceholder="404"
+                    valuePlaceholder="30"
+                    addLabel="Add status"
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <Field label="Bypass headers" hint="comma-separated">
                     <Input value={c.bypass_headers.join(", ")} onChange={(e) => set({ bypass_headers: csv(e.target.value) })} mono className="text-xs" />
                   </Field>

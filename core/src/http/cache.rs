@@ -2,7 +2,9 @@ use axum::body::Bytes;
 use axum::http::HeaderValue;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::http::cache_store::{now_ms, StoredEntry};
 
 pub const MAX_CACHEABLE_BODY_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -14,14 +16,35 @@ pub struct CachedResponse {
 
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
-    expires_at: Instant,
-    stale_until: Instant,
+    expires_ms: u64,
+    stale_until_ms: u64,
     inserted_seq: u64,
 }
 
 impl CachedResponse {
     pub fn is_fresh(&self) -> bool {
-        self.expires_at > Instant::now()
+        self.expires_ms > now_ms()
+    }
+
+    pub fn from_stored(e: StoredEntry) -> Self {
+        Self {
+            status: e.status,
+            headers: e.headers,
+            body: e.body,
+            expires_ms: e.expires_ms,
+            stale_until_ms: e.stale_until_ms,
+            inserted_seq: 0,
+        }
+    }
+
+    pub fn to_stored(&self) -> StoredEntry {
+        StoredEntry {
+            status: self.status,
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            expires_ms: self.expires_ms,
+            stale_until_ms: self.stale_until_ms,
+        }
     }
 
     pub fn header(&self, name: &str) -> Option<&str> {
@@ -40,6 +63,7 @@ pub struct ResponseCache {
     entries: RwLock<HashMap<String, Entry>>,
     seq: std::sync::atomic::AtomicU64,
     locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    uses: std::sync::Mutex<HashMap<String, u32>>,
 }
 
 impl ResponseCache {
@@ -48,6 +72,7 @@ impl ResponseCache {
             entries: RwLock::new(HashMap::new()),
             seq: std::sync::atomic::AtomicU64::new(0),
             locks: std::sync::Mutex::new(HashMap::new()),
+            uses: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -55,12 +80,31 @@ impl ResponseCache {
         self.get_any(key).filter(|r| r.is_fresh())
     }
 
+    pub fn note_use(&self, key: &str, min_uses: u32) -> bool {
+        if min_uses <= 1 {
+            return true;
+        }
+        let Ok(mut m) = self.uses.lock() else {
+            return true;
+        };
+        if m.len() > 100_000 {
+            m.clear();
+        }
+        let n = m.entry(key.to_string()).or_insert(0);
+        *n += 1;
+        if *n >= min_uses {
+            m.remove(key);
+            return true;
+        }
+        false
+    }
+
     pub fn get_any(&self, key: &str) -> Option<CachedResponse> {
-        let now = Instant::now();
+        let now = now_ms();
         {
             let entries = self.entries.read().ok()?;
             let entry = entries.get(key)?;
-            if entry.response.stale_until > now {
+            if entry.response.stale_until_ms > now {
                 return Some(entry.response.clone());
             }
         }
@@ -74,8 +118,8 @@ impl ResponseCache {
     pub fn refresh(&self, key: &str, valid_for: Duration, keep_stale: Duration) {
         if let Ok(mut entries) = self.entries.write() {
             if let Some(e) = entries.get_mut(key) {
-                e.response.expires_at = Instant::now() + valid_for;
-                e.response.stale_until = e.response.expires_at + keep_stale;
+                e.response.expires_ms = now_ms() + valid_for.as_millis() as u64;
+                e.response.stale_until_ms = e.response.expires_ms + keep_stale.as_millis() as u64;
             }
         }
     }
@@ -114,16 +158,22 @@ impl ResponseCache {
         valid_for: Duration,
         keep_stale: Duration,
     ) {
-        let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let expires_at = Instant::now() + valid_for;
-        let response = CachedResponse {
-            status,
-            headers,
-            body,
-            expires_at,
-            stale_until: expires_at + keep_stale,
-            inserted_seq: seq,
-        };
+        let expires_ms = now_ms() + valid_for.as_millis() as u64;
+        self.insert(
+            key,
+            CachedResponse {
+                status,
+                headers,
+                body,
+                expires_ms,
+                stale_until_ms: expires_ms + keep_stale.as_millis() as u64,
+                inserted_seq: 0,
+            },
+        );
+    }
+
+    pub fn insert(&self, key: String, mut response: CachedResponse) {
+        response.inserted_seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let Ok(mut entries) = self.entries.write() else {
             return;
@@ -312,24 +362,55 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 impl ProxyEngine {
+    pub(super) async fn cache_lookup(
+        &self,
+        store: &crate::config::CacheStoreConfig,
+        key: &str,
+    ) -> Option<CachedResponse> {
+        match store.kind {
+            crate::config::CacheStoreKind::Memory => self.response_cache.get_any(key),
+            _ => crate::http::cache_store::Store { cfg: store }
+                .get(key)
+                .await
+                .map(CachedResponse::from_stored),
+        }
+    }
+
+    pub(super) async fn cache_insert(
+        &self,
+        store: &crate::config::CacheStoreConfig,
+        key: String,
+        entry: CachedResponse,
+    ) {
+        match store.kind {
+            crate::config::CacheStoreKind::Memory => self.response_cache.insert(key, entry),
+            _ => {
+                crate::http::cache_store::Store { cfg: store }
+                    .put(&key, &entry.to_stored())
+                    .await
+            }
+        }
+    }
+
     pub(super) async fn store_if_cacheable(
         &self,
+        store: &crate::config::CacheStoreConfig,
         key: String,
         cfg: &CacheConfig,
         resp: Response,
     ) -> Response {
-        let status = resp.status();
-        let ignores = |h: &str| cfg.ignore_headers.iter().any(|i| i.eq_ignore_ascii_case(h));
-        let cacheable = status == StatusCode::OK
-            && (ignores("Set-Cookie") || !crate::http::cache::has_set_cookie(resp.headers()))
-            && (ignores("Cache-Control")
-                || !crate::http::cache::upstream_forbids_cache(resp.headers()))
+        let max_body = cfg
+            .max_body_bytes
+            .unwrap_or(crate::http::cache::MAX_CACHEABLE_BODY_BYTES);
+        let valid = validity(cfg, resp.status().as_u16(), resp.headers());
+        let cacheable = valid.is_some()
             && resp
                 .headers()
                 .get(header::CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
-                .is_some_and(|len| len <= crate::http::cache::MAX_CACHEABLE_BODY_BYTES);
+                .is_some_and(|len| len <= max_body)
+            && self.response_cache.note_use(&key, cfg.min_uses);
 
         if !cacheable {
             let mut r = resp;
@@ -341,18 +422,19 @@ impl ProxyEngine {
 
         let headers = crate::http::cache::cacheable_headers(resp.headers());
         let (parts, body) = resp.into_parts();
-        match axum::body::to_bytes(body, crate::http::cache::MAX_CACHEABLE_BODY_BYTES as usize)
-            .await
-        {
+        match axum::body::to_bytes(body, max_body as usize).await {
             Ok(bytes) => {
-                self.response_cache.put_keeping(
-                    key,
-                    parts.status.as_u16(),
+                let valid = valid.unwrap_or_default();
+                let expires_ms = now_ms() + valid.as_millis() as u64;
+                let entry = CachedResponse {
+                    status: parts.status.as_u16(),
                     headers,
-                    bytes.clone(),
-                    Duration::from_secs(cfg.valid_secs),
-                    keep_stale(cfg),
-                );
+                    body: bytes.clone(),
+                    expires_ms,
+                    stale_until_ms: expires_ms + keep_stale(cfg).as_millis() as u64,
+                    inserted_seq: 0,
+                };
+                self.cache_insert(store, key, entry).await;
                 let mut r = Response::from_parts(parts, Body::from(bytes));
                 if let Some(v) = crate::http::cache::header_value("MISS") {
                     r.headers_mut().insert("x-cache-status", v);
@@ -366,6 +448,76 @@ impl ProxyEngine {
                 .into_response(),
         }
     }
+}
+
+pub(super) fn validity(
+    cfg: &CacheConfig,
+    status: u16,
+    headers: &axum::http::HeaderMap,
+) -> Option<Duration> {
+    let ignores = |h: &str| cfg.ignore_headers.iter().any(|i| i.eq_ignore_ascii_case(h));
+    if !ignores("Set-Cookie") && crate::http::cache::has_set_cookie(headers) {
+        return None;
+    }
+    if headers
+        .get(header::VARY)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == "*")
+        && !ignores("Vary")
+    {
+        return None;
+    }
+    if !ignores("X-Accel-Expires") {
+        if let Some(n) = headers
+            .get("x-accel-expires")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            return (n > 0).then(|| Duration::from_secs(n));
+        }
+    }
+    if !ignores("Cache-Control") {
+        if let Some(cc) = headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+        {
+            let lower = cc.to_ascii_lowercase();
+            if lower.contains("no-store") || lower.contains("no-cache") || lower.contains("private")
+            {
+                return None;
+            }
+            let age = |name: &str| {
+                lower.split(',').map(str::trim).find_map(|d| {
+                    d.strip_prefix(name)?
+                        .strip_prefix('=')?
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+            };
+            if let Some(n) = age("s-maxage").or_else(|| age("max-age")) {
+                return (n > 0).then(|| Duration::from_secs(n));
+            }
+        }
+    }
+    if !ignores("Expires") {
+        if let Some(exp) = headers
+            .get(header::EXPIRES)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| chrono::DateTime::parse_from_rfc2822(v).ok())
+        {
+            let secs = exp.timestamp() - chrono::Utc::now().timestamp();
+            return (secs > 0).then(|| Duration::from_secs(secs as u64));
+        }
+    }
+    if !cfg.valid_by_status.is_empty() {
+        return cfg
+            .valid_by_status
+            .get(&status.to_string())
+            .or_else(|| cfg.valid_by_status.get("any"))
+            .map(|s| Duration::from_secs(*s));
+    }
+    matches!(status, 200 | 301 | 302).then(|| Duration::from_secs(cfg.valid_secs))
 }
 
 fn keep_stale(cfg: &CacheConfig) -> Duration {
@@ -413,7 +565,8 @@ impl ProxyEngine {
         cfg: &CacheConfig,
     ) -> Response {
         let cache = &self.response_cache;
-        let stale = match cache.get_any(&key) {
+        let store = &compiled.config.http.cache_store;
+        let stale = match self.cache_lookup(store, &key).await {
             Some(e) if e.is_fresh() => return tag(build_cached_response(&e), "HIT"),
             other => other,
         };
@@ -428,7 +581,11 @@ impl ProxyEngine {
                 (_, Err(_)) => {
                     let wait = Duration::from_millis(cfg.lock_timeout_ms.unwrap_or(5000));
                     if let Ok(g) = tokio::time::timeout(wait, lock.lock_owned()).await {
-                        if let Some(e) = cache.get(&key) {
+                        if let Some(e) = self
+                            .cache_lookup(store, &key)
+                            .await
+                            .filter(|e| e.is_fresh())
+                        {
                             return tag(build_cached_response(&e), "HIT");
                         }
                         _guard = Some(g);
@@ -461,7 +618,8 @@ impl ProxyEngine {
                 .with_tls(upstream_cfg.tls.as_ref());
                 let cache = cache.clone();
                 let key = key.clone();
-                let valid = Duration::from_secs(cfg.valid_secs);
+                let cfg_owned = cfg.clone();
+                let store_owned = store.clone();
                 let keep = keep_stale(cfg);
                 tokio::spawn(async move {
                     let _guard = guard;
@@ -477,20 +635,32 @@ impl ProxyEngine {
                     else {
                         return;
                     };
-                    if r.status() != StatusCode::OK
-                        || crate::http::cache::has_set_cookie(r.headers())
-                        || crate::http::cache::upstream_forbids_cache(r.headers())
-                    {
+                    let Some(valid) = validity(&cfg_owned, r.status().as_u16(), r.headers()) else {
                         return;
-                    }
+                    };
+                    let status = r.status().as_u16();
                     let headers = crate::http::cache::cacheable_headers(r.headers());
-                    if let Ok(b) = axum::body::to_bytes(
-                        r.into_body(),
-                        crate::http::cache::MAX_CACHEABLE_BODY_BYTES as usize,
-                    )
-                    .await
-                    {
-                        cache.put_keeping(key, 200, headers, b, valid, keep);
+                    let max = cfg_owned
+                        .max_body_bytes
+                        .unwrap_or(crate::http::cache::MAX_CACHEABLE_BODY_BYTES);
+                    if let Ok(b) = axum::body::to_bytes(r.into_body(), max as usize).await {
+                        let expires_ms = now_ms() + valid.as_millis() as u64;
+                        let entry = CachedResponse {
+                            status,
+                            headers,
+                            body: b,
+                            expires_ms,
+                            stale_until_ms: expires_ms + keep.as_millis() as u64,
+                            inserted_seq: 0,
+                        };
+                        match store_owned.kind {
+                            crate::config::CacheStoreKind::Memory => cache.insert(key, entry),
+                            _ => {
+                                crate::http::cache_store::Store { cfg: &store_owned }
+                                    .put(&key, &entry.to_stored())
+                                    .await
+                            }
+                        }
                     }
                 });
             }
@@ -531,14 +701,19 @@ impl ProxyEngine {
 
         if let Some(s) = &stale {
             if added_validators && resp.status() == StatusCode::NOT_MODIFIED {
-                cache.refresh(&key, Duration::from_secs(cfg.valid_secs), keep_stale(cfg));
+                let valid = validity(cfg, s.status, resp.headers())
+                    .unwrap_or(Duration::from_secs(cfg.valid_secs));
+                let mut fresh = s.clone();
+                fresh.expires_ms = now_ms() + valid.as_millis() as u64;
+                fresh.stale_until_ms = fresh.expires_ms + keep_stale(cfg).as_millis() as u64;
+                self.cache_insert(store, key.clone(), fresh).await;
                 return tag(build_cached_response(s), "REVALIDATED");
             }
             if stale_allowed(cfg, resp.status().as_u16()) {
                 return tag(build_cached_response(s), "STALE");
             }
         }
-        Box::pin(self.store_if_cacheable(key, cfg, resp)).await
+        Box::pin(self.store_if_cacheable(store, key, cfg, resp)).await
     }
 }
 
@@ -743,7 +918,9 @@ mod proxy_cache_tests {
             .unwrap();
         let cfg = crate::config::CacheConfig::default();
 
-        let out = engine.store_if_cacheable("k".to_string(), &cfg, resp).await;
+        let out = engine
+            .store_if_cacheable(&Default::default(), "k".to_string(), &cfg, resp)
+            .await;
         assert_eq!(out.headers().get("x-cache-status").unwrap(), "MISS");
         assert!(engine.response_cache.get("k").is_none());
     }
@@ -764,7 +941,7 @@ mod proxy_cache_tests {
         let cfg = crate::config::CacheConfig::default();
 
         let out = engine
-            .store_if_cacheable("k2".to_string(), &cfg, resp)
+            .store_if_cacheable(&Default::default(), "k2".to_string(), &cfg, resp)
             .await;
         assert_eq!(out.headers().get("x-cache-status").unwrap(), "MISS");
 
@@ -794,7 +971,7 @@ mod proxy_cache_tests {
         let cfg = crate::config::CacheConfig::default();
 
         engine
-            .store_if_cacheable("k3".to_string(), &cfg, resp)
+            .store_if_cacheable(&Default::default(), "k3".to_string(), &cfg, resp)
             .await;
         assert!(engine.response_cache.get("k3").is_none());
     }
@@ -933,5 +1110,65 @@ mod stale_tests {
         };
         assert!(stale_allowed(&cfg, 502) && stale_allowed(&cfg, 504) && stale_allowed(&cfg, 503));
         assert!(!stale_allowed(&cfg, 500) && !stale_allowed(&cfg, 200));
+    }
+}
+
+#[cfg(test)]
+mod validity_tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    fn h(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        for (k, v) in pairs {
+            m.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn nginx_precedence() {
+        let mut cfg = CacheConfig::default();
+        assert_eq!(validity(&cfg, 200, &h(&[])), Some(Duration::from_secs(60)));
+        assert_eq!(validity(&cfg, 404, &h(&[])), None);
+        assert_eq!(
+            validity(&cfg, 200, &h(&[("cache-control", "public, max-age=7")])),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            validity(&cfg, 200, &h(&[("cache-control", "s-maxage=9, max-age=7")])),
+            Some(Duration::from_secs(9))
+        );
+        assert_eq!(
+            validity(&cfg, 200, &h(&[("cache-control", "private")])),
+            None
+        );
+        assert_eq!(
+            validity(
+                &cfg,
+                200,
+                &h(&[("x-accel-expires", "3"), ("cache-control", "max-age=7")])
+            ),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(validity(&cfg, 200, &h(&[("set-cookie", "a=1")])), None);
+        assert_eq!(validity(&cfg, 200, &h(&[("vary", "*")])), None);
+        cfg.valid_by_status = [("404".to_string(), 10), ("any".to_string(), 2)]
+            .into_iter()
+            .collect();
+        assert_eq!(validity(&cfg, 404, &h(&[])), Some(Duration::from_secs(10)));
+        assert_eq!(validity(&cfg, 500, &h(&[])), Some(Duration::from_secs(2)));
+        cfg.ignore_headers = vec!["Cache-Control".into(), "Set-Cookie".into()];
+        assert_eq!(
+            validity(
+                &cfg,
+                404,
+                &h(&[("cache-control", "no-store"), ("set-cookie", "a")])
+            ),
+            Some(Duration::from_secs(10))
+        );
     }
 }
