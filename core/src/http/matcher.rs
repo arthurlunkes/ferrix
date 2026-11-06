@@ -111,18 +111,28 @@ impl ServerNamePattern {
 fn compile_response_headers(
     vhost: &VirtualHost,
     route: &RouteRule,
-) -> Vec<(HeaderName, HeaderValue)> {
-    let mut merged: Vec<(HeaderName, HeaderValue)> = Vec::new();
-    for (k, v) in vhost.headers.iter().chain(route.add_headers.iter()) {
+) -> Vec<(HeaderName, HeaderValue, bool)> {
+    let mut merged: Vec<(HeaderName, HeaderValue, bool)> = Vec::new();
+    let all = vhost
+        .headers
+        .iter()
+        .map(|kv| (kv, false))
+        .chain(vhost.headers_always.iter().map(|kv| (kv, true)))
+        .chain(route.add_headers.iter().map(|kv| (kv, false)))
+        .chain(route.add_headers_always.iter().map(|kv| (kv, true)));
+    for ((k, v), always) in all {
         let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
         ) else {
             continue;
         };
-        match merged.iter_mut().find(|(n, _)| *n == name) {
-            Some(slot) => slot.1 = value,
-            None => merged.push((name, value)),
+        match merged.iter_mut().find(|(n, _, _)| *n == name) {
+            Some(slot) => {
+                slot.1 = value;
+                slot.2 = always;
+            }
+            None => merged.push((name, value, always)),
         }
     }
     merged
@@ -137,7 +147,7 @@ struct CompiledRoute {
     allowed_ips: IpMatcher,
     denied_ips: IpMatcher,
 
-    response_headers: Vec<(HeaderName, HeaderValue)>,
+    response_headers: Vec<(HeaderName, HeaderValue, bool)>,
     plain_proxy: bool,
 }
 
@@ -196,6 +206,8 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
         && route.limit_conn.is_none()
         && route.rate_limit.is_none()
         && route.add_headers.is_empty()
+        && route.add_headers_always.is_empty()
+        && vhost.headers_always.is_empty()
         && route.proxy_set_headers.is_empty()
         && route.cache.is_none()
         && route.cors.is_none()
@@ -369,7 +381,7 @@ impl CompiledConfig {
         &self,
         vhost_index: usize,
         route_index: usize,
-    ) -> &[(HeaderName, HeaderValue)] {
+    ) -> &[(HeaderName, HeaderValue, bool)] {
         self.vhosts
             .get(vhost_index)
             .and_then(|v| v.routes.get(route_index))
@@ -566,6 +578,7 @@ mod tests {
             server_names: names.iter().map(|s| s.to_string()).collect(),
             listen_port: 8000,
             headers: Default::default(),
+            headers_always: Default::default(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: vec![],

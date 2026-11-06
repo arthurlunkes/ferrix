@@ -645,3 +645,13 @@ They apply after a restart (the reload warns about it).
 - `http.ignore_invalid_headers: true` (default): malformed header lines are skipped instead of 400.
 - `http.max_header_line_bytes: 8192`: longer request lines get 414 and longer header lines 400.
 - HTTP/0.9 (`GET /path` with no version) is answered with the bare body on plain HTTP ports, like nginx.
+
+### Static files, errors and headers (nginx behaviour)
+
+- URLs are percent-decoded and `.`/`..` resolved before routing (`/meu%20arquivo.pdf` serves `meu arquivo.pdf`); a path escaping the root is 400.
+- A directory requested without the trailing slash is redirected (301) to `dir/`.
+- Multiple ranges (`Range: bytes=0-1,4-5`) get a `multipart/byteranges` 206.
+- Errors and redirects Ferrix itself generates use a built-in HTML page (light/dark). Backend, CGI, gRPC and `return` bodies are never replaced; `error_pages` still wins.
+- `http.default_type` (nginx `default_type`) and `http.mime_types` (nginx `types {}`).
+- `add_headers` / vhost `headers` apply to 200, 201, 204, 206, 301, 302, 303, 304, 307 and 308; `add_headers_always` / `headers_always` apply to every status (nginx `add_header ... always`).
+- The importer now decodes `\n`, `\t`, `\r`, `\"`, `\'` and `\\` in quoted strings and keeps other backslashes (regexes such as `"\.php$"`).

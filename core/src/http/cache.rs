@@ -678,6 +678,7 @@ mod proxy_cache_tests {
             server_names: vec!["*".into()],
             listen_port: 80,
             headers: std::collections::HashMap::new(),
+            headers_always: Default::default(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),

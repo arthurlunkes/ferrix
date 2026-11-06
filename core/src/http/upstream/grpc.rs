@@ -118,7 +118,10 @@ pub async fn forward(
         e.to_string()
     })?;
     let (parts, body) = resp.into_parts();
-    Ok(Response::from_parts(parts, Body::new(body)))
+    let mut r = Response::from_parts(parts, Body::new(body));
+    r.extensions_mut()
+        .insert(crate::http::filters::default_pages::KeepBody);
+    Ok(r)
 }
 
 #[cfg(test)]
