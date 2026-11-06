@@ -61,6 +61,7 @@ mod tests {
             server_names: vec!["exemplo.com".to_string()],
             listen_port: port,
             headers: Default::default(),
+            headers_always: Default::default(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: vec![],

@@ -198,6 +198,8 @@ pub fn parse_reply(raw: &[u8]) -> Result<Response<Body>, String> {
     let mut resp = Response::new(Body::from(body));
     *resp.status_mut() = status;
     *resp.headers_mut() = headers;
+    resp.extensions_mut()
+        .insert(crate::http::filters::default_pages::KeepBody);
     Ok(resp)
 }
 

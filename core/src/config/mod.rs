@@ -271,6 +271,11 @@ pub struct HttpConfig {
     pub http3: Http3Limits,
 
     #[serde(default)]
+    pub default_type: Option<String>,
+    #[serde(default)]
+    pub mime_types: HashMap<String, String>,
+
+    #[serde(default)]
     pub underscores_in_headers: bool,
     #[serde(default = "default_true")]
     pub ignore_invalid_headers: bool,
@@ -638,6 +643,8 @@ impl Default for HttpConfig {
             geoip: None,
             http2: Http2Limits::default(),
             http3: Http3Limits::default(),
+            default_type: None,
+            mime_types: HashMap::new(),
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),
@@ -797,6 +804,8 @@ pub struct VirtualHost {
     pub listen_port: u16,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub headers_always: HashMap<String, String>,
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
@@ -1207,6 +1216,8 @@ pub struct RouteRule {
     #[serde(default)]
     pub add_headers: HashMap<String, String>,
     #[serde(default)]
+    pub add_headers_always: HashMap<String, String>,
+    #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
     pub limit_conn: Option<LimitConnConfig>,
@@ -1426,6 +1437,7 @@ impl Default for RouteRule {
             return_body: None,
             websocket_enabled: true,
             proxy_set_headers: HashMap::new(),
+            add_headers_always: HashMap::new(),
             add_headers: HashMap::new(),
             rate_limit: None,
             limit_conn: None,
@@ -1531,6 +1543,7 @@ impl Default for FerrixConfig {
                 "*".to_string(),
             ],
             listen_port: 80,
+            headers_always: Default::default(),
             headers: {
                 let mut h = HashMap::new();
                 h.insert("X-Powered-By".to_string(), "Ferrix/0.1.0".to_string());

@@ -71,6 +71,13 @@ http:
   #   path: /var/log/ferrix/access.log
   #   format: combined
 
+  ## Content-Type for files whose extension is unknown and for `return` bodies
+  ## (nginx `default_type`; Ferrix's default is text/plain).
+  # default_type: application/octet-stream
+  ## Extra or overriding extension -> MIME type pairs (nginx `types {}`).
+  # mime_types:
+  #   webmanifest: application/manifest+json
+
   ## Request validation (nginx defaults). Ambiguous requests always get 400: two Host
   ## headers, HTTP/1.1 without Host, Content-Length with Transfer-Encoding.
   ## Keep request headers whose names contain "_" (dropped by default).
@@ -214,9 +221,12 @@ vhosts:
     #   client_ca: /etc/ferrix/certs/clients-ca.pem
     #   ocsp_file: /etc/ferrix/certs/example.com.ocsp
 
-    ## Headers added to every response of this site.
+    ## Headers added to this site's successful and redirect responses.
     # headers:
     #   X-Content-Type-Options: nosniff
+    ## Headers added to every response of this site, errors included.
+    # headers_always:
+    #   Strict-Transport-Security: max-age=31536000
 
     ## Access control (CIDRs allowed) and password protection.
     # allowed_ips: [192.168.0.0/16]
@@ -266,9 +276,12 @@ vhosts:
         ## $proxy_add_x_forwarded_for, $scheme.
         # proxy_set_headers:
         #   X-Forwarded-Host: $host
-        ## Headers added to the response.
+        ## Headers added to successful and redirect responses (200, 201, 204, 206, 3xx).
         # add_headers:
         #   Cache-Control: no-store
+        ## Headers added to every response, errors included (nginx `add_header ... always`).
+        # add_headers_always:
+        #   X-Frame-Options: DENY
 
         ## Per-route timeouts (override the http ones).
         # proxy_connect_timeout_ms: 5000
