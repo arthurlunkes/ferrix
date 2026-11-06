@@ -171,7 +171,8 @@ pub fn syslog_frame(facility: u8, severity: u8, tag: &str, text: &str) -> String
 
 fn syslog(addr: Option<&str>, facility: u8, tag: &str, rx: Receiver<Line>) {
     let addr = addr.unwrap_or("/dev/log");
-    let send: Box<dyn Fn(&[u8])> = if addr.starts_with('/') {
+    type SendFn = Box<dyn Fn(&[u8])>;
+    let send: SendFn = if addr.starts_with('/') {
         #[cfg(unix)]
         {
             let Ok(s) = std::os::unix::net::UnixDatagram::unbound() else {
