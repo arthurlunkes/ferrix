@@ -790,6 +790,20 @@ impl Converter {
                     self.note_unsupported(d);
                 }
             }
+            "underscores_in_headers" => {
+                self.config.http.underscores_in_headers = d.arg(0) == Some("on");
+                self.converted(d, "virou http.underscores_in_headers");
+            }
+            "ignore_invalid_headers" => {
+                self.config.http.ignore_invalid_headers = d.arg(0) != Some("off");
+                self.converted(d, "virou http.ignore_invalid_headers");
+            }
+            "large_client_header_buffers" => {
+                if let Some(size) = d.arg(1).and_then(parse_size) {
+                    self.config.http.max_header_line_bytes = size as usize;
+                }
+                self.converted(d, "o tamanho virou http.max_header_line_bytes");
+            }
             "map" | "geo" | "split_clients" => self.convert_variable(d),
             "json_set" => match (d.arg(0), d.arg(1), d.arg(2)) {
                 (Some(name), Some(source), Some(path)) => {

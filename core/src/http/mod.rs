@@ -17,6 +17,7 @@ mod proxy;
 mod raw_proxy;
 pub mod realip;
 pub mod referer;
+pub mod request_check;
 pub mod secure_link;
 pub mod server;
 pub mod static_files;
@@ -116,6 +117,18 @@ impl ProxyEngine {
     ) -> Response {
         let compiled = self.store.compiled();
         let metrics_on = compiled.config.metrics.enabled;
+        let mut req = req;
+        let (method, version) = (req.method().clone(), req.version());
+        if req.uri().path_and_query().is_some_and(|pq| {
+            pq.as_str().len() > compiled.config.http.max_header_line_bytes.max(256)
+        }) {
+            return filters::error_page::plain_status(StatusCode::URI_TOO_LONG);
+        }
+        if let Err(code) =
+            request_check::check(&compiled.config.http, &method, version, req.headers_mut())
+        {
+            return filters::error_page::plain_status(code);
+        }
 
         let req = if metrics_on {
             req
@@ -974,6 +987,14 @@ impl ProxyEngine {
                     compiled.config.http.client_max_body_size,
                 ))
                 .await
+            }
+            RouteTargetType::StaticFiles
+                if parts.method != Method::GET && parts.method != Method::HEAD =>
+            {
+                let mut r = filters::error_page::plain_status(StatusCode::METHOD_NOT_ALLOWED);
+                r.headers_mut()
+                    .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+                r
             }
             RouteTargetType::StaticFiles => {
                 let root_dir = route.static_root.as_deref().unwrap_or("./public");

@@ -71,6 +71,17 @@ http:
   #   path: /var/log/ferrix/access.log
   #   format: combined
 
+  ## Request validation (nginx defaults). Ambiguous requests always get 400: two Host
+  ## headers, HTTP/1.1 without Host, Content-Length with Transfer-Encoding.
+  ## Keep request headers whose names contain "_" (dropped by default).
+  # underscores_in_headers: false
+  ## Skip malformed header lines instead of answering 400.
+  # ignore_invalid_headers: true
+  ## Longest request line or header line, in bytes (nginx `large_client_header_buffers`).
+  # max_header_line_bytes: 8192
+  ## Methods accepted at all; others get 405. Default: HTTP and WebDAV methods, no TRACE.
+  # allowed_methods: [GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, CONNECT, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, SEARCH, REPORT, MKCALENDAR]
+
   ## URL and redirect handling (nginx defaults).
   # merge_slashes: true
   # absolute_redirect: true
