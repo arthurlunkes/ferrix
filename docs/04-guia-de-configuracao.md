@@ -663,3 +663,7 @@ They apply after a restart (the reload warns about it).
 - With `strip_prefix` (nginx `proxy_pass` with a URI) the path sent is normalized (decoded, `.`/`..` resolved) and re-encoded; without it the original request URI is sent.
 - `proxy_hide_headers`, `proxy_pass_headers` (X-Accel-* and X-Pad are hidden by default), `proxy_method`, `proxy_set_body` (variables allowed), `proxy_pass_request_headers`, `proxy_pass_request_body`, and `cache.ignore_headers` (nginx `proxy_ignore_headers`: `Cache-Control`, `Set-Cookie`).
 - Responses no longer carry the internal `x-ferrix-upstream` header.
+
+### Basic auth with htpasswd files
+
+`basic_auth.user_file` reads an htpasswd file (nginx `auth_basic_user_file`), reloaded whenever it changes, and `basic_auth.realm` sets the realm (nginx `auth_basic "..."`). Both the file and the inline `password` accept bcrypt (`$2y$`/`$2a$`/`$2b$`, e.g. `htpasswd -B`), Apache MD5 (`$apr1$`), `{SHA}`, `{SSHA}`, SHA-crypt (`$5$`, `$6$`, e.g. `openssl passwd -6`) and plain text (`{PLAIN}x` or just `x`). Comparisons are constant-time. An unreadable file denies everyone. The hash formats beyond `$apr1$` and plain text come with the `htpasswd` build feature (on by default).
