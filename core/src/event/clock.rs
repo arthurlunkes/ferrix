@@ -91,8 +91,7 @@ pub fn mono_ms() -> u64 {
 }
 
 pub fn utc_now() -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(raw::unix_ms() as i64)
-        .unwrap_or_else(Utc::now)
+    DateTime::from_timestamp_millis(raw::unix_ms() as i64).unwrap_or_else(Utc::now)
 }
 
 pub fn unix_secs() -> u64 {
