@@ -879,7 +879,14 @@ impl Converter {
             | "proxy_cache_lock"
             | "proxy_cache_lock_timeout"
             | "proxy_cache_revalidate"
-            | "proxy_cache_background_update" => {
+            | "proxy_cache_background_update"
+            | "proxy_cache_key"
+            | "proxy_cache_methods"
+            | "proxy_cache_min_uses"
+            | "proxy_no_cache"
+            | "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {
                 self.apply_cache_tuning(d);
             }
             "merge_slashes"
@@ -1053,16 +1060,18 @@ impl Converter {
                 self.http_headers_always = always;
             }
 
-            "proxy_cache_path" => self.report.note(
-                NoteLevel::Converted,
-                &self.file,
-                d.line,
-                "proxy_cache_path",
-                &d.source(),
-                "o Ferrix não separa por zona nem grava em disco — toda rota com \
-                 'proxy_cache' divide uma única tabela em memória; veja a nota em cada \
-                 location que usa esta zona",
-            ),
+            "proxy_cache_path" => {
+                let store = &mut self.config.http.cache_store;
+                store.kind = crate::config::CacheStoreKind::Disk;
+                store.path = d.arg(0).map(String::from);
+                if let Some(max) = d.args.iter().find_map(|a| a.strip_prefix("max_size=")) {
+                    store.max_bytes = parse_size(max).unwrap_or(0);
+                }
+                self.converted(
+                    d,
+                    "virou http.cache_store em disco (todas as zonas dividem este diretório)",
+                );
+            }
 
             _ => self.note_unsupported(d),
         }
@@ -1383,7 +1392,14 @@ impl Converter {
                 | "proxy_cache_lock"
                 | "proxy_cache_lock_timeout"
                 | "proxy_cache_revalidate"
-                | "proxy_cache_background_update" => {
+                | "proxy_cache_background_update"
+                | "proxy_cache_key"
+                | "proxy_cache_methods"
+                | "proxy_cache_min_uses"
+                | "proxy_no_cache"
+                | "proxy_cache_max_range_offset"
+                | "proxy_cache_convert_head"
+                | "proxy_cache_lock_age" => {
                     self.apply_cache_tuning(item);
                 }
                 n if (n.starts_with("http2_")
@@ -1596,7 +1612,7 @@ impl Converter {
 
                 let tuning = self.cache_tuning.clone();
                 for d in item.block.iter().flatten() {
-                    if d.name.starts_with("proxy_cache_") {
+                    if d.name.starts_with("proxy_cache_") || d.name == "proxy_no_cache" {
                         self.apply_cache_tuning(d);
                     }
                 }
@@ -1895,31 +1911,22 @@ impl Converter {
                     ),
                 ),
             }
-            let codes = &chosen.args[..chosen.args.len().saturating_sub(1)];
-            if !codes.is_empty() && !codes.iter().any(|c| c == "200" || c == "any") {
-                self.report.partial(
-                    &self.file,
-                    chosen.line,
-                    "proxy_cache_valid",
-                    &chosen.source(),
-                    "o Ferrix só guarda respostas 200; os demais códigos desta diretiva não têm efeito",
-                );
+            let mut by_status = HashMap::new();
+            for item in valid_items {
+                let Some(ms) = item.args.last().and_then(|v| parse_time_ms(v)) else {
+                    continue;
+                };
+                let codes = &item.args[..item.args.len().saturating_sub(1)];
+                let codes: Vec<String> = if codes.is_empty() {
+                    vec!["200".into(), "301".into(), "302".into()]
+                } else {
+                    codes.to_vec()
+                };
+                for c in codes {
+                    by_status.insert(c, (ms / 1000).max(1));
+                }
             }
-            if valid_items.len() > 1 {
-                self.report.partial(
-                    &self.file,
-                    chosen.line,
-                    "proxy_cache_valid",
-                    &chosen.source(),
-                    format!(
-                        "havia {} diretivas 'proxy_cache_valid' neste nível, uma por código \
-                         de status; o Ferrix usa uma única duração para tudo (aqui, {}s), \
-                         sem diferenciar por status",
-                        valid_items.len(),
-                        self.cache_valid_secs
-                    ),
-                );
-            }
+            self.cache_tuning.valid_by_status = by_status;
         }
 
         if !bypass_items.is_empty() {
@@ -1937,18 +1944,10 @@ impl Converter {
                         query.push(name.to_string());
                     } else {
                         all_recognized = false;
+                        self.cache_tuning.bypass.push(arg.clone());
                     }
                 }
-                if !all_recognized {
-                    self.report.partial(
-                        &self.file,
-                        item.line,
-                        "proxy_cache_bypass",
-                        &item.source(),
-                        "só variáveis '$http_*', '$cookie_*' e '$arg_*' são reconhecidas; as \
-                         demais desta diretiva foram ignoradas",
-                    );
-                }
+                let _ = all_recognized;
             }
             self.cache_bypass_headers = headers;
             self.cache_bypass_cookies = cookies;
@@ -1984,6 +1983,13 @@ impl Converter {
             bypass_cookies: self.cache_bypass_cookies.clone(),
             bypass_query_params: self.cache_bypass_query.clone(),
             ignore_headers: self.cache_tuning.ignore_headers.clone(),
+            key: self.cache_tuning.key.clone(),
+            valid_by_status: self.cache_tuning.valid_by_status.clone(),
+            methods: self.cache_tuning.methods.clone(),
+            min_uses: self.cache_tuning.min_uses,
+            no_cache: self.cache_tuning.no_cache.clone(),
+            bypass: self.cache_tuning.bypass.clone(),
+            max_body_bytes: self.cache_tuning.max_body_bytes,
             use_stale: self.cache_tuning.use_stale.clone(),
             stale_keep_secs: self.cache_tuning.stale_keep_secs,
             lock: self.cache_tuning.lock,
@@ -2004,6 +2010,17 @@ impl Converter {
             "proxy_cache_lock_timeout" => t.lock_timeout_ms = d.arg(0).and_then(parse_time_ms),
             "proxy_cache_revalidate" => t.revalidate = on,
             "proxy_cache_background_update" => t.background_update = on,
+            "proxy_cache_key" => t.key = d.arg(0).map(String::from),
+            "proxy_cache_methods" => {
+                t.methods = d.args.iter().map(|m| m.to_ascii_uppercase()).collect()
+            }
+            "proxy_cache_min_uses" => {
+                t.min_uses = d.arg(0).and_then(|v| v.parse().ok()).unwrap_or(1)
+            }
+            "proxy_no_cache" => t.no_cache.extend(d.args.iter().cloned()),
+            "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {}
             _ => return false,
         }
         self.converted(d, "virou uma opção do cache da rota");
@@ -2117,7 +2134,14 @@ impl Converter {
                 | "proxy_cache_lock"
                 | "proxy_cache_lock_timeout"
                 | "proxy_cache_revalidate"
-                | "proxy_cache_background_update" => {}
+                | "proxy_cache_background_update"
+            | "proxy_cache_key"
+            | "proxy_cache_methods"
+            | "proxy_cache_min_uses"
+            | "proxy_no_cache"
+            | "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {}
                 "proxy_ssl_certificate" => upstream_tls.client_cert = item.arg(0).map(String::from),
                 "proxy_ssl_certificate_key" => upstream_tls.client_key = item.arg(0).map(String::from),
                 "proxy_ssl_trusted_certificate" => upstream_tls.trusted_ca = item.arg(0).map(String::from),
@@ -3968,14 +3992,14 @@ mod tests {
                 gzip on;
                 server {
                     listen 80;
-                    location / { proxy_pass http://a:1; proxy_no_cache $cookie_nocache; }
+                    location / { proxy_pass http://a:1; js_content handler.main; }
                 }
             }"#,
         );
         let names = r.report.unsupported_directives();
         assert!(!names.contains(&"gzip".to_string()));
         assert!(r.config.http.compression.enabled);
-        assert!(names.contains(&"proxy_no_cache".to_string()));
+        assert!(names.contains(&"js_content".to_string()));
     }
 
     #[test]
@@ -4540,7 +4564,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_proxy_cache_valid_picks_the_200_entry_and_reports_the_loss() {
+    fn multiple_proxy_cache_valid_become_per_status_validity() {
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -4554,14 +4578,11 @@ mod tests {
             } }"#,
         );
         let route = first_route(&r);
-        assert_eq!(route.cache.as_ref().unwrap().valid_secs, 30);
-        assert!(r
-            .report
-            .notes
-            .iter()
-            .any(|n| n.directive == "proxy_cache_valid"
-                && n.level == NoteLevel::Partial
-                && n.reason.contains("3 diretivas")));
+        let c = route.cache.as_ref().unwrap();
+        assert_eq!(c.valid_secs, 30);
+        assert_eq!(c.valid_by_status.get("200"), Some(&30));
+        assert_eq!(c.valid_by_status.get("404"), Some(&10));
+        assert_eq!(c.valid_by_status.get("any"), Some(&5));
     }
 
     #[test]

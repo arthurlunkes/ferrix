@@ -2,6 +2,7 @@ pub mod access;
 pub mod access_log;
 pub mod auth_request;
 pub mod cache;
+pub mod cache_store;
 pub mod dav;
 pub mod default_page;
 pub mod filters;
@@ -1366,15 +1367,59 @@ impl ProxyEngine {
                     }
                 }
 
-                let cacheable_method = parts.method == Method::GET || parts.method == Method::HEAD;
                 let cache_cfg = route
                     .cache
                     .as_ref()
-                    .filter(|_| cacheable_method)
+                    .filter(|cfg| {
+                        if cfg.methods.is_empty() {
+                            parts.method == Method::GET || parts.method == Method::HEAD
+                        } else {
+                            cfg.methods.iter().any(|m| m == parts.method.as_str())
+                        }
+                    })
                     .filter(|cfg| !cache_bypass_matches(cfg, &parts));
+                let templates = cache_cfg
+                    .filter(|c| c.key.is_some() || !c.bypass.is_empty() || !c.no_cache.is_empty())
+                    .map(|_| vars::Ctx {
+                        method: &parts.method,
+                        uri: parts.uri.clone(),
+                        headers: &parts.headers,
+                        client_ip,
+                        is_tls,
+                        http: &compiled.config.http,
+                        set: parts
+                            .extensions
+                            .get::<vars::SetVars>()
+                            .map(|s| s.0.clone())
+                            .unwrap_or_default(),
+                        captures: Vec::new(),
+                        client_cert: None,
+                    });
+                let truthy = |v: String| !v.is_empty() && v != "0";
+                let bypassed = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) => c.bypass.iter().any(|t| truthy(ctx.expand(t))),
+                    _ => false,
+                };
+                let no_store_cfg = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) if c.no_cache.iter().any(|t| truthy(ctx.expand(t))) => {
+                        Some(crate::config::CacheConfig {
+                            min_uses: u32::MAX,
+                            ..c.clone()
+                        })
+                    }
+                    _ => None,
+                };
+                let custom_key = match (&templates, cache_cfg) {
+                    (Some(ctx), Some(c)) => c.key.as_deref().map(|k| ctx.expand(k)),
+                    _ => None,
+                };
+                drop(templates);
+                let cache_cfg = cache_cfg
+                    .filter(|_| !bypassed)
+                    .map(|c| no_store_cfg.as_ref().unwrap_or(c));
 
                 if let Some(cfg) = cache_cfg {
-                    let key = cache_key_for(vhost, &parts);
+                    let key = custom_key.unwrap_or_else(|| cache_key_for(vhost, &parts));
                     Box::pin(self.serve_with_cache(
                         compiled,
                         route,
