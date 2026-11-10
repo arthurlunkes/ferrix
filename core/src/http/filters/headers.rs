@@ -6,10 +6,17 @@ pub fn add(
     compiled: &CompiledConfig,
     vhost_index: usize,
     route_index: usize,
+    status: axum::http::StatusCode,
     headers: &mut HeaderMap,
 ) {
-    for (name, value) in compiled.route_response_headers(vhost_index, route_index) {
-        headers.insert(name.clone(), value.clone());
+    let success = matches!(
+        status.as_u16(),
+        200 | 201 | 204 | 206 | 301 | 302 | 303 | 304 | 307 | 308
+    );
+    for (name, value, always) in compiled.route_response_headers(vhost_index, route_index) {
+        if success || *always {
+            headers.insert(name.clone(), value.clone());
+        }
     }
 }
 

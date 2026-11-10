@@ -238,6 +238,7 @@ async fn dashboard(dir: &str, req: &axum::http::request::Parts) -> Response {
         headers: &req.headers,
         encoding: None,
         cache: &cache,
+        types: Default::default(),
     };
     match crate::http::static_files::StaticFileServer::serve_file(
         dir,
@@ -328,6 +329,7 @@ fn authorized(state: &AdminState, headers: &HeaderMap, uri: &Uri) -> bool {
                 &crate::config::BasicAuthConfig {
                     username: u.clone(),
                     password: p.clone(),
+                    ..Default::default()
                 },
             ),
             _ => false,

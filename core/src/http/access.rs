@@ -46,7 +46,22 @@ impl AccessControl {
         let Some((user, pass)) = text.split_once(':') else {
             return false;
         };
-        user == auth.username && pass == auth.password
+        if !auth.username.is_empty()
+            && user == auth.username
+            && crate::http::htpasswd::verify(pass, &auth.password)
+        {
+            return true;
+        }
+        match auth
+            .user_file
+            .as_deref()
+            .and_then(crate::http::htpasswd::users)
+        {
+            Some(users) => users
+                .get(user)
+                .is_some_and(|hash| crate::http::htpasswd::verify(pass, hash)),
+            None => false,
+        }
     }
 
     pub fn evaluate(
@@ -168,6 +183,7 @@ mod tests {
         let cfg = BasicAuthConfig {
             username: "admin".into(),
             password: "s3nha".into(),
+            ..Default::default()
         };
         assert!(AccessControl::verify_basic_auth(
             &auth_header("admin", "s3nha"),
@@ -185,6 +201,7 @@ mod tests {
         let cfg = BasicAuthConfig {
             username: "admin".into(),
             password: "a:b:c".into(),
+            ..Default::default()
         };
         assert!(AccessControl::verify_basic_auth(
             &auth_header("admin", "a:b:c"),
@@ -197,6 +214,7 @@ mod tests {
         let cfg = BasicAuthConfig {
             username: "u".into(),
             password: "p".into(),
+            ..Default::default()
         };
         let good = auth_header("u", "p");
 
@@ -219,6 +237,7 @@ mod tests {
         let cfg = BasicAuthConfig {
             username: "u".into(),
             password: "p".into(),
+            ..Default::default()
         };
 
         assert_eq!(

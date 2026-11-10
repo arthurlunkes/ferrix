@@ -36,10 +36,22 @@ struct FileMeta {
 }
 
 impl FileMeta {
-    fn new(path: &Path, metadata: &std::fs::Metadata) -> Self {
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
-        let content_type = HeaderValue::from_str(mime.as_ref())
-            .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+    fn new(path: &Path, metadata: &std::fs::Metadata, types: &MimeTypes<'_>) -> Self {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let custom = ext
+            .as_deref()
+            .and_then(|e| types.map.and_then(|m| m.get(e)));
+        let content_type = match custom {
+            Some(t) => HeaderValue::from_str(t).ok(),
+            None => mime_guess::from_path(path)
+                .first()
+                .and_then(|m| HeaderValue::from_str(m.as_ref()).ok()),
+        }
+        .or_else(|| types.default.and_then(|d| HeaderValue::from_str(d).ok()))
+        .unwrap_or(HeaderValue::from_static("application/octet-stream"));
         let modified = metadata.modified().ok();
         let mtime = modified
             .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
@@ -91,6 +103,13 @@ pub struct StaticRequest<'a> {
     pub headers: &'a HeaderMap,
     pub encoding: Option<(CompressionAlgorithm, &'a CompressionConfig)>,
     pub cache: &'a StaticCacheConfig,
+    pub types: MimeTypes<'a>,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct MimeTypes<'a> {
+    pub map: Option<&'a HashMap<String, String>>,
+    pub default: Option<&'a str>,
 }
 
 pub struct StaticFileServer;
@@ -119,7 +138,13 @@ impl StaticFileServer {
             }
         }
 
-        let loaded = load_file(root_dir, path, try_files, req.cache.max_file_bytes)?;
+        let loaded = load_file(
+            root_dir,
+            path,
+            try_files,
+            req.cache.max_file_bytes,
+            &req.types,
+        )?;
 
         match loaded {
             Loaded::Cacheable(entry) => {
@@ -203,7 +228,70 @@ fn not_modified(meta: &FileMeta) -> Response<Body> {
 enum RangeReq {
     None,
     Satisfiable(u64, u64),
+    Multi(Vec<(u64, u64)>),
     Unsatisfiable,
+}
+
+const MAX_RANGES: usize = 64;
+const BOUNDARY: &str = "00000000000000000001";
+
+fn one_range(spec: &str, len: u64) -> Option<Option<(u64, u64)>> {
+    let (start, end) = spec.trim().split_once('-')?;
+    let r = match (start.trim(), end.trim()) {
+        ("", "") => return None,
+        ("", suffix) => match suffix.parse::<u64>().ok()? {
+            0 => return Some(None),
+            n => (len.saturating_sub(n), len.saturating_sub(1)),
+        },
+        (s, e) => {
+            let s = s.parse::<u64>().ok()?;
+            let e = if e.is_empty() {
+                len.saturating_sub(1)
+            } else {
+                e.parse::<u64>().ok()?.min(len.saturating_sub(1))
+            };
+            (s, e)
+        }
+    };
+    if len == 0 || r.0 >= len || r.0 > r.1 {
+        return Some(None);
+    }
+    Some(Some(r))
+}
+
+fn multipart_head(meta: &FileMeta, s: u64, e: u64) -> String {
+    format!(
+        "\r\n--{BOUNDARY}\r\nContent-Type: {}\r\nContent-Range: bytes {s}-{e}/{}\r\n\r\n",
+        meta.content_type
+            .to_str()
+            .unwrap_or("application/octet-stream"),
+        meta.len
+    )
+}
+
+fn multipart_tail() -> String {
+    format!("\r\n--{BOUNDARY}--\r\n")
+}
+
+fn multipart_response(meta: &FileMeta, body: Body, total: u64) -> Response<Body> {
+    let mut resp = Response::new(body);
+    *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+    let h = resp.headers_mut();
+    meta.apply(h);
+    if let Ok(v) = HeaderValue::from_str(&format!("multipart/byteranges; boundary={BOUNDARY}")) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(total));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    resp
+}
+
+fn multipart_len(meta: &FileMeta, ranges: &[(u64, u64)]) -> u64 {
+    ranges
+        .iter()
+        .map(|&(s, e)| multipart_head(meta, s, e).len() as u64 + (e - s + 1))
+        .sum::<u64>()
+        + multipart_tail().len() as u64
 }
 
 fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
@@ -223,39 +311,23 @@ fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
     let Some(spec) = range.trim().strip_prefix("bytes=") else {
         return RangeReq::None;
     };
-    if spec.contains(',') {
-        return RangeReq::None;
-    }
-    let Some((start, end)) = spec.trim().split_once('-') else {
-        return RangeReq::None;
-    };
     let len = meta.len;
-    let (start, end) = match (start.trim(), end.trim()) {
-        ("", "") => return RangeReq::None,
-        ("", suffix) => match suffix.parse::<u64>() {
-            Ok(0) => return RangeReq::Unsatisfiable,
-            Ok(n) => (len.saturating_sub(n), len.saturating_sub(1)),
-            Err(_) => return RangeReq::None,
-        },
-        (s, e) => {
-            let Ok(s) = s.parse::<u64>() else {
-                return RangeReq::None;
-            };
-            let e = if e.is_empty() {
-                len.saturating_sub(1)
-            } else {
-                match e.parse::<u64>() {
-                    Ok(e) => e.min(len.saturating_sub(1)),
-                    Err(_) => return RangeReq::None,
-                }
-            };
-            (s, e)
+    let mut ranges = Vec::new();
+    for part in spec.split(',') {
+        match one_range(part, len) {
+            None => return RangeReq::None,
+            Some(Some(r)) => ranges.push(r),
+            Some(None) => {}
         }
-    };
-    if len == 0 || start >= len || start > end {
-        return RangeReq::Unsatisfiable;
+        if ranges.len() > MAX_RANGES {
+            return RangeReq::None;
+        }
     }
-    RangeReq::Satisfiable(start, end)
+    match ranges.len() {
+        0 => RangeReq::Unsatisfiable,
+        1 => RangeReq::Satisfiable(ranges[0].0, ranges[0].1),
+        _ => RangeReq::Multi(ranges),
+    }
 }
 
 fn unsatisfiable(meta: &FileMeta) -> Response<Body> {
@@ -299,6 +371,16 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
             let mut resp = partial(meta, s, e, body);
             mark_sendfile(&mut resp, &entry.file_path, s, e - s + 1);
             return resp;
+        }
+        RangeReq::Multi(ranges) => {
+            let mut out = Vec::with_capacity(multipart_len(meta, &ranges) as usize);
+            for &(s, e) in &ranges {
+                out.extend_from_slice(multipart_head(meta, s, e).as_bytes());
+                out.extend_from_slice(&entry.body[s as usize..=e as usize]);
+            }
+            out.extend_from_slice(multipart_tail().as_bytes());
+            let total = out.len() as u64;
+            return multipart_response(meta, Body::from(out), total);
         }
         RangeReq::Unsatisfiable => return unsatisfiable(meta),
         RangeReq::None => {}
@@ -366,6 +448,32 @@ async fn respond_large(
                 tokio_util::io::ReaderStream::with_capacity(file.take(e - s + 1), 64 * 1024);
             Ok(partial(&meta, s, e, Body::from_stream(stream)))
         }
+        RangeReq::Multi(ranges) if multipart_len(&meta, &ranges) > 16 << 20 => {
+            let (s, e) = ranges[0];
+            file.seek(SeekFrom::Start(s))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let stream =
+                tokio_util::io::ReaderStream::with_capacity(file.take(e - s + 1), 64 * 1024);
+            Ok(partial(&meta, s, e, Body::from_stream(stream)))
+        }
+        RangeReq::Multi(ranges) => {
+            let total = multipart_len(&meta, &ranges);
+            let mut out = Vec::with_capacity(total.min(8 << 20) as usize);
+            for &(s, e) in &ranges {
+                out.extend_from_slice(multipart_head(&meta, s, e).as_bytes());
+                file.seek(SeekFrom::Start(s))
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let mut part = vec![0u8; (e - s + 1) as usize];
+                file.read_exact(&mut part)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                out.extend_from_slice(&part);
+            }
+            out.extend_from_slice(multipart_tail().as_bytes());
+            Ok(multipart_response(&meta, Body::from(out), total))
+        }
         RangeReq::Unsatisfiable => Ok(unsatisfiable(&meta)),
         RangeReq::None => {
             let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
@@ -426,6 +534,7 @@ fn load_file(
     path: &str,
     try_files: Option<&str>,
     max_cached_file: u64,
+    types: &MimeTypes<'_>,
 ) -> Result<Loaded, StatusCode> {
     let clean_path = path.trim_start_matches('/');
     let base_root = PathBuf::from(root_dir);
@@ -440,7 +549,7 @@ fn load_file(
     }
 
     let metadata = std::fs::metadata(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let meta = FileMeta::new(&file_path, &metadata);
+    let meta = FileMeta::new(&file_path, &metadata, types);
 
     if meta.len > max_cached_file {
         return Ok(Loaded::Large(file_path, meta));
@@ -672,6 +781,7 @@ mod tests {
             headers: &headers,
             encoding: None,
             cache: &StaticCacheConfig::default(),
+            types: MimeTypes::default(),
         };
         StaticFileServer::serve_file(root, path, None, &req)
             .await
@@ -703,6 +813,7 @@ mod tests {
             headers: &headers,
             encoding: None,
             cache: &limits,
+            types: MimeTypes::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/big.txt", None, &req)
             .await
@@ -746,6 +857,7 @@ mod tests {
             headers: &headers,
             encoding: Some((CompressionAlgorithm::Gzip, &cfg)),
             cache: &StaticCacheConfig::default(),
+            types: MimeTypes::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/c.txt", None, &req)
             .await
@@ -803,5 +915,32 @@ mod tests {
         }
         assert!(random_index(d.root(), "/a.html").is_none());
         assert_eq!(EMPTY_GIF.len(), 43);
+    }
+
+    #[tokio::test]
+    async fn multiple_ranges_are_multipart() {
+        let d = dir_with("f.txt", "hello static\n");
+        let mut h = HeaderMap::new();
+        h.insert(header::RANGE, "bytes=0-1,4-5".parse().unwrap());
+        let r = get(d.root(), "/f.txt", h).await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "multipart/byteranges; boundary=00000000000000000001"
+        );
+        let len: usize = r.headers()[header::CONTENT_LENGTH]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let b = r.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(b.len(), len);
+        let text = String::from_utf8(b.to_vec()).unwrap();
+        assert!(
+            text.contains("Content-Range: bytes 0-1/13\r\n\r\nhe"),
+            "{text}"
+        );
+        assert!(text.contains("Content-Range: bytes 4-5/13\r\n\r\no "));
+        assert!(text.ends_with("--00000000000000000001--\r\n"));
     }
 }

@@ -383,6 +383,35 @@ http:
 
 Variables: `$remote_addr $remote_user $time_local $time_iso8601 $msec $request $request_method $request_uri $uri $args $status $body_bytes_sent $request_time $host $http_host $http_referer $http_user_agent $upstream_addr $scheme $request_id`.
 
+### Log destinations (`logging`)
+
+nginx `error_log` and `access_log` with more destinations. Unused, nothing runs: errors go to stderr and requests are not logged. Each target gets its own writer thread, so a slow destination never blocks a request.
+
+```yaml
+logging:
+  error:
+    level: warn            # or "warn,ferrix::http=debug"; RUST_LOG overrides it
+    format: json           # text (default) or json
+    targets:
+      - { kind: file, path: /var/log/ferrix/error.log, max_bytes: 104857600, keep: 5 }
+  access:
+    format: json           # combined, json or a $variable template
+    targets:
+      - { kind: stdout }
+      - { kind: syslog, addr: "10.0.0.5:514", facility: local7, tag: ferrix }
+      - { kind: http, url: "http://vector:8686/", batch_size: 500, flush_ms: 1000 }
+```
+
+| Target | Fields | Notes |
+|---|---|---|
+| `off` | — | discards (`targets: []` on `error` silences the error log completely) |
+| `stdout` / `stderr` | — | for containers and systemd-journald |
+| `file` | `path`, `max_bytes`, `keep` | rotates to `path.1 … path.<keep>` when `max_bytes` is reached (0 = no rotation) |
+| `syslog` | `addr`, `facility`, `tag` | `host:port` = UDP, `/path` = unix socket, default `/dev/log` |
+| `http` | `url`, `batch_size`, `flush_ms`, `headers` | POSTs NDJSON batches; send it to Vector/Fluent Bit/Loki/ClickHouse/Elastic (a database through its HTTP ingest) |
+
+When `logging.access.targets` is set it replaces `http.access_log`. The in-memory log (dashboard, `/api/logs`) stays controlled by `metrics.enabled`. Changes apply on reload. `ferrix import` converts `error_log` (file, stderr, syslog, level) and `access_log syslog:...`.
+
 ### Sticky sessions (`upstreams.<name>.sticky`)
 
 nginx `sticky cookie srv_id expires=1h path=/`. The cookie stores a hash of the target, never its address.
@@ -645,3 +674,44 @@ They apply after a restart (the reload warns about it).
 - `http.ignore_invalid_headers: true` (default): malformed header lines are skipped instead of 400.
 - `http.max_header_line_bytes: 8192`: longer request lines get 414 and longer header lines 400.
 - HTTP/0.9 (`GET /path` with no version) is answered with the bare body on plain HTTP ports, like nginx.
+
+### Static files, errors and headers (nginx behaviour)
+
+- URLs are percent-decoded and `.`/`..` resolved before routing (`/meu%20arquivo.pdf` serves `meu arquivo.pdf`); a path escaping the root is 400.
+- A directory requested without the trailing slash is redirected (301) to `dir/`.
+- Multiple ranges (`Range: bytes=0-1,4-5`) get a `multipart/byteranges` 206.
+- Errors and redirects Ferrix itself generates use a built-in HTML page (light/dark). Backend, CGI, gRPC and `return` bodies are never replaced; `error_pages` still wins.
+- `http.default_type` (nginx `default_type`) and `http.mime_types` (nginx `types {}`).
+- `add_headers` / vhost `headers` apply to 200, 201, 204, 206, 301, 302, 303, 304, 307 and 308; `add_headers_always` / `headers_always` apply to every status (nginx `add_header ... always`).
+- The importer now decodes `\n`, `\t`, `\r`, `\"`, `\'` and `\\` in quoted strings and keeps other backslashes (regexes such as `"\.php$"`).
+
+### Proxy requests (nginx behaviour)
+
+- Only `proxy_set_headers` are added to the request. `Host` is the upstream's name (nginx `$proxy_host`), or `upstreams.<name>.host_header`; the importer sets `host_header` to `host:port` for `proxy_pass http://host:port`. The client's headers pass through unchanged (hop-by-hop ones removed). An empty value removes a header.
+- `http.proxy_forwarded_headers: true` restores the old automatic `X-Real-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`.
+- With `strip_prefix` (nginx `proxy_pass` with a URI) the path sent is normalized (decoded, `.`/`..` resolved) and re-encoded; without it the original request URI is sent.
+- `proxy_hide_headers`, `proxy_pass_headers` (X-Accel-* and X-Pad are hidden by default), `proxy_method`, `proxy_set_body` (variables allowed), `proxy_pass_request_headers`, `proxy_pass_request_body`, and `cache.ignore_headers` (nginx `proxy_ignore_headers`: `Cache-Control`, `Set-Cookie`).
+- Responses no longer carry the internal `x-ferrix-upstream` header.
+
+### Basic auth with htpasswd files
+
+`basic_auth.user_file` reads an htpasswd file (nginx `auth_basic_user_file`), reloaded whenever it changes, and `basic_auth.realm` sets the realm (nginx `auth_basic "..."`). Both the file and the inline `password` accept bcrypt (`$2y$`/`$2a$`/`$2b$`, e.g. `htpasswd -B`), Apache MD5 (`$apr1$`), `{SHA}`, `{SSHA}`, SHA-crypt (`$5$`, `$6$`, e.g. `openssl passwd -6`) and plain text (`{PLAIN}x` or just `x`). Comparisons are constant-time. An unreadable file denies everyone. The hash formats beyond `$apr1$` and plain text come with the `htpasswd` build feature (on by default).
+
+### Named routes, internal redirects and `try_files` fallbacks
+
+- `match_type: named` with `path_prefix: "@fallback"` (nginx `location @fallback`): never matched by URL.
+- `internal: true` (nginx `internal`): answers 404 unless reached through an internal redirect.
+- `error_redirects` on the vhost or a route (nginx `error_page`): `{ codes: [404, 502], target: "@fallback" | "/50x.html" | "https://...", status: "" | "=" | "200" }`. An empty status keeps the original code (nginx default), `=` uses the target's code, a number forces it. External URLs answer 302 (or the given 3xx). The redirected request is a GET (HEAD stays HEAD) with the original headers and no body. `recursive_error_pages` lets a redirected response be redirected again (up to 10 hops).
+- `try_files` whose last item is `@name`, `=code` or a URI (`/index.php?$args`) behaves like nginx: the URI is an internal redirect, not a file lookup.
+- `http.x_accel_redirect: true` follows `X-Accel-Redirect` from backends (off by default to keep the request path lean).
+- The importer converts `location @name`, `internal`, `error_page` with `=`/`@name`/URLs at server and location level, and `recursive_error_pages`.
+
+### Cache: keys, validity rules and storage (memory, disk, Redis/Dragonfly)
+
+Route `cache:` now also takes `key` (nginx `proxy_cache_key`, variables allowed), `valid_by_status` (nginx `proxy_cache_valid` per code, `any` included), `methods` (`proxy_cache_methods`), `min_uses`, `no_cache` and `bypass` (lists of variables: any non-empty value other than `0` triggers them) and `max_body_bytes`. Validity follows nginx: `X-Accel-Expires`, then `Cache-Control: s-maxage/max-age` (`no-store`, `no-cache`, `private` mean "do not cache"), then `Expires`, then `valid_by_status`, then `valid_secs` for 200/301/302; responses with `Set-Cookie` or `Vary: *` are not stored. `ignore_headers` disables any of those checks.
+
+`http.cache_store` chooses where entries live:
+
+- `kind: memory` (default): in-process table, fastest.
+- `kind: disk` (nginx `proxy_cache_path`): files under `path` in nginx's `levels=1:2` layout, written atomically; expired entries are swept every minute and the oldest go first above `max_bytes`. Survives restarts.
+- `kind: redis` with `url: redis://[user:]password@host:port/db`: Redis, Dragonfly, KeyDB or Valkey, with pooled connections, `AUTH`, `SELECT` and per-entry TTL; keys are `prefix` + cache key. Several Ferrix instances can share one cache.

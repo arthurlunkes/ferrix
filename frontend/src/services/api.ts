@@ -121,6 +121,8 @@ export interface LimitConnConfig {
 export interface BasicAuthConfig {
   username: string;
   password: string;
+  user_file?: string | null;
+  realm?: string | null;
 }
 
 export type Satisfy = "all" | "any";
@@ -131,7 +133,8 @@ export type RouteMatchType =
   | "exact"
   | "prefix_priority"
   | "regex"
-  | "regex_case_insensitive";
+  | "regex_case_insensitive"
+  | "named";
 
 export type NextUpstreamCondition =
   | "error"
@@ -213,6 +216,15 @@ export interface RouteRule {
   charset_types?: string[];
   memcached?: MemcachedConfig | null;
   tunnel?: TunnelConfig | null;
+  internal?: boolean;
+  error_redirects?: ErrorRedirect[];
+  proxy_hide_headers?: string[];
+  proxy_pass_headers?: string[];
+  proxy_method?: string | null;
+  proxy_set_body?: string | null;
+  proxy_pass_request_headers?: boolean;
+  proxy_pass_request_body?: boolean;
+  add_headers_always?: Record<string, string>;
 }
 
 export interface CacheConfig {
@@ -226,6 +238,14 @@ export interface CacheConfig {
   lock_timeout_ms?: number | null;
   revalidate: boolean;
   background_update: boolean;
+  ignore_headers?: string[];
+  key?: string | null;
+  valid_by_status?: Record<string, number>;
+  methods?: string[];
+  min_uses?: number;
+  no_cache?: string[];
+  bypass?: string[];
+  max_body_bytes?: number | null;
 }
 
 export interface UserIdConfig {
@@ -329,6 +349,12 @@ export interface CgiConfig {
   params: Record<string, string>;
 }
 
+export interface ErrorRedirect {
+  codes: number[];
+  target: string;
+  status?: string | null;
+}
+
 export interface VirtualHost {
   id: string;
   name: string;
@@ -346,6 +372,8 @@ export interface VirtualHost {
   error_pages?: Record<string, string>;
   conditions?: ConditionConfig[];
   rewrites?: RewriteRule[];
+  error_redirects?: ErrorRedirect[];
+  recursive_error_pages?: boolean;
 }
 
 export type AdminAuthMode = "none" | "token" | "basic";
@@ -385,6 +413,9 @@ export interface HttpConfig {
   access_log?: AccessLogConfig | null;
   variables?: Record<string, VariableDef>;
   proxy_protocol?: boolean;
+  cache_store?: { kind: "memory" | "disk" | "redis"; path?: string | null; max_bytes?: number; url?: string | null; prefix?: string | null };
+  proxy_forwarded_headers?: boolean;
+  x_accel_redirect?: boolean;
   merge_slashes?: boolean;
   absolute_redirect?: boolean;
   port_in_redirect?: boolean;

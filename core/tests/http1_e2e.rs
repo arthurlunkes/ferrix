@@ -225,7 +225,7 @@ async fn plain_proxy_rewrites_the_request_and_keeps_the_connection() {
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, "hello");
         assert!(resp.headers["server"].starts_with("ferrix"));
-        assert_eq!(resp.headers["x-ferrix-upstream"], format!("http://{up}"));
+        assert!(!resp.headers.contains_key("x-ferrix-upstream"));
         assert!(!resp.headers.contains_key("connection"));
     }
 
@@ -236,13 +236,10 @@ async fn plain_proxy_rewrites_the_request_and_keeps_the_connection() {
         first.starts_with("GET /items?page=0 HTTP/1.1\r\n"),
         "{first}"
     );
-    assert_eq!(header(first, "host"), Some(up.to_string().as_str()));
-    assert_eq!(
-        header(first, "x-forwarded-for"),
-        Some("10.0.0.9, 127.0.0.1")
-    );
-    assert_eq!(header(first, "x-real-ip"), Some("127.0.0.1"));
-    assert_eq!(header(first, "x-forwarded-proto"), Some("http"));
+    assert_eq!(header(first, "host"), Some("be"));
+    assert_eq!(header(first, "x-forwarded-for"), Some("10.0.0.9"));
+    assert!(header(first, "x-real-ip").is_none());
+    assert!(header(first, "x-forwarded-proto").is_none());
     assert_eq!(header(first, "accept"), Some("*/*"));
     assert!(header(first, "connection").is_none());
 }
@@ -434,4 +431,78 @@ async fn ambiguous_requests_get_400_and_http09_works() {
     let mut out = String::new();
     sock.read_to_string(&mut out).await.unwrap();
     assert_eq!(out, "x", "HTTP/0.9: body only, no status line");
+}
+
+#[tokio::test]
+async fn proxy_request_controls_like_nginx() {
+    let (up, seen) = upstream(Reply::Fixed("ok")).await;
+    let port = closed_port().await;
+    let extra = "      - id: ctl\n        path_prefix: /ctl/\n        strip_prefix: true\n        target_type: proxy_upstream\n        upstream_name: be\n        websocket_enabled: false\n        proxy_method: PUT\n        proxy_set_body: \"a=$arg_a\"\n        proxy_set_headers:\n          Accept: \"\"\n          X-Who: $remote_addr\n";
+    let addr = ferrix(site(port, &[format!("http://{up}")], extra)).await;
+    let r = request(
+        addr,
+        "GET /ctl/x%20y/../z?a=7 HTTP/1.1\r\nHost: site\r\nAccept: */*\r\n\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 200);
+    let seen = seen.lock().unwrap();
+    let got = &seen[0];
+    assert!(got.starts_with("PUT /z?a=7 HTTP/1.1\r\n"), "{got}");
+    assert_eq!(header(got, "host"), Some("be"));
+    assert!(header(got, "accept").is_none());
+    assert_eq!(header(got, "x-who"), Some("127.0.0.1"));
+    assert!(got.ends_with("\r\n\r\na=7"), "{got}");
+}
+
+#[tokio::test]
+async fn cache_key_min_uses_no_cache_and_disk_store() {
+    let (up, seen) = upstream(Reply::Fixed("cached")).await;
+    let port = closed_port().await;
+    let dir = std::env::temp_dir().join(format!("ferrix-e2e-cache-{}", uuid::Uuid::new_v4()));
+    let yaml = site(
+        port,
+        &[format!("http://{up}")],
+        "      - id: c\n        path_prefix: /c/\n        target_type: proxy_upstream\n        upstream_name: be\n        websocket_enabled: false\n        cache:\n          valid_secs: 60\n          key: \"$uri\"\n          min_uses: 2\n          no_cache: [\"$arg_nocache\"]\n",
+    )
+    .replacen(
+        "http:\n",
+        &format!("http:\n  cache_store: {{ kind: disk, path: \"{}\" }}\n", dir.display()),
+        1,
+    );
+    let addr = ferrix(yaml).await;
+    let get = |q: &str| format!("GET /c/a{q} HTTP/1.1\r\nHost: x\r\n\r\n");
+    let r = request(addr, &get("?v=1")).await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, &get("?v=2")).await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, &get("?v=3")).await;
+    assert_eq!(
+        r.headers["x-cache-status"], "HIT",
+        "key is $uri only; stored on the 2nd use"
+    );
+    assert_eq!(r.body, "cached");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let r = request(addr, "GET /c/b?nocache=1 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert_eq!(r.headers["x-cache-status"], "MISS");
+    let r = request(addr, "GET /c/b?nocache=1 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert_eq!(r.headers["x-cache-status"], "MISS", "no_cache never stores");
+    let files = walk(&dir);
+    assert_eq!(files, 1, "one entry on disk");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn walk(d: &std::path::Path) -> usize {
+    std::fs::read_dir(d)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| {
+                    if e.path().is_dir() {
+                        walk(&e.path())
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }

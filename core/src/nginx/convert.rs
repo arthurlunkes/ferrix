@@ -61,6 +61,8 @@ struct Converter {
     route_seq: usize,
 
     http_headers: HashMap<String, String>,
+    http_headers_always: HashMap<String, String>,
+    recursive_error_pages: bool,
 
     log_formats: HashMap<String, String>,
 
@@ -79,6 +81,31 @@ struct Converter {
     http_cache_baseline: (bool, u64, Vec<String>, Vec<String>, Vec<String>),
 }
 
+fn syslog_target(dest: &str) -> crate::config::LogTarget {
+    let mut addr = None;
+    let mut facility = None;
+    let mut tag = None;
+    for part in dest.trim_start_matches("syslog:").split(',') {
+        match part.split_once('=') {
+            Some(("server", v)) => {
+                addr = Some(match v.strip_prefix("unix:") {
+                    Some(p) => p.to_string(),
+                    None if v.contains(':') => v.to_string(),
+                    None => format!("{}:514", v),
+                })
+            }
+            Some(("facility", v)) => facility = Some(v.to_string()),
+            Some(("tag", v)) => tag = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    crate::config::LogTarget::Syslog {
+        addr,
+        facility,
+        tag,
+    }
+}
+
 impl Converter {
     fn new(file: &str, search_root: PathBuf) -> Self {
         let config = FerrixConfig {
@@ -90,6 +117,7 @@ impl Converter {
             acme: Default::default(),
             metrics: Default::default(),
             streams: Vec::new(),
+            logging: Default::default(),
         };
         Self {
             config,
@@ -101,6 +129,8 @@ impl Converter {
             synthetic_upstreams: 0,
             route_seq: 0,
             http_headers: HashMap::new(),
+            http_headers_always: HashMap::new(),
+            recursive_error_pages: false,
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
             internal_locations: HashMap::new(),
@@ -297,6 +327,7 @@ impl Converter {
                     self.config.http.worker_cpu_affinity = parse_cpu_affinity(&d.args);
                     self.converted(d, "virou http.worker_cpu_affinity");
                 }
+                "error_log" => self.convert_error_log(d),
                 "stream" => self.convert_stream(d),
                 "load_module" | "pid" | "user" | "daemon" => {
                     self.report.note(
@@ -319,6 +350,9 @@ impl Converter {
                 server_names: vec!["*".to_string()],
                 listen_port: 8000,
                 headers: HashMap::new(),
+                headers_always: Default::default(),
+                error_redirects: Vec::new(),
+                recursive_error_pages: false,
                 rate_limit: None,
                 limit_conn: None,
                 allowed_ips: Vec::new(),
@@ -551,6 +585,7 @@ impl Converter {
                     health_check: None,
                     verify_tls: true,
                     hash_key: None,
+                    host_header: None,
                     sticky: None,
                     tls: None,
                 },
@@ -790,6 +825,28 @@ impl Converter {
                     self.note_unsupported(d);
                 }
             }
+            "default_type" => {
+                self.config.http.default_type = d.arg(0).map(String::from);
+                self.converted(d, "virou http.default_type");
+            }
+            "types" => {
+                for e in d.block.iter().flatten() {
+                    for ext in &e.args {
+                        let known = mime_guess::from_ext(ext).first();
+                        if known.as_ref().map(|m| m.essence_str()) != Some(e.name.as_str()) {
+                            self.config
+                                .http
+                                .mime_types
+                                .insert(ext.to_ascii_lowercase(), e.name.clone());
+                        }
+                    }
+                }
+                self.converted(d, "virou http.mime_types");
+            }
+            "recursive_error_pages" => {
+                self.recursive_error_pages = d.arg(0) == Some("on");
+                self.converted(d, "virou recursive_error_pages nos hosts");
+            }
             "underscores_in_headers" => {
                 self.config.http.underscores_in_headers = d.arg(0) == Some("on");
                 self.converted(d, "virou http.underscores_in_headers");
@@ -849,7 +906,14 @@ impl Converter {
             | "proxy_cache_lock"
             | "proxy_cache_lock_timeout"
             | "proxy_cache_revalidate"
-            | "proxy_cache_background_update" => {
+            | "proxy_cache_background_update"
+            | "proxy_cache_key"
+            | "proxy_cache_methods"
+            | "proxy_cache_min_uses"
+            | "proxy_no_cache"
+            | "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {
                 self.apply_cache_tuning(d);
             }
             "merge_slashes"
@@ -879,8 +943,20 @@ impl Converter {
                     self.converted(d, "guardado para o access_log que usar este nome");
                 }
             }
+            "error_log" => self.convert_error_log(d),
             "access_log" => match d.arg(0) {
                 Some("off") => self.converted(d, "sem log em arquivo"),
+                Some(path) if path.starts_with("syslog:") => {
+                    let name = d.arg(1).unwrap_or("combined");
+                    let format = self
+                        .log_formats
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| "combined".to_string());
+                    self.config.logging.access.format = format;
+                    self.config.logging.access.targets.push(syslog_target(path));
+                    self.converted(d, "virou logging.access.targets (syslog)");
+                }
                 Some(path) if !path.starts_with("syslog:") => {
                     let name = d.arg(1).unwrap_or("combined");
                     let format = if name == "combined" {
@@ -1017,20 +1093,24 @@ impl Converter {
 
             "add_header" => {
                 let mut headers = std::mem::take(&mut self.http_headers);
-                self.apply_add_header(d, &mut headers);
+                let mut always = std::mem::take(&mut self.http_headers_always);
+                self.apply_add_header(d, &mut headers, &mut always);
                 self.http_headers = headers;
+                self.http_headers_always = always;
             }
 
-            "proxy_cache_path" => self.report.note(
-                NoteLevel::Converted,
-                &self.file,
-                d.line,
-                "proxy_cache_path",
-                &d.source(),
-                "o Ferrix não separa por zona nem grava em disco — toda rota com \
-                 'proxy_cache' divide uma única tabela em memória; veja a nota em cada \
-                 location que usa esta zona",
-            ),
+            "proxy_cache_path" => {
+                let store = &mut self.config.http.cache_store;
+                store.kind = crate::config::CacheStoreKind::Disk;
+                store.path = d.arg(0).map(String::from);
+                if let Some(max) = d.args.iter().find_map(|a| a.strip_prefix("max_size=")) {
+                    store.max_bytes = parse_size(max).unwrap_or(0);
+                }
+                self.converted(
+                    d,
+                    "virou http.cache_store em disco (todas as zonas dividem este diretório)",
+                );
+            }
 
             _ => self.note_unsupported(d),
         }
@@ -1182,6 +1262,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key,
+                host_header: None,
                 sticky,
                 tls: None,
             },
@@ -1264,6 +1345,9 @@ impl Converter {
             server_names: Vec::new(),
             listen_port: 80,
             headers: self.http_headers.clone(),
+            headers_always: self.http_headers_always.clone(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: self.recursive_error_pages,
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),
@@ -1347,7 +1431,14 @@ impl Converter {
                 | "proxy_cache_lock"
                 | "proxy_cache_lock_timeout"
                 | "proxy_cache_revalidate"
-                | "proxy_cache_background_update" => {
+                | "proxy_cache_background_update"
+                | "proxy_cache_key"
+                | "proxy_cache_methods"
+                | "proxy_cache_min_uses"
+                | "proxy_no_cache"
+                | "proxy_cache_max_range_offset"
+                | "proxy_cache_convert_head"
+                | "proxy_cache_lock_age" => {
                     self.apply_cache_tuning(item);
                 }
                 n if (n.starts_with("http2_")
@@ -1385,7 +1476,9 @@ impl Converter {
                     vhost.basic_auth =
                         Some(self.placeholder_basic_auth(item, auth_realm.as_deref()));
                 }
-                "add_header" => self.apply_add_header(item, &mut vhost.headers),
+                "add_header" => {
+                    self.apply_add_header(item, &mut vhost.headers, &mut vhost.headers_always)
+                }
                 "limit_req" => {
                     vhost.rate_limit = self.parse_limit_req(item);
                 }
@@ -1427,6 +1520,11 @@ impl Converter {
         }
 
         for item in error_pages {
+            if let Some(rule) = parse_error_redirect(item) {
+                vhost.error_redirects.push(rule);
+                self.converted(item, "virou error_redirects (redirecionamento interno)");
+                continue;
+            }
             let Some(uri) = item.args.last().filter(|u| u.starts_with('/')) else {
                 self.note_unsupported(item);
                 continue;
@@ -1553,7 +1651,7 @@ impl Converter {
 
                 let tuning = self.cache_tuning.clone();
                 for d in item.block.iter().flatten() {
-                    if d.name.starts_with("proxy_cache_") {
+                    if d.name.starts_with("proxy_cache_") || d.name == "proxy_no_cache" {
                         self.apply_cache_tuning(d);
                     }
                 }
@@ -1681,6 +1779,44 @@ impl Converter {
         Some(route)
     }
 
+    fn convert_error_log(&mut self, d: &Directive) {
+        let Some(dest) = d.arg(0) else {
+            return self.note_unsupported(d);
+        };
+        let target = if dest == "stderr" {
+            crate::config::LogTarget::Stderr
+        } else if dest == "/dev/null" {
+            crate::config::LogTarget::Off
+        } else if dest.starts_with("syslog:") {
+            syslog_target(dest)
+        } else if dest.starts_with("memory:") {
+            return self.converted(
+                d,
+                "o Ferrix já guarda eventos recentes em memória (/api/logs)",
+            );
+        } else {
+            crate::config::LogTarget::File {
+                path: dest.to_string(),
+                max_bytes: 0,
+                keep: 0,
+            }
+        };
+        let err = &mut self.config.logging.error;
+        if let Some(level) = d.arg(1) {
+            let level = match level {
+                "crit" | "alert" | "emerg" => "error",
+                "notice" => "info",
+                l => l,
+            };
+            err.level = Some(level.to_string());
+        }
+        let targets = err.targets.get_or_insert_with(Vec::new);
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+        self.converted(d, "virou logging.error");
+    }
+
     fn apply_access_log(&mut self, d: &Directive, route: &mut RouteRule) {
         if d.arg(0) == Some("off") {
             route.access_log = false;
@@ -1779,7 +1915,17 @@ impl Converter {
         }
     }
 
-    fn apply_add_header(&mut self, item: &Directive, target: &mut HashMap<String, String>) {
+    fn apply_add_header(
+        &mut self,
+        item: &Directive,
+        target: &mut HashMap<String, String>,
+        always_target: &mut HashMap<String, String>,
+    ) {
+        let target = if item.arg(2) == Some("always") {
+            always_target
+        } else {
+            target
+        };
         let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else {
             return;
         };
@@ -1842,31 +1988,22 @@ impl Converter {
                     ),
                 ),
             }
-            let codes = &chosen.args[..chosen.args.len().saturating_sub(1)];
-            if !codes.is_empty() && !codes.iter().any(|c| c == "200" || c == "any") {
-                self.report.partial(
-                    &self.file,
-                    chosen.line,
-                    "proxy_cache_valid",
-                    &chosen.source(),
-                    "o Ferrix só guarda respostas 200; os demais códigos desta diretiva não têm efeito",
-                );
+            let mut by_status = HashMap::new();
+            for item in valid_items {
+                let Some(ms) = item.args.last().and_then(|v| parse_time_ms(v)) else {
+                    continue;
+                };
+                let codes = &item.args[..item.args.len().saturating_sub(1)];
+                let codes: Vec<String> = if codes.is_empty() {
+                    vec!["200".into(), "301".into(), "302".into()]
+                } else {
+                    codes.to_vec()
+                };
+                for c in codes {
+                    by_status.insert(c, (ms / 1000).max(1));
+                }
             }
-            if valid_items.len() > 1 {
-                self.report.partial(
-                    &self.file,
-                    chosen.line,
-                    "proxy_cache_valid",
-                    &chosen.source(),
-                    format!(
-                        "havia {} diretivas 'proxy_cache_valid' neste nível, uma por código \
-                         de status; o Ferrix usa uma única duração para tudo (aqui, {}s), \
-                         sem diferenciar por status",
-                        valid_items.len(),
-                        self.cache_valid_secs
-                    ),
-                );
-            }
+            self.cache_tuning.valid_by_status = by_status;
         }
 
         if !bypass_items.is_empty() {
@@ -1884,18 +2021,10 @@ impl Converter {
                         query.push(name.to_string());
                     } else {
                         all_recognized = false;
+                        self.cache_tuning.bypass.push(arg.clone());
                     }
                 }
-                if !all_recognized {
-                    self.report.partial(
-                        &self.file,
-                        item.line,
-                        "proxy_cache_bypass",
-                        &item.source(),
-                        "só variáveis '$http_*', '$cookie_*' e '$arg_*' são reconhecidas; as \
-                         demais desta diretiva foram ignoradas",
-                    );
-                }
+                let _ = all_recognized;
             }
             self.cache_bypass_headers = headers;
             self.cache_bypass_cookies = cookies;
@@ -1930,6 +2059,14 @@ impl Converter {
             bypass_headers: self.cache_bypass_headers.clone(),
             bypass_cookies: self.cache_bypass_cookies.clone(),
             bypass_query_params: self.cache_bypass_query.clone(),
+            ignore_headers: self.cache_tuning.ignore_headers.clone(),
+            key: self.cache_tuning.key.clone(),
+            valid_by_status: self.cache_tuning.valid_by_status.clone(),
+            methods: self.cache_tuning.methods.clone(),
+            min_uses: self.cache_tuning.min_uses,
+            no_cache: self.cache_tuning.no_cache.clone(),
+            bypass: self.cache_tuning.bypass.clone(),
+            max_body_bytes: self.cache_tuning.max_body_bytes,
             use_stale: self.cache_tuning.use_stale.clone(),
             stale_keep_secs: self.cache_tuning.stale_keep_secs,
             lock: self.cache_tuning.lock,
@@ -1950,6 +2087,17 @@ impl Converter {
             "proxy_cache_lock_timeout" => t.lock_timeout_ms = d.arg(0).and_then(parse_time_ms),
             "proxy_cache_revalidate" => t.revalidate = on,
             "proxy_cache_background_update" => t.background_update = on,
+            "proxy_cache_key" => t.key = d.arg(0).map(String::from),
+            "proxy_cache_methods" => {
+                t.methods = d.args.iter().map(|m| m.to_ascii_uppercase()).collect()
+            }
+            "proxy_cache_min_uses" => {
+                t.min_uses = d.arg(0).and_then(|v| v.parse().ok()).unwrap_or(1)
+            }
+            "proxy_no_cache" => t.no_cache.extend(d.args.iter().cloned()),
+            "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {}
             _ => return false,
         }
         self.converted(d, "virou uma opção do cache da rota");
@@ -1959,16 +2107,11 @@ impl Converter {
     fn convert_location(&mut self, d: &Directive, server_root: Option<&str>) -> Option<RouteRule> {
         let (match_type, pattern) = parse_location_args(&d.args)?;
 
-        if pattern.starts_with('@') {
-            self.report.unsupported(
-                &self.file,
-                d.line,
-                "location @nomeada",
-                &d.source(),
-                "locations nomeadas, usadas por error_page e try_files, não existem no Ferrix",
-            );
-            return None;
-        }
+        let match_type = if pattern.starts_with('@') {
+            RouteMatchType::Named
+        } else {
+            match_type
+        };
 
         let mut route = RouteRule {
             id: self.next_route_id(),
@@ -2068,13 +2211,48 @@ impl Converter {
                 | "proxy_cache_lock"
                 | "proxy_cache_lock_timeout"
                 | "proxy_cache_revalidate"
-                | "proxy_cache_background_update" => {}
+                | "proxy_cache_background_update"
+            | "proxy_cache_key"
+            | "proxy_cache_methods"
+            | "proxy_cache_min_uses"
+            | "proxy_no_cache"
+            | "proxy_cache_max_range_offset"
+            | "proxy_cache_convert_head"
+            | "proxy_cache_lock_age" => {}
                 "proxy_ssl_certificate" => upstream_tls.client_cert = item.arg(0).map(String::from),
                 "proxy_ssl_certificate_key" => upstream_tls.client_key = item.arg(0).map(String::from),
                 "proxy_ssl_trusted_certificate" => upstream_tls.trusted_ca = item.arg(0).map(String::from),
                 "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
                 "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
                 "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
+                "internal" => route.internal = true,
+                "error_page" => match parse_error_redirect(item).or_else(|| {
+                    let target = item.args.last()?;
+                    let codes: Vec<u16> =
+                        item.args.iter().filter_map(|a| a.parse().ok()).collect();
+                    (!codes.is_empty()).then(|| crate::config::ErrorRedirect {
+                        codes,
+                        target: target.clone(),
+                        status: Some(String::new()),
+                    })
+                }) {
+                    Some(rule) => route.error_redirects.push(rule),
+                    None => self.note_unsupported(item),
+                },
+                "proxy_hide_header" => route.proxy_hide_headers.extend(item.arg(0).map(String::from)),
+                "proxy_pass_header" => route.proxy_pass_headers.extend(item.arg(0).map(String::from)),
+                "proxy_method" => route.proxy_method = item.arg(0).map(String::from),
+                "proxy_set_body" => route.proxy_set_body = item.arg(0).map(String::from),
+                "proxy_pass_request_headers" => {
+                    route.proxy_pass_request_headers = item.arg(0) != Some("off")
+                }
+                "proxy_pass_request_body" => route.proxy_pass_request_body = item.arg(0) != Some("off"),
+                "proxy_ignore_headers" => {
+                    self.cache_tuning.ignore_headers = item.args.clone();
+                    if let Some(c) = route.cache.as_mut() {
+                        c.ignore_headers = item.args.clone();
+                    }
+                }
                 "proxy_intercept_errors" => {
                     route.proxy_intercept_errors = item.arg(0) == Some("on")
                 }
@@ -2460,7 +2638,11 @@ impl Converter {
                         }
                     }
                 }
-                "add_header" => self.apply_add_header(item, &mut route.add_headers),
+                "add_header" => self.apply_add_header(
+                    item,
+                    &mut route.add_headers,
+                    &mut route.add_headers_always,
+                ),
                 "allow" => {
                     if let Some(v) = item.arg(0) {
                         route.allowed_ips.push(v.to_string());
@@ -2696,6 +2878,7 @@ impl Converter {
                 health_check: None,
                 verify_tls: true,
                 hash_key: None,
+                host_header: Some(host.to_string()),
                 sticky: None,
                 tls: None,
             },
@@ -2866,24 +3049,14 @@ impl Converter {
     }
 
     fn placeholder_basic_auth(&mut self, d: &Directive, realm: Option<&str>) -> BasicAuthConfig {
-        self.report.unsupported(
-            &self.file,
-            d.line,
-            "auth_basic_user_file",
-            &d.source(),
-            format!(
-                "o arquivo htpasswd guarda hashes e não pode ser convertido{}. \
-                 A rota ficou protegida com uma senha aleatória — defina usuário e senha no painel \
-                 antes de colocar no ar.",
-                realm
-                    .map(|r| format!(" (área '{}')", r))
-                    .unwrap_or_default()
-            ),
+        self.converted(
+            d,
+            "virou basic_auth.user_file (bcrypt, apr1, SHA, SHA-crypt e texto puro; relido quando muda)",
         );
-
         BasicAuthConfig {
-            username: "admin".to_string(),
-            password: uuid::Uuid::new_v4().simple().to_string(),
+            user_file: d.arg(0).map(String::from),
+            realm: realm.map(String::from),
+            ..Default::default()
         }
     }
 
@@ -3009,13 +3182,11 @@ fn reason_for(name: &str) -> String {
             "não é seguido ao colar texto na tela; use 'ferrix import --from arquivo.conf' na \
              máquina onde os arquivos estão, que resolve os includes automaticamente"
         }
-        "error_page" => "só páginas em arquivo (error_page 404 /404.html) são convertidas",
         "stub_status" => "use /api/metrics e o painel do Ferrix",
         "access_log" | "error_log" | "log_format" => {
             "o Ferrix registra as requisições em memória; veja /api/logs e a tela Live Requests"
         }
         "resolver" => "o Ferrix resolve nomes de backend a cada conexão",
-        "internal" => "não existe o conceito de location interna",
         "expires" => "use add_header Cache-Control para o mesmo efeito",
         "sendfile" | "tcp_nopush" | "tcp_nodelay" | "send_timeout" => {
             "detalhe de entrega que o Ferrix trata internamente"
@@ -3085,6 +3256,32 @@ fn normalize_upstream_url(addr: &str) -> String {
     } else {
         format!("http://{}", addr)
     }
+}
+
+fn parse_error_redirect(d: &Directive) -> Option<crate::config::ErrorRedirect> {
+    let target = d.args.last()?.clone();
+    let mut codes = Vec::new();
+    let mut status = None;
+    for a in &d.args[..d.args.len() - 1] {
+        if let Some(s) = a.strip_prefix('=') {
+            status = Some(if s.is_empty() {
+                "=".to_string()
+            } else {
+                s.to_string()
+            });
+        } else if let Ok(c) = a.parse::<u16>() {
+            codes.push(c);
+        }
+    }
+    let internal = status.is_some()
+        || target.starts_with('@')
+        || target.starts_with("http://")
+        || target.starts_with("https://");
+    (internal && !codes.is_empty()).then_some(crate::config::ErrorRedirect {
+        codes,
+        target,
+        status: status.or(Some(String::new())),
+    })
 }
 
 pub fn parse_time_ms(value: &str) -> Option<u64> {
@@ -3488,6 +3685,41 @@ mod tests {
     }
 
     #[test]
+    fn error_log_and_syslog_access_log_are_converted() {
+        let r = convert(
+            r#"error_log /var/log/nginx/error.log warn;
+            http {
+                error_log syslog:server=10.0.0.5,facility=local3,tag=web notice;
+                access_log syslog:server=unix:/dev/log;
+                server { listen 80; location / { root /srv; } }
+            }"#,
+        );
+        let e = &r.config.logging.error;
+        assert_eq!(e.level.as_deref(), Some("info"));
+        let t = e.targets.as_ref().unwrap();
+        assert_eq!(
+            t[0],
+            crate::config::LogTarget::File {
+                path: "/var/log/nginx/error.log".into(),
+                max_bytes: 0,
+                keep: 0
+            }
+        );
+        assert_eq!(
+            t[1],
+            crate::config::LogTarget::Syslog {
+                addr: Some("10.0.0.5:514".into()),
+                facility: Some("local3".into()),
+                tag: Some("web".into())
+            }
+        );
+        assert!(matches!(
+            &r.config.logging.access.targets[0],
+            crate::config::LogTarget::Syslog { addr: Some(a), .. } if a == "/dev/log"
+        ));
+    }
+
+    #[test]
     fn http_access_log_with_a_named_format_is_converted() {
         let r = convert(
             r#"http {
@@ -3846,7 +4078,7 @@ mod tests {
     }
 
     #[test]
-    fn htpasswd_leaves_the_route_closed_not_open() {
+    fn htpasswd_file_is_used_with_its_realm() {
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -3857,16 +4089,12 @@ mod tests {
                 }
             } }"#,
         );
-        let auth = first_route(&r).basic_auth.as_ref();
-        assert!(auth.is_some(), "a rota deve continuar protegida");
-        assert!(!auth.unwrap().password.is_empty());
-        assert!(
-            r.report
-                .notes
-                .iter()
-                .any(|n| n.directive == "auth_basic_user_file"
-                    && n.reason.contains("senha aleatória"))
-        );
+        let auth = first_route(&r)
+            .basic_auth
+            .as_ref()
+            .expect("route stays protected");
+        assert_eq!(auth.user_file.as_deref(), Some("/etc/nginx/htpasswd"));
+        assert_eq!(auth.realm.as_deref(), Some("Area administrativa"));
     }
 
     #[test]
@@ -3876,14 +4104,14 @@ mod tests {
                 gzip on;
                 server {
                     listen 80;
-                    location / { proxy_pass http://a:1; proxy_no_cache $cookie_nocache; }
+                    location / { proxy_pass http://a:1; js_content handler.main; }
                 }
             }"#,
         );
         let names = r.report.unsupported_directives();
         assert!(!names.contains(&"gzip".to_string()));
         assert!(r.config.http.compression.enabled);
-        assert!(names.contains(&"proxy_no_cache".to_string()));
+        assert!(names.contains(&"js_content".to_string()));
     }
 
     #[test]
@@ -4448,7 +4676,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_proxy_cache_valid_picks_the_200_entry_and_reports_the_loss() {
+    fn multiple_proxy_cache_valid_become_per_status_validity() {
         let r = convert(
             r#"http { server {
                 listen 80;
@@ -4462,14 +4690,11 @@ mod tests {
             } }"#,
         );
         let route = first_route(&r);
-        assert_eq!(route.cache.as_ref().unwrap().valid_secs, 30);
-        assert!(r
-            .report
-            .notes
-            .iter()
-            .any(|n| n.directive == "proxy_cache_valid"
-                && n.level == NoteLevel::Partial
-                && n.reason.contains("3 diretivas")));
+        let c = route.cache.as_ref().unwrap();
+        assert_eq!(c.valid_secs, 30);
+        assert_eq!(c.valid_by_status.get("200"), Some(&30));
+        assert_eq!(c.valid_by_status.get("404"), Some(&10));
+        assert_eq!(c.valid_by_status.get("any"), Some(&5));
     }
 
     #[test]

@@ -27,6 +27,80 @@ pub struct FerrixConfig {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub streams: Vec<StreamConfig>,
+    #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub error: ErrorLogConfig,
+    #[serde(default)]
+    pub access: AccessLogTargets,
+}
+
+impl LoggingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ErrorLogConfig {
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub format: LogFormat,
+    #[serde(default)]
+    pub targets: Option<Vec<LogTarget>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccessLogTargets {
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub targets: Vec<LogTarget>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum LogTarget {
+    Off,
+    Stdout,
+    Stderr,
+    File {
+        path: String,
+        #[serde(default)]
+        max_bytes: u64,
+        #[serde(default)]
+        keep: u32,
+    },
+    Syslog {
+        #[serde(default)]
+        addr: Option<String>,
+        #[serde(default)]
+        facility: Option<String>,
+        #[serde(default)]
+        tag: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        batch_size: Option<usize>,
+        #[serde(default)]
+        flush_ms: Option<u64>,
+        #[serde(default)]
+        headers: std::collections::BTreeMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -269,6 +343,19 @@ pub struct HttpConfig {
     pub http2: Http2Limits,
     #[serde(default)]
     pub http3: Http3Limits,
+
+    #[serde(default)]
+    pub default_type: Option<String>,
+    #[serde(default)]
+    pub mime_types: HashMap<String, String>,
+
+    #[serde(default)]
+    pub cache_store: CacheStoreConfig,
+
+    #[serde(default)]
+    pub proxy_forwarded_headers: bool,
+    #[serde(default)]
+    pub x_accel_redirect: bool,
 
     #[serde(default)]
     pub underscores_in_headers: bool,
@@ -638,6 +725,11 @@ impl Default for HttpConfig {
             geoip: None,
             http2: Http2Limits::default(),
             http3: Http3Limits::default(),
+            default_type: None,
+            mime_types: HashMap::new(),
+            cache_store: CacheStoreConfig::default(),
+            proxy_forwarded_headers: false,
+            x_accel_redirect: false,
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),
@@ -754,6 +846,9 @@ pub struct UpstreamConfig {
     pub hash_key: Option<String>,
 
     #[serde(default)]
+    pub host_header: Option<String>,
+
+    #[serde(default)]
     pub tls: Option<UpstreamTlsConfig>,
 
     #[serde(default)]
@@ -797,6 +892,12 @@ pub struct VirtualHost {
     pub listen_port: u16,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub headers_always: HashMap<String, String>,
+    #[serde(default)]
+    pub error_redirects: Vec<ErrorRedirect>,
+    #[serde(default)]
+    pub recursive_error_pages: bool,
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
@@ -865,10 +966,24 @@ pub enum Satisfy {
     Any,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ErrorRedirect {
+    pub codes: Vec<u16>,
+    pub target: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BasicAuthConfig {
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub password: String,
+    #[serde(default)]
+    pub user_file: Option<String>,
+    #[serde(default)]
+    pub realm: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1067,6 +1182,8 @@ pub enum RouteMatchType {
     Regex,
 
     RegexCaseInsensitive,
+
+    Named,
 }
 
 impl RouteMatchType {
@@ -1133,6 +1250,23 @@ pub struct CacheConfig {
     pub bypass_query_params: Vec<String>,
 
     #[serde(default)]
+    pub ignore_headers: Vec<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub valid_by_status: HashMap<String, u64>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default = "default_min_uses")]
+    pub min_uses: u32,
+    #[serde(default)]
+    pub no_cache: Vec<String>,
+    #[serde(default)]
+    pub bypass: Vec<String>,
+    #[serde(default)]
+    pub max_body_bytes: Option<u64>,
+
+    #[serde(default)]
     pub use_stale: Vec<String>,
     #[serde(default = "default_stale_keep_secs")]
     pub stale_keep_secs: u64,
@@ -1150,6 +1284,33 @@ fn default_header_line_bytes() -> usize {
     8 * 1024
 }
 
+fn default_min_uses() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheStoreKind {
+    #[default]
+    Memory,
+    Disk,
+    Redis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CacheStoreConfig {
+    #[serde(default)]
+    pub kind: CacheStoreKind,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_bytes: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
 fn default_stale_keep_secs() -> u64 {
     86_400
 }
@@ -1165,6 +1326,14 @@ impl Default for CacheConfig {
             bypass_headers: Vec::new(),
             bypass_cookies: Vec::new(),
             bypass_query_params: Vec::new(),
+            ignore_headers: Vec::new(),
+            key: None,
+            valid_by_status: HashMap::new(),
+            methods: Vec::new(),
+            min_uses: 1,
+            no_cache: Vec::new(),
+            bypass: Vec::new(),
+            max_body_bytes: None,
             use_stale: Vec::new(),
             stale_keep_secs: default_stale_keep_secs(),
             lock: false,
@@ -1203,9 +1372,27 @@ pub struct RouteRule {
     #[serde(default = "default_true")]
     pub websocket_enabled: bool,
     #[serde(default)]
+    pub internal: bool,
+    #[serde(default)]
+    pub error_redirects: Vec<ErrorRedirect>,
+    #[serde(default)]
     pub proxy_set_headers: HashMap<String, String>,
     #[serde(default)]
+    pub proxy_hide_headers: Vec<String>,
+    #[serde(default)]
+    pub proxy_pass_headers: Vec<String>,
+    #[serde(default)]
+    pub proxy_method: Option<String>,
+    #[serde(default)]
+    pub proxy_set_body: Option<String>,
+    #[serde(default = "default_true")]
+    pub proxy_pass_request_headers: bool,
+    #[serde(default = "default_true")]
+    pub proxy_pass_request_body: bool,
+    #[serde(default)]
     pub add_headers: HashMap<String, String>,
+    #[serde(default)]
+    pub add_headers_always: HashMap<String, String>,
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
@@ -1425,7 +1612,16 @@ impl Default for RouteRule {
             redirect_code: None,
             return_body: None,
             websocket_enabled: true,
+            internal: false,
+            error_redirects: Vec::new(),
             proxy_set_headers: HashMap::new(),
+            proxy_hide_headers: Vec::new(),
+            proxy_pass_headers: Vec::new(),
+            proxy_method: None,
+            proxy_set_body: None,
+            proxy_pass_request_headers: true,
+            proxy_pass_request_body: true,
+            add_headers_always: HashMap::new(),
             add_headers: HashMap::new(),
             rate_limit: None,
             limit_conn: None,
@@ -1517,6 +1713,7 @@ impl Default for FerrixConfig {
                 }),
                 verify_tls: true,
                 hash_key: None,
+                host_header: None,
                 sticky: None,
                 tls: None,
             },
@@ -1531,6 +1728,9 @@ impl Default for FerrixConfig {
                 "*".to_string(),
             ],
             listen_port: 80,
+            headers_always: Default::default(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: false,
             headers: {
                 let mut h = HashMap::new();
                 h.insert("X-Powered-By".to_string(), "Ferrix/0.1.0".to_string());
@@ -1575,6 +1775,7 @@ impl Default for FerrixConfig {
             acme: Default::default(),
             metrics: Default::default(),
             streams: Vec::new(),
+            logging: LoggingConfig::default(),
         }
     }
 }
