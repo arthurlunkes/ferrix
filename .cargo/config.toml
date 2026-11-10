@@ -1,5 +1,9 @@
 # mimalloc commits whole arenas up front on Linux by default, which costs ~13 MB of RSS
 # before Ferrix serves a single request. Committing on demand keeps the idle footprint
 # small with no measurable throughput difference.
+#
+# Transparent huge pages are turned off for the process: on hosts with THP set to
+# "always" the allocator's first touch of its arena becomes a 2 MiB page, and larger
+# buffers add more, for ~1.6-3 MB of RSS that holds no data.
 [env]
-CFLAGS = "-DMI_DEFAULT_ARENA_EAGER_COMMIT=0"
+CFLAGS = "-DMI_DEFAULT_ARENA_EAGER_COMMIT=0 -DMI_DEFAULT_ALLOW_THP=0"

@@ -46,13 +46,16 @@ pub async fn serve(
     port: u16,
     settings: &Settings,
 ) -> Outcome {
-    let mut buf = BytesMut::with_capacity(2 * 1024);
-    let mut out: Vec<u8> = Vec::with_capacity(1024);
+    let mut buf = BytesMut::new();
+    let mut out: Vec<u8> = Vec::new();
     let mut first = true;
 
     loop {
-        if !first && buf.is_empty() && buf.capacity() > 0 {
-            buf = BytesMut::new();
+        if buf.is_empty() {
+            if buf.capacity() > 0 {
+                buf = BytesMut::new();
+            }
+            stash_out(&mut out);
         }
         let wait = if first && buf.is_empty() {
             settings.header_timeout
@@ -71,6 +74,10 @@ pub async fn serve(
             Err(HeadError::Handoff) => return Outcome::Handoff(tcp, buf.freeze()),
         };
         first = false;
+        crate::event::clock::touch();
+        if out.capacity() == 0 {
+            out = OUT_BUF.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        }
 
         if head.needs_hyper {
             let mut prefix = BytesMut::with_capacity(head.raw.len() + buf.len());
@@ -126,6 +133,28 @@ pub async fn serve(
     }
 }
 
+const OUT_KEEP: usize = 64 * 1024;
+
+thread_local! {
+    static OUT_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn stash_out(out: &mut Vec<u8>) {
+    if out.capacity() == 0 {
+        return;
+    }
+    let mut spare = std::mem::take(out);
+    spare.clear();
+    if spare.capacity() <= OUT_KEEP {
+        OUT_BUF.with(|b| {
+            let mut slot = b.borrow_mut();
+            if slot.capacity() < spare.capacity() {
+                *slot = spare;
+            }
+        });
+    }
+}
+
 struct Head {
     method: Method,
     uri: Uri,
@@ -165,6 +194,12 @@ async fn read_head(
         }
         if buf.len() >= MAX_HEAD {
             return Err(HeadError::Bad(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE));
+        }
+        if buf.is_empty() {
+            match crate::event::clock::timeout_at_ms(deadline, tcp.readable()).await {
+                Ok(Ok(())) => {}
+                _ => return Ok(None),
+            }
         }
         buf.reserve(2 * 1024);
         let read = crate::event::clock::timeout_at_ms(deadline, tcp.read_buf(buf)).await;

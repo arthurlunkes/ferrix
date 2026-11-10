@@ -95,18 +95,17 @@ pub struct MetricsCollector {
 
     rps_last: AtomicU64,
 
-    log_sender: broadcast::Sender<RequestLog>,
+    log_sender: OnceLock<broadcast::Sender<RequestLog>>,
 }
 
 impl MetricsCollector {
     pub fn new(_capacity: usize) -> Arc<Self> {
-        let (log_sender, _) = broadcast::channel(512);
         Arc::new(Self {
             start_time: Instant::now(),
             start_utc: Utc::now(),
             stripes: (0..STRIPES).map(|_| Stripe::new()).collect(),
             rps_last: AtomicU64::new(0f64.to_bits()),
-            log_sender,
+            log_sender: OnceLock::new(),
         })
     }
 
@@ -179,8 +178,10 @@ impl MetricsCollector {
             return;
         }
 
-        if self.log_sender.receiver_count() > 0 {
-            let _ = self.log_sender.send(log.clone());
+        if let Some(sender) = self.log_sender.get() {
+            if sender.receiver_count() > 0 {
+                let _ = sender.send(log.clone());
+            }
         }
 
         let slot = s.log_head.fetch_add(1, Ordering::AcqRel) % LOG_CAPACITY;
@@ -234,7 +235,9 @@ impl MetricsCollector {
     }
 
     pub fn subscribe_logs(&self) -> broadcast::Receiver<RequestLog> {
-        self.log_sender.subscribe()
+        self.log_sender
+            .get_or_init(|| broadcast::channel(512).0)
+            .subscribe()
     }
 
     pub fn get_metrics_snapshot(&self) -> MetricsSnapshot {
