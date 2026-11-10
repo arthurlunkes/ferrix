@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Response, StatusCode};
 
-use crate::http::X_FERRIX_UPSTREAM;
+use crate::http::upstream_addr;
 
 #[derive(Clone, Copy)]
 pub struct KeepBody;
@@ -63,7 +63,7 @@ pub fn apply(resp: Response<Body>, server_tokens: bool) -> Response<Body> {
     let n = status.as_u16();
     let is_redirect = (300..400).contains(&n) && n != 304;
     if !(n >= 400 || is_redirect)
-        || resp.headers().contains_key(X_FERRIX_UPSTREAM)
+        || upstream_addr(&resp).is_some()
         || resp.extensions().get::<KeepBody>().is_some()
     {
         return resp;
@@ -114,8 +114,8 @@ mod tests {
             "text/plain; charset=utf-8"
         );
         let mut up = (StatusCode::BAD_GATEWAY, "x").into_response();
-        up.headers_mut()
-            .insert(X_FERRIX_UPSTREAM, HeaderValue::from_static("u"));
+        up.extensions_mut()
+            .insert(crate::http::UpstreamAddr(HeaderValue::from_static("u")));
         assert_eq!(
             apply(up, true).headers()[header::CONTENT_TYPE],
             "text/plain; charset=utf-8"

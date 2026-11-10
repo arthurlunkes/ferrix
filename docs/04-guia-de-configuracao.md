@@ -655,3 +655,11 @@ They apply after a restart (the reload warns about it).
 - `http.default_type` (nginx `default_type`) and `http.mime_types` (nginx `types {}`).
 - `add_headers` / vhost `headers` apply to 200, 201, 204, 206, 301, 302, 303, 304, 307 and 308; `add_headers_always` / `headers_always` apply to every status (nginx `add_header ... always`).
 - The importer now decodes `\n`, `\t`, `\r`, `\"`, `\'` and `\\` in quoted strings and keeps other backslashes (regexes such as `"\.php$"`).
+
+### Proxy requests (nginx behaviour)
+
+- Only `proxy_set_headers` are added to the request. `Host` is the upstream's name (nginx `$proxy_host`), or `upstreams.<name>.host_header`; the importer sets `host_header` to `host:port` for `proxy_pass http://host:port`. The client's headers pass through unchanged (hop-by-hop ones removed). An empty value removes a header.
+- `http.proxy_forwarded_headers: true` restores the old automatic `X-Real-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`.
+- With `strip_prefix` (nginx `proxy_pass` with a URI) the path sent is normalized (decoded, `.`/`..` resolved) and re-encoded; without it the original request URI is sent.
+- `proxy_hide_headers`, `proxy_pass_headers` (X-Accel-* and X-Pad are hidden by default), `proxy_method`, `proxy_set_body` (variables allowed), `proxy_pass_request_headers`, `proxy_pass_request_body`, and `cache.ignore_headers` (nginx `proxy_ignore_headers`: `Cache-Control`, `Set-Cookie`).
+- Responses no longer carry the internal `x-ferrix-upstream` header.

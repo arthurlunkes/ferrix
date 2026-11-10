@@ -78,6 +78,10 @@ http:
   # mime_types:
   #   webmanifest: application/manifest+json
 
+  ## Add X-Real-IP, X-Forwarded-For and X-Forwarded-Proto to every proxied request
+  ## (Ferrix's behaviour before 0.3). Off = nginx behaviour: only `proxy_set_headers`.
+  # proxy_forwarded_headers: false
+
   ## Request validation (nginx defaults). Ambiguous requests always get 400: two Host
   ## headers, HTTP/1.1 without Host, Content-Length with Transfer-Encoding.
   ## Keep request headers whose names contain "_" (dropped by default).
@@ -186,6 +190,8 @@ upstreams:
     #   expected_status: 200
     ## Check the certificate of https:// targets.
     # verify_tls: true
+    ## Host header sent to this upstream. Default: the upstream's name (nginx $proxy_host).
+    # host_header: api.internal
     ## Key for consistent_hash: $remote_addr, $request_uri, $uri, $host,
     ## $http_<header>, $cookie_<name> or $arg_<name>.
     # hash_key: $remote_addr
@@ -272,10 +278,25 @@ vhosts:
         # websocket_enabled: true
         # access_log: true
 
-        ## Headers sent to the upstream. Variables: $host, $remote_addr,
-        ## $proxy_add_x_forwarded_for, $scheme.
+        ## Headers sent to the upstream, like nginx `proxy_set_header`. As in nginx, only
+        ## these are added: Host is the upstream name ($proxy_host) and the client's own
+        ## headers pass through. An empty value removes a header. Variables: $host,
+        ## $http_host, $proxy_host, $remote_addr, $proxy_add_x_forwarded_for, $scheme and
+        ## any $variable from http.variables.
         # proxy_set_headers:
-        #   X-Forwarded-Host: $host
+        #   Host: $host
+        #   X-Real-IP: $remote_addr
+        #   X-Forwarded-For: $proxy_add_x_forwarded_for
+        #   X-Forwarded-Proto: $scheme
+        ## Response headers from the upstream to drop / to keep although hidden by default
+        ## (X-Accel-*, X-Pad). nginx `proxy_hide_header` / `proxy_pass_header`.
+        # proxy_hide_headers: [X-Powered-By]
+        # proxy_pass_headers: [X-Accel-Redirect]
+        ## Change the method or the body sent upstream; skip the client's headers or body.
+        # proxy_method: POST
+        # proxy_set_body: "user=$arg_user"
+        # proxy_pass_request_headers: true
+        # proxy_pass_request_body: true
         ## Headers added to successful and redirect responses (200, 201, 204, 206, 3xx).
         # add_headers:
         #   Cache-Control: no-store

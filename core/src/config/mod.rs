@@ -276,6 +276,9 @@ pub struct HttpConfig {
     pub mime_types: HashMap<String, String>,
 
     #[serde(default)]
+    pub proxy_forwarded_headers: bool,
+
+    #[serde(default)]
     pub underscores_in_headers: bool,
     #[serde(default = "default_true")]
     pub ignore_invalid_headers: bool,
@@ -645,6 +648,7 @@ impl Default for HttpConfig {
             http3: Http3Limits::default(),
             default_type: None,
             mime_types: HashMap::new(),
+            proxy_forwarded_headers: false,
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),
@@ -759,6 +763,9 @@ pub struct UpstreamConfig {
 
     #[serde(default)]
     pub hash_key: Option<String>,
+
+    #[serde(default)]
+    pub host_header: Option<String>,
 
     #[serde(default)]
     pub tls: Option<UpstreamTlsConfig>,
@@ -1142,6 +1149,9 @@ pub struct CacheConfig {
     pub bypass_query_params: Vec<String>,
 
     #[serde(default)]
+    pub ignore_headers: Vec<String>,
+
+    #[serde(default)]
     pub use_stale: Vec<String>,
     #[serde(default = "default_stale_keep_secs")]
     pub stale_keep_secs: u64,
@@ -1174,6 +1184,7 @@ impl Default for CacheConfig {
             bypass_headers: Vec::new(),
             bypass_cookies: Vec::new(),
             bypass_query_params: Vec::new(),
+            ignore_headers: Vec::new(),
             use_stale: Vec::new(),
             stale_keep_secs: default_stale_keep_secs(),
             lock: false,
@@ -1213,6 +1224,18 @@ pub struct RouteRule {
     pub websocket_enabled: bool,
     #[serde(default)]
     pub proxy_set_headers: HashMap<String, String>,
+    #[serde(default)]
+    pub proxy_hide_headers: Vec<String>,
+    #[serde(default)]
+    pub proxy_pass_headers: Vec<String>,
+    #[serde(default)]
+    pub proxy_method: Option<String>,
+    #[serde(default)]
+    pub proxy_set_body: Option<String>,
+    #[serde(default = "default_true")]
+    pub proxy_pass_request_headers: bool,
+    #[serde(default = "default_true")]
+    pub proxy_pass_request_body: bool,
     #[serde(default)]
     pub add_headers: HashMap<String, String>,
     #[serde(default)]
@@ -1437,6 +1460,12 @@ impl Default for RouteRule {
             return_body: None,
             websocket_enabled: true,
             proxy_set_headers: HashMap::new(),
+            proxy_hide_headers: Vec::new(),
+            proxy_pass_headers: Vec::new(),
+            proxy_method: None,
+            proxy_set_body: None,
+            proxy_pass_request_headers: true,
+            proxy_pass_request_body: true,
             add_headers_always: HashMap::new(),
             add_headers: HashMap::new(),
             rate_limit: None,
@@ -1529,6 +1558,7 @@ impl Default for FerrixConfig {
                 }),
                 verify_tls: true,
                 hash_key: None,
+                host_header: None,
                 sticky: None,
                 tls: None,
             },
