@@ -165,6 +165,24 @@ admin:
 # metrics:
 #   enabled: true
 
+## Error log and access log destinations (nginx `error_log` / `access_log`). Nothing
+## here costs anything: by default errors go to stderr and requests are not logged.
+## Targets: off, stdout, stderr, file (path, max_bytes rotation, keep), syslog
+## (addr host:port for UDP or a unix socket path; default /dev/log), http (POST of
+## newline-delimited lines to Loki/Vector/Elastic/ClickHouse; http:// only).
+# logging:
+#   error:
+#     level: info                  ## error, warn, info, debug or a filter like "warn,ferrix=debug"; RUST_LOG wins
+#     format: text                 ## text or json
+#     targets:
+#       - { kind: stderr }
+#       - { kind: file, path: /var/log/ferrix/error.log, max_bytes: 104857600, keep: 5 }
+#   access:
+#     format: json                 ## combined, json or a template with $variables
+#     targets:
+#       - { kind: syslog, addr: "127.0.0.1:514", facility: local7, tag: ferrix }
+#       - { kind: http, url: "http://127.0.0.1:8686/logs", batch_size: 500, flush_ms: 1000, headers: { X-Scope: web } }
+
 ## Real client address when Ferrix runs behind another proxy or load balancer.
 # real_ip:
 #   trusted_proxies: [10.0.0.0/8, 192.168.0.0/16]

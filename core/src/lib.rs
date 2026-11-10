@@ -6,6 +6,7 @@ pub mod fasthash;
 pub mod health;
 pub mod http;
 pub mod log;
+pub mod log_sink;
 pub mod metrics;
 pub mod net;
 #[cfg(feature = "nginx-import")]

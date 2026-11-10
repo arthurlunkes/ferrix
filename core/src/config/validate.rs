@@ -115,6 +115,7 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     validate_admin_auth(cfg, &mut report);
     validate_real_ip(cfg, &mut report);
     validate_upstreams(cfg, &mut report);
+    validate_logging(cfg, &mut report);
 
     if cfg.vhosts.is_empty() {
         report.error(
@@ -213,6 +214,30 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     }
 
     report
+}
+
+fn validate_logging(cfg: &FerrixConfig, report: &mut ValidationReport) {
+    let error_targets = cfg.logging.error.targets.iter().flatten();
+    let all = error_targets.map(|t| ("logging.error.targets", t)).chain(
+        cfg.logging
+            .access
+            .targets
+            .iter()
+            .map(|t| ("logging.access.targets", t)),
+    );
+    for (field, t) in all {
+        match t {
+            crate::config::LogTarget::File { path, .. } if path.trim().is_empty() => {
+                report.error(field, "o destino file precisa de path")
+            }
+            crate::config::LogTarget::Http { url, .. } => {
+                if let Err(e) = crate::log_sink::parse_http_url(url) {
+                    report.error(field, format!("url inválida '{}': {}", url, e));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn validate_acme(cfg: &FerrixConfig, report: &mut ValidationReport) {

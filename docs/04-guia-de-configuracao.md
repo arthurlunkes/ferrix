@@ -383,6 +383,35 @@ http:
 
 Variables: `$remote_addr $remote_user $time_local $time_iso8601 $msec $request $request_method $request_uri $uri $args $status $body_bytes_sent $request_time $host $http_host $http_referer $http_user_agent $upstream_addr $scheme $request_id`.
 
+### Log destinations (`logging`)
+
+nginx `error_log` and `access_log` with more destinations. Unused, nothing runs: errors go to stderr and requests are not logged. Each target gets its own writer thread, so a slow destination never blocks a request.
+
+```yaml
+logging:
+  error:
+    level: warn            # or "warn,ferrix::http=debug"; RUST_LOG overrides it
+    format: json           # text (default) or json
+    targets:
+      - { kind: file, path: /var/log/ferrix/error.log, max_bytes: 104857600, keep: 5 }
+  access:
+    format: json           # combined, json or a $variable template
+    targets:
+      - { kind: stdout }
+      - { kind: syslog, addr: "10.0.0.5:514", facility: local7, tag: ferrix }
+      - { kind: http, url: "http://vector:8686/", batch_size: 500, flush_ms: 1000 }
+```
+
+| Target | Fields | Notes |
+|---|---|---|
+| `off` | — | discards (`targets: []` on `error` silences the error log completely) |
+| `stdout` / `stderr` | — | for containers and systemd-journald |
+| `file` | `path`, `max_bytes`, `keep` | rotates to `path.1 … path.<keep>` when `max_bytes` is reached (0 = no rotation) |
+| `syslog` | `addr`, `facility`, `tag` | `host:port` = UDP, `/path` = unix socket, default `/dev/log` |
+| `http` | `url`, `batch_size`, `flush_ms`, `headers` | POSTs NDJSON batches; send it to Vector/Fluent Bit/Loki/ClickHouse/Elastic (a database through its HTTP ingest) |
+
+When `logging.access.targets` is set it replaces `http.access_log`. The in-memory log (dashboard, `/api/logs`) stays controlled by `metrics.enabled`. Changes apply on reload. `ferrix import` converts `error_log` (file, stderr, syslog, level) and `access_log syslog:...`.
+
 ### Sticky sessions (`upstreams.<name>.sticky`)
 
 nginx `sticky cookie srv_id expires=1h path=/`. The cookie stores a hash of the target, never its address.
