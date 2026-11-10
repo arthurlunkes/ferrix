@@ -270,6 +270,15 @@ pub struct HttpConfig {
     #[serde(default)]
     pub http3: Http3Limits,
 
+    #[serde(default)]
+    pub underscores_in_headers: bool,
+    #[serde(default = "default_true")]
+    pub ignore_invalid_headers: bool,
+    #[serde(default = "default_header_line_bytes")]
+    pub max_header_line_bytes: usize,
+    #[serde(default)]
+    pub allowed_methods: Option<Vec<String>>,
+
     #[serde(default = "default_true")]
     pub merge_slashes: bool,
     #[serde(default = "default_true")]
@@ -629,6 +638,10 @@ impl Default for HttpConfig {
             geoip: None,
             http2: Http2Limits::default(),
             http3: Http3Limits::default(),
+            underscores_in_headers: false,
+            ignore_invalid_headers: true,
+            max_header_line_bytes: default_header_line_bytes(),
+            allowed_methods: None,
             merge_slashes: true,
             absolute_redirect: true,
             port_in_redirect: true,
@@ -1131,6 +1144,10 @@ pub struct CacheConfig {
     pub revalidate: bool,
     #[serde(default)]
     pub background_update: bool,
+}
+
+fn default_header_line_bytes() -> usize {
+    8 * 1024
 }
 
 fn default_stale_keep_secs() -> u64 {

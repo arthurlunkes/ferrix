@@ -63,6 +63,7 @@ pub async fn serve(
             .timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
             .keep_alive(http.keepalive_timeout_ms > 0)
+            .ignore_invalid_headers(http.ignore_invalid_headers)
             .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
         let l = &http.http2;
         b.http2()
@@ -95,6 +96,7 @@ pub async fn serve(
         b.timer(crate::event::clock::CoarseTimer)
             .auto_date_header(false)
             .keep_alive(http.keepalive_timeout_ms > 0)
+            .ignore_invalid_headers(http.ignore_invalid_headers)
             .header_read_timeout(Duration::from_millis(http.client_header_timeout_ms.max(1)));
         b
     };

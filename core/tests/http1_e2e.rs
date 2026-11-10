@@ -410,3 +410,28 @@ async fn connect_tunnel_relays_bytes() {
     let r = request(addr, "CONNECT 127.0.0.1:22 HTTP/1.1\r\nHost: x\r\n\r\n").await;
     assert_eq!(r.status, 403);
 }
+
+#[tokio::test]
+async fn ambiguous_requests_get_400_and_http09_works() {
+    let (up, seen) = upstream(Reply::Fixed("x")).await;
+    let port = closed_port().await;
+    let addr = ferrix(site(port, &[format!("http://{up}")], "")).await;
+    for raw in [
+        "POST /api/s HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+        "GET /api/ HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+        "GET /api/ HTTP/1.1\r\n\r\n",
+    ] {
+        let r = request(addr, raw).await;
+        assert_eq!(r.status, 400, "{raw}");
+    }
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing ambiguous reached the backend"
+    );
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(b"GET /api/x\r\n\r\n").await.unwrap();
+    let mut out = String::new();
+    sock.read_to_string(&mut out).await.unwrap();
+    assert_eq!(out, "x", "HTTP/0.9: body only, no status line");
+}
