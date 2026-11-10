@@ -78,6 +78,50 @@ pub fn pin_current_thread(_core: usize) -> Result<(), String> {
     Err("worker_cpu_affinity is only supported on Linux".into())
 }
 
+static TRIM_HOOK: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+pub fn set_trim_hook(hook: fn()) {
+    let _ = TRIM_HOOK.set(hook);
+}
+
+pub fn trim_allocator() {
+    if let Some(hook) = TRIM_HOOK.get() {
+        hook();
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn release_startup_pages() {
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        _data: *mut libc::c_void,
+    ) -> libc::c_int {
+        let info = &*info;
+        let page = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+        for i in 0..info.dlpi_phnum as usize {
+            let ph = &*info.dlpi_phdr.add(i);
+            if ph.p_type != libc::PT_LOAD || ph.p_flags & libc::PF_W != 0 {
+                continue;
+            }
+            let start = info.dlpi_addr as usize + ph.p_vaddr as usize;
+            let end = start + ph.p_memsz as usize;
+            let start = start.div_ceil(page) * page;
+            let end = end / page * page;
+            if end > start {
+                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED);
+            }
+        }
+        1
+    }
+    unsafe {
+        libc::dl_iterate_phdr(Some(visit), std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn release_startup_pages() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

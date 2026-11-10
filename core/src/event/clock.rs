@@ -3,99 +3,183 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 struct Clock {
     base: Instant,
-    mono_ms: AtomicU64,
-    unix_ms: AtomicU64,
+    base_ns: u64,
+    slack_ms: u64,
 }
 
 static CLOCK: LazyLock<Clock> = LazyLock::new(|| {
-    let clock = Clock {
-        base: Instant::now(),
-        mono_ms: AtomicU64::new(0),
-        unix_ms: AtomicU64::new(read_unix_ms()),
-    };
-    std::thread::Builder::new()
-        .name("ferrix-clock".into())
-        .spawn(|| loop {
-            std::thread::sleep(Duration::from_millis(1));
-            let c = &*CLOCK;
-            c.mono_ms
-                .store(c.base.elapsed().as_millis() as u64, Ordering::Relaxed);
-            c.unix_ms.store(read_unix_ms(), Ordering::Relaxed);
-        })
-        .expect("failed to start clock thread");
-    clock
+    let base = Instant::now();
+    Clock {
+        base,
+        base_ns: raw::precise_ns(),
+        slack_ms: raw::resolution_ms(),
+    }
 });
 
-fn read_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod raw {
+    fn read(clock: libc::clockid_t) -> u64 {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(clock, &mut ts) };
+        ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+    }
+
+    pub fn precise_ns() -> u64 {
+        read(libc::CLOCK_MONOTONIC)
+    }
+
+    pub fn mono_ns() -> u64 {
+        read(libc::CLOCK_MONOTONIC_COARSE)
+    }
+
+    pub fn unix_ms() -> u64 {
+        read(libc::CLOCK_REALTIME_COARSE) / 1_000_000
+    }
+
+    pub fn resolution_ms() -> u64 {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC_COARSE, &mut ts) };
+        (ts.tv_nsec as u64).div_ceil(1_000_000).clamp(1, 20)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+mod raw {
+    use std::sync::LazyLock;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+    pub fn precise_ns() -> u64 {
+        START.elapsed().as_nanos() as u64
+    }
+
+    pub fn mono_ns() -> u64 {
+        START.elapsed().as_nanos() as u64
+    }
+
+    pub fn unix_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    pub fn resolution_ms() -> u64 {
+        1
+    }
 }
 
 pub fn now() -> Instant {
-    let c = &*CLOCK;
-    c.base + Duration::from_millis(c.mono_ms.load(Ordering::Relaxed))
+    CLOCK.base + Duration::from_millis(mono_ms())
 }
 
 pub fn mono_ms() -> u64 {
-    CLOCK.mono_ms.load(Ordering::Relaxed)
+    raw::mono_ns().saturating_sub(CLOCK.base_ns) / 1_000_000
 }
 
 pub fn utc_now() -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(CLOCK.unix_ms.load(Ordering::Relaxed) as i64)
-        .unwrap_or_else(Utc::now)
+    DateTime::from_timestamp_millis(raw::unix_ms() as i64).unwrap_or_else(Utc::now)
 }
 
 pub fn unix_secs() -> u64 {
-    CLOCK.unix_ms.load(Ordering::Relaxed) / 1000
+    raw::unix_ms() / 1000
 }
 
 pub fn instant_ms(at: Instant) -> u64 {
     at.saturating_duration_since(CLOCK.base).as_millis() as u64
 }
 
-const TIMER_TICK: Duration = Duration::from_millis(5);
-
-#[derive(Default)]
 struct LocalWheel {
     next_id: u64,
+    armed: u64,
+    notify: Arc<tokio::sync::Notify>,
     entries: BTreeMap<(u64, u64), Waker>,
 }
 
+impl LocalWheel {
+    fn insert(&mut self, key: (u64, u64), waker: Waker) {
+        self.entries.insert(key, waker);
+        if key.0 < self.armed {
+            self.armed = key.0;
+            self.notify.notify_one();
+        }
+    }
+}
+
 thread_local! {
+    static LAST_ACTIVE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WHEEL: RefCell<Option<LocalWheel>> = const { RefCell::new(None) };
 }
 
+const IDLE_TRIM_AFTER_MS: u64 = 1000;
+
+pub fn touch() {
+    let was = LAST_ACTIVE_MS.with(|l| l.replace(mono_ms().max(1)));
+    if was == 0 {
+        WHEEL.with(|w| {
+            if let Ok(w) = w.try_borrow() {
+                if let Some(wheel) = w.as_ref() {
+                    wheel.notify.notify_one();
+                }
+            }
+        });
+    }
+}
+
+fn trim_if_idle(now: u64) {
+    let idle = LAST_ACTIVE_MS.with(|l| {
+        let last = l.get();
+        if last != 0 && now.saturating_sub(last) >= IDLE_TRIM_AFTER_MS {
+            l.set(0);
+            true
+        } else {
+            false
+        }
+    });
+    if idle {
+        crate::http::upstream::h1::sweep_idle();
+        crate::os::trim_allocator();
+    }
+}
+
 pub fn enable_local_timers() {
-    let fresh = WHEEL.with(|w| {
+    let notify = WHEEL.with(|w| {
         let mut w = w.borrow_mut();
         if w.is_some() {
-            return false;
+            return None;
         }
-        *w = Some(LocalWheel::default());
-        true
+        let notify = Arc::new(tokio::sync::Notify::new());
+        *w = Some(LocalWheel {
+            next_id: 0,
+            armed: u64::MAX,
+            notify: notify.clone(),
+            entries: BTreeMap::new(),
+        });
+        Some(notify)
     });
-    if !fresh {
+    let Some(notify) = notify else {
         return;
-    }
-    tokio::spawn(async {
-        let mut ticker = tokio::time::interval(TIMER_TICK);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    };
+    tokio::spawn(async move {
         loop {
-            ticker.tick().await;
             let now = mono_ms();
-            let due: Vec<Waker> = WHEEL.with(|w| {
+            let (due, next) = WHEEL.with(|w| {
                 let mut w = w.borrow_mut();
                 let Some(wheel) = w.as_mut() else {
-                    return Vec::new();
+                    return (Vec::new(), u64::MAX);
                 };
                 let mut due = Vec::new();
                 while let Some(entry) = wheel.entries.first_entry() {
@@ -104,10 +188,27 @@ pub fn enable_local_timers() {
                     }
                     due.push(entry.remove());
                 }
-                due
+                let mut next = wheel.entries.keys().next().map_or(u64::MAX, |k| k.0);
+                let last = LAST_ACTIVE_MS.with(|l| l.get());
+                if last != 0 {
+                    next = next.min(last + IDLE_TRIM_AFTER_MS);
+                }
+                wheel.armed = next;
+                (due, next)
             });
             for w in due {
                 w.wake();
+            }
+            trim_if_idle(now);
+            if next == u64::MAX {
+                notify.notified().await;
+                continue;
+            }
+            let wake_ms = next.max(now + 1) + CLOCK.slack_ms;
+            let at = tokio::time::Instant::from_std(CLOCK.base + Duration::from_millis(wake_ms));
+            tokio::select! {
+                _ = tokio::time::sleep_until(at) => {}
+                _ = notify.notified() => {}
             }
         }
     });
@@ -183,13 +284,13 @@ impl Future for CoarseSleep {
                         }
                     }
                     None => {
-                        wheel.entries.insert(*key, cx.waker().clone());
+                        wheel.insert(*key, cx.waker().clone());
                     }
                 },
                 _ => {
                     wheel.next_id += 1;
                     let key = (deadline, wheel.next_id);
-                    wheel.entries.insert(key, cx.waker().clone());
+                    wheel.insert(key, cx.waker().clone());
                     this.reg = Registration::Local(std::thread::current().id(), key);
                 }
             }

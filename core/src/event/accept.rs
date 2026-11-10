@@ -39,6 +39,7 @@ struct OpenConn(Arc<AtomicUsize>);
 impl Drop for OpenConn {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
+        crate::event::clock::touch();
     }
 }
 
@@ -149,7 +150,7 @@ pub async fn serve(
         tokio::spawn(async move {
             let _slot = slot;
             if proxy_protocol {
-                match crate::net::proxy_protocol::read(&mut tcp, header_timeout).await {
+                match Box::pin(crate::net::proxy_protocol::read(&mut tcp, header_timeout)).await {
                     Ok(Some(real)) => addr = real,
                     Ok(None) => {}
                     Err(e) => {

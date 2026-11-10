@@ -112,6 +112,22 @@ fn take_idle(key: &str, insecure: bool) -> Option<Conn> {
     })
 }
 
+pub fn sweep_idle() {
+    let now = crate::event::clock::mono_ms();
+    POOL.with(|p| {
+        for pool in p.borrow_mut().iter_mut() {
+            pool.retain(|_, list| {
+                list.retain(|idle| {
+                    now.saturating_sub(idle.since_ms) < IDLE_TIMEOUT.as_millis() as u64
+                        && idle.conn.stream.looks_alive()
+                });
+                list.shrink_to_fit();
+                !list.is_empty()
+            });
+        }
+    });
+}
+
 fn release(conn: Conn) {
     POOL.with(|p| {
         let mut pools = p.borrow_mut();

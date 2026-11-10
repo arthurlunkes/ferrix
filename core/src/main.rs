@@ -172,7 +172,12 @@ fn spawn_tls_listener(
 
 const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
+fn trim_heap() {
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
 fn main() -> ExitCode {
+    ferrix::os::set_trim_hook(trim_heap);
     if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
         unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
     }
@@ -893,6 +898,9 @@ async fn run_server(args: Args) -> Result<(), String> {
     println!("│  💡 Tip: Run 'ferrix --help' to see all commands.                │");
     println!("│  🛑 Press Ctrl+C to shut down the server.                        │");
     println!("└──────────────────────────────────────────────────────────────────┘\n");
+
+    ferrix::os::trim_allocator();
+    ferrix::os::release_startup_pages();
 
     #[cfg(unix)]
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())

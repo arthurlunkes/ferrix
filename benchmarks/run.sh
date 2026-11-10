@@ -5,6 +5,8 @@
 #        benchmarks/run.sh                      todos, 10 s por cenário
 #        benchmarks/run.sh ferrix nginx -d 30s  só esses dois, 30 s por cenário
 #      METRICS=1 benchmarks/run.sh ...          mede o Ferrix com metrics.enabled = true
+#      LARGE=1 benchmarks/run.sh ...            também mede arquivos de 1, 10 e 100 MB
+#      LARGE=only benchmarks/run.sh ...         mede só os arquivos de 1, 10 e 100 MB
 #
 # Requisitos: só Docker e uma máquina com pelo menos 16 núcleos lógicos. Tudo roda em
 # containers com versões fixas, então o resultado não depende do que está instalado na
@@ -15,7 +17,9 @@
 #
 # Cenários: /small.txt (~1,4 KB), /big.txt (~133 KB) e /proxy/ (proxy reverso para o
 # upstream). Traefik e Pingora são só proxies, não servem arquivos: nos cenários de
-# arquivo eles aparecem como "-".
+# arquivo eles aparecem como "-". Com LARGE, entram /1m.bin, /10m.bin (256 conexões) e
+# /100m.bin (32 conexões), com timeout de 30 s no wrk, porque uma resposta de 100 MB
+# leva mais que os 2 s padrão.
 set -euo pipefail
 
 DUR=10s
@@ -52,6 +56,16 @@ mkdir -p "$WORK/www"
 head -c 1024 /dev/urandom | base64 > "$WORK/www/small.txt"
 head -c 100000 /dev/urandom | base64 -w0 > "$WORK/www/big.txt"
 echo '<h1>ok</h1>' > "$WORK/www/index.html"
+PATHS=(/small.txt /big.txt /proxy/)
+case "${LARGE:-0}" in
+    0) ;;
+    *)
+        [ "$LARGE" = only ] && PATHS=()
+        PATHS+=(/1m.bin /10m.bin /100m.bin)
+        head -c 1000000 /dev/urandom > "$WORK/www/1m.bin"
+        head -c 10000000 /dev/urandom > "$WORK/www/10m.bin"
+        head -c 100000000 /dev/urandom > "$WORK/www/100m.bin" ;;
+esac
 chmod -R a+rX "$WORK"
 
 sed "s#@WWW@#/work/www#" "$HERE/conf/ferrix.yaml" > "$WORK/ferrix.yaml"
@@ -95,8 +109,13 @@ start() {
 serves_files() { case $1 in traefik|pingora) return 1 ;; *) return 0 ;; esac; }
 
 wrk() {
+    local conns=$CONNS extra=()
+    case $1 in
+        *.bin) extra=(--timeout 30s) ;;&
+        */100m.bin) conns=32 ;;
+    esac
     docker run --rm --network host --cpuset-cpus 8-15 $WRK_IMG \
-        -t8 -c"$CONNS" -d"$2" --latency "http://127.0.0.1$1"
+        -t8 -c"$conns" -d"$2" --latency "${extra[@]}" "http://127.0.0.1$1"
 }
 
 # PSS (memória proporcional) somada de todos os processos do container, lida por um
@@ -114,7 +133,7 @@ for s in "${SERVERS[@]}"; do
     echo "==> $s"
     port=$(start "$s" 3>&1 >/dev/null)
     sleep 2
-    for path in /small.txt /big.txt /proxy/; do
+    for path in "${PATHS[@]}"; do
         if [ "$path" != /proxy/ ] && ! serves_files "$s"; then
             results+=("$(printf "%-8s %-11s %12s %9s %9s" "$s" "$path" - - -)")
             continue
