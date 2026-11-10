@@ -688,6 +688,8 @@ mod proxy_cache_tests {
             listen_port: 80,
             headers: std::collections::HashMap::new(),
             headers_always: Default::default(),
+            error_redirects: Vec::new(),
+            recursive_error_pages: false,
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),

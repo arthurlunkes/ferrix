@@ -454,6 +454,16 @@ fn validate_vhost_routes(
             if let Err(e) = compile_route_regex(route.match_type, &route.path_prefix) {
                 report.error(format!("{}.path_prefix", rpath), e);
             }
+        } else if route.match_type == RouteMatchType::Named {
+            if !route.path_prefix.starts_with('@') || route.path_prefix.len() < 2 {
+                report.error(
+                    format!("{}.path_prefix", rpath),
+                    format!(
+                        "rota nomeada '{}' precisa começar com '@'",
+                        route.path_prefix
+                    ),
+                );
+            }
         } else if !route.path_prefix.starts_with('/') {
             report.error(
                 format!("{}.path_prefix", rpath),
@@ -466,6 +476,23 @@ fn validate_vhost_routes(
                 format!("{}.image_filter", rpath),
                 "este binário foi compilado sem a feature `image-filter`; o filtro será ignorado",
             );
+        }
+        for rule in vhost
+            .error_redirects
+            .iter()
+            .chain(route.error_redirects.iter())
+        {
+            if rule.target.starts_with('@')
+                && !vhost
+                    .routes
+                    .iter()
+                    .any(|r| r.match_type == RouteMatchType::Named && r.path_prefix == rule.target)
+            {
+                report.error(
+                    format!("{}.error_redirects", rpath),
+                    format!("a rota nomeada '{}' não existe neste host", rule.target),
+                );
+            }
         }
         match route.target_type {
             RouteTargetType::ProxyUpstream => match &route.upstream_name {
