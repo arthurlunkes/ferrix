@@ -82,8 +82,18 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                 while i < chars.len() {
                     let ch = chars[i];
                     if ch == '\\' && i + 1 < chars.len() {
-                        value.push(chars[i + 1]);
-                        if chars[i + 1] == '\n' {
+                        let next = chars[i + 1];
+                        match next {
+                            '"' | '\'' | '\\' => value.push(next),
+                            't' => value.push('\t'),
+                            'r' => value.push('\r'),
+                            'n' => value.push('\n'),
+                            _ => {
+                                value.push('\\');
+                                value.push(next);
+                            }
+                        }
+                        if next == '\n' {
                             line += 1;
                         }
                         i += 2;
@@ -197,6 +207,16 @@ mod tests {
             words("log_format x 'a b c';"),
             vec!["log_format", "x", "a b c"]
         );
+    }
+
+    #[test]
+    fn escapes_follow_nginx() {
+        assert_eq!(
+            words(r#"return 200 "a\nb\tc";"#),
+            vec!["return", "200", "a\nb\tc"]
+        );
+        assert_eq!(words(r#"location ~ "\.php$" {"#)[2], r"\.php$");
+        assert_eq!(words(r#"x "a\\b";"#)[1], r"a\b");
     }
 
     #[test]

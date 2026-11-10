@@ -316,6 +316,7 @@ mod tests {
             server_names: names.iter().map(|s| s.to_string()).collect(),
             listen_port: 443,
             headers: Default::default(),
+            headers_always: Default::default(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: vec![],

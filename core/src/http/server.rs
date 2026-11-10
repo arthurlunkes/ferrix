@@ -49,6 +49,7 @@ pub async fn serve(
     let mut buf = BytesMut::with_capacity(2 * 1024);
     let mut out: Vec<u8> = Vec::with_capacity(1024);
     let mut first = true;
+    let limits = Limits::from(engine);
 
     loop {
         if !first && buf.is_empty() && buf.capacity() > 0 {
@@ -61,7 +62,7 @@ pub async fn serve(
         } else {
             settings.header_timeout
         };
-        let head = match read_head(&mut tcp, &mut buf, wait, engine, port).await {
+        let head = match read_head(&mut tcp, &mut buf, wait, engine, port, &limits).await {
             Ok(Some(h)) => h,
             Ok(None) => return Outcome::Done,
             Err(HeadError::Http09(uri)) => {
@@ -76,7 +77,8 @@ pub async fn serve(
                 return Outcome::Done;
             }
             Err(HeadError::Bad(status)) => {
-                let _ = write_error(&mut tcp, status).await;
+                let _ =
+                    write_error(&mut tcp, status, engine.store.config().http.server_tokens).await;
                 return Outcome::Done;
             }
             Err(HeadError::Handoff) => return Outcome::Handoff(tcp, buf.freeze()),
@@ -201,9 +203,9 @@ async fn read_head(
     wait: Duration,
     engine: &ProxyEngine,
     port: u16,
+    limits: &Limits,
 ) -> Result<Option<Head>, HeadError> {
     let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
-    let limits = Limits::from(engine);
     loop {
         if !buf.is_empty() {
             if buf.starts_with(b"PRI * HTTP/2.0")
@@ -622,15 +624,26 @@ pub(super) async fn write_response(
     }
 }
 
-async fn write_error(tcp: &mut TcpStream, status: StatusCode) -> io::Result<()> {
-    let mut out = Vec::new();
+async fn write_error(
+    tcp: &mut TcpStream,
+    status: StatusCode,
+    server_tokens: bool,
+) -> io::Result<()> {
+    let page = crate::http::filters::default_pages::render(status, None, server_tokens);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    let mut out = Vec::with_capacity(page.len() + 128);
     encode_head(
         &mut out,
         status,
-        &HeaderMap::new(),
-        Framing::Length(0),
+        &headers,
+        Framing::Length(page.len() as u64),
         false,
     );
+    out.extend_from_slice(page.as_bytes());
     tcp.write_all(&out).await
 }
 

@@ -23,6 +23,7 @@ pub mod server;
 pub mod static_files;
 pub mod tunnel;
 pub mod upstream;
+pub mod uri_path;
 pub mod vars;
 pub mod websocket;
 
@@ -122,12 +123,18 @@ impl ProxyEngine {
         if req.uri().path_and_query().is_some_and(|pq| {
             pq.as_str().len() > compiled.config.http.max_header_line_bytes.max(256)
         }) {
-            return filters::error_page::plain_status(StatusCode::URI_TOO_LONG);
+            return filters::default_pages::apply(
+                filters::error_page::plain_status(StatusCode::URI_TOO_LONG),
+                compiled.config.http.server_tokens,
+            );
         }
         if let Err(code) =
             request_check::check(&compiled.config.http, &method, version, req.headers_mut())
         {
-            return filters::error_page::plain_status(code);
+            return filters::default_pages::apply(
+                filters::error_page::plain_status(code),
+                compiled.config.http.server_tokens,
+            );
         }
 
         let req = if metrics_on {
@@ -283,7 +290,8 @@ impl ProxyEngine {
                     .await;
                 let resp =
                     absolutize_redirect(resp, &compiled.config.http, vhost, &host_header, is_tls);
-                Box::pin(filters::error_page::apply(vhost, resp)).await
+                let resp = Box::pin(filters::error_page::apply(vhost, resp)).await;
+                filters::default_pages::apply(resp, compiled.config.http.server_tokens)
             }
             None if compiled.config.http.default_page => {
                 default_page::render(compiled.config.http.server_tokens)
@@ -747,7 +755,10 @@ impl ProxyEngine {
         let req_path = if req.method() == Method::CONNECT {
             "/".to_string()
         } else {
-            req.uri().path().to_string()
+            match uri_path::normalize(req.uri().path()) {
+                Ok(p) => p,
+                Err(code) => return filters::error_page::plain_status(code),
+            }
         };
 
         let Some(matched) = compiled.match_route(vhost_index, &req_path) else {
@@ -955,11 +966,20 @@ impl ProxyEngine {
                     .as_deref()
                     .map(|b| interpolate_redirect_url(b, &parts, is_tls))
                     .unwrap_or_default();
+                let keep = !body.is_empty();
                 let mut r = (status, body).into_response();
-                r.headers_mut().insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/plain; charset=utf-8"),
-                );
+                let ct = compiled
+                    .config
+                    .http
+                    .default_type
+                    .as_deref()
+                    .unwrap_or("text/plain");
+                if let Ok(v) = HeaderValue::from_str(ct) {
+                    r.headers_mut().insert(header::CONTENT_TYPE, v);
+                }
+                if keep {
+                    r.extensions_mut().insert(filters::default_pages::KeepBody);
+                }
                 r
             }
             RouteTargetType::StaticFiles
@@ -1005,11 +1025,31 @@ impl ProxyEngine {
                 } else {
                     &req_path
                 };
+                if !file_path.is_empty()
+                    && !file_path.ends_with('/')
+                    && std::path::Path::new(root_dir)
+                        .join(file_path.trim_start_matches('/'))
+                        .is_dir()
+                {
+                    let target = match parts.uri.query() {
+                        Some(q) => format!("{}/?{}", parts.uri.path(), q),
+                        None => format!("{}/", parts.uri.path()),
+                    };
+                    let mut r = filters::error_page::plain_status(StatusCode::MOVED_PERMANENTLY);
+                    if let Ok(v) = HeaderValue::from_str(&target) {
+                        r.headers_mut().insert(header::LOCATION, v);
+                    }
+                    return r;
+                }
 
                 let static_req = StaticRequest {
                     headers: &parts.headers,
                     encoding: info.encoding.map(|a| (a, compression)),
                     cache: &compiled.config.http.static_cache,
+                    types: static_files::MimeTypes {
+                        map: Some(&compiled.config.http.mime_types).filter(|m| !m.is_empty()),
+                        default: compiled.config.http.default_type.as_deref(),
+                    },
                 };
                 let random_pick;
                 let file_path = if route.random_index {
@@ -1442,7 +1482,12 @@ fn phase_response(code: u16, value: String) -> Response {
         }
         r
     } else {
-        (status, value).into_response()
+        let keep = !value.is_empty();
+        let mut r = (status, value).into_response();
+        if keep {
+            r.extensions_mut().insert(filters::default_pages::KeepBody);
+        }
+        r
     }
 }
 
@@ -1528,6 +1573,61 @@ fn limit_response(status: u16, what: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn static_paths_behave_like_nginx() {
+        use crate::config::{FerrixConfig, RouteRule, RouteTargetType};
+        let dir = std::env::temp_dir().join(format!("ferrix-st-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/index.html"), "sub").unwrap();
+        std::fs::write(dir.join("meu arquivo.txt"), "spaces").unwrap();
+        let mut cfg = FerrixConfig::default();
+        cfg.vhosts[0].routes = vec![RouteRule {
+            id: "s".into(),
+            path_prefix: "/".into(),
+            target_type: RouteTargetType::StaticFiles,
+            static_root: Some(dir.to_string_lossy().into()),
+            ..Default::default()
+        }];
+        let port = cfg.vhosts[0].listen_port;
+        let engine = ProxyEngine::new(
+            Arc::new(ConfigStore::new(cfg, "t.json")),
+            crate::metrics::MetricsCollector::new(10),
+            Arc::new(HealthChecker::new()),
+        );
+        let call = |m: &str, uri: &str| {
+            Request::builder()
+                .method(m)
+                .uri(uri)
+                .header("host", "x")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/sub?a=1"))
+            .await;
+        assert_eq!(r.status(), 301);
+        assert_eq!(r.headers()[header::LOCATION], "http://x/sub/?a=1");
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/meu%20arquivo.txt"))
+            .await;
+        assert_eq!(r.status(), 200);
+        let r = engine
+            .handle_request(port, false, addr, call("POST", "/sub/"))
+            .await;
+        assert_eq!(r.status(), 405);
+        assert_eq!(r.headers()[header::ALLOW], "GET, HEAD");
+        assert!(r.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let r = engine
+            .handle_request(port, false, addr, call("GET", "/%2e%2e/etc/passwd"))
+            .await;
+        assert_eq!(r.status(), 400);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[tokio::test]
     async fn json_set_reads_the_request_body() {

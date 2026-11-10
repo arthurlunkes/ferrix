@@ -61,6 +61,7 @@ struct Converter {
     route_seq: usize,
 
     http_headers: HashMap<String, String>,
+    http_headers_always: HashMap<String, String>,
 
     log_formats: HashMap<String, String>,
 
@@ -101,6 +102,7 @@ impl Converter {
             synthetic_upstreams: 0,
             route_seq: 0,
             http_headers: HashMap::new(),
+            http_headers_always: HashMap::new(),
             log_formats: HashMap::new(),
             stream_maps: HashMap::new(),
             internal_locations: HashMap::new(),
@@ -319,6 +321,7 @@ impl Converter {
                 server_names: vec!["*".to_string()],
                 listen_port: 8000,
                 headers: HashMap::new(),
+                headers_always: Default::default(),
                 rate_limit: None,
                 limit_conn: None,
                 allowed_ips: Vec::new(),
@@ -790,6 +793,24 @@ impl Converter {
                     self.note_unsupported(d);
                 }
             }
+            "default_type" => {
+                self.config.http.default_type = d.arg(0).map(String::from);
+                self.converted(d, "virou http.default_type");
+            }
+            "types" => {
+                for e in d.block.iter().flatten() {
+                    for ext in &e.args {
+                        let known = mime_guess::from_ext(ext).first();
+                        if known.as_ref().map(|m| m.essence_str()) != Some(e.name.as_str()) {
+                            self.config
+                                .http
+                                .mime_types
+                                .insert(ext.to_ascii_lowercase(), e.name.clone());
+                        }
+                    }
+                }
+                self.converted(d, "virou http.mime_types");
+            }
             "underscores_in_headers" => {
                 self.config.http.underscores_in_headers = d.arg(0) == Some("on");
                 self.converted(d, "virou http.underscores_in_headers");
@@ -1017,8 +1038,10 @@ impl Converter {
 
             "add_header" => {
                 let mut headers = std::mem::take(&mut self.http_headers);
-                self.apply_add_header(d, &mut headers);
+                let mut always = std::mem::take(&mut self.http_headers_always);
+                self.apply_add_header(d, &mut headers, &mut always);
                 self.http_headers = headers;
+                self.http_headers_always = always;
             }
 
             "proxy_cache_path" => self.report.note(
@@ -1264,6 +1287,7 @@ impl Converter {
             server_names: Vec::new(),
             listen_port: 80,
             headers: self.http_headers.clone(),
+            headers_always: self.http_headers_always.clone(),
             rate_limit: None,
             limit_conn: None,
             allowed_ips: Vec::new(),
@@ -1385,7 +1409,9 @@ impl Converter {
                     vhost.basic_auth =
                         Some(self.placeholder_basic_auth(item, auth_realm.as_deref()));
                 }
-                "add_header" => self.apply_add_header(item, &mut vhost.headers),
+                "add_header" => {
+                    self.apply_add_header(item, &mut vhost.headers, &mut vhost.headers_always)
+                }
                 "limit_req" => {
                     vhost.rate_limit = self.parse_limit_req(item);
                 }
@@ -1779,7 +1805,17 @@ impl Converter {
         }
     }
 
-    fn apply_add_header(&mut self, item: &Directive, target: &mut HashMap<String, String>) {
+    fn apply_add_header(
+        &mut self,
+        item: &Directive,
+        target: &mut HashMap<String, String>,
+        always_target: &mut HashMap<String, String>,
+    ) {
+        let target = if item.arg(2) == Some("always") {
+            always_target
+        } else {
+            target
+        };
         let (Some(k), Some(v)) = (item.arg(0), item.arg(1)) else {
             return;
         };
@@ -2460,7 +2496,11 @@ impl Converter {
                         }
                     }
                 }
-                "add_header" => self.apply_add_header(item, &mut route.add_headers),
+                "add_header" => self.apply_add_header(
+                    item,
+                    &mut route.add_headers,
+                    &mut route.add_headers_always,
+                ),
                 "allow" => {
                     if let Some(v) = item.arg(0) {
                         route.allowed_ips.push(v.to_string());
