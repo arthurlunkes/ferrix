@@ -116,6 +116,9 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     validate_real_ip(cfg, &mut report);
     validate_upstreams(cfg, &mut report);
     validate_logging(cfg, &mut report);
+    if let Err(e) = crate::tls::settings::check(&cfg.http.tls) {
+        report.error("http.tls", e);
+    }
 
     if cfg.vhosts.is_empty() {
         report.error(
@@ -181,7 +184,7 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
                             .to_string(),
                     );
                 }
-            } else {
+            } else if !tls.reject_handshake {
                 for (field, path) in [("cert_path", &tls.cert_path), ("key_path", &tls.key_path)] {
                     if !Path::new(path).is_file() {
                         report.warn(

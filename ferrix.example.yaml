@@ -61,6 +61,15 @@ http:
   #   algorithms: [zstd, br, gzip]
   #   types: [text/*, application/json, application/javascript, application/xml, image/svg+xml]
 
+  ## TLS for every HTTPS port (nginx ssl_protocols, ssl_ciphers, ssl_session_tickets,
+  ## ssl_session_ticket_key, ssl_early_data). Defaults: TLS 1.2 + 1.3, modern AEAD suites.
+  # tls:
+  #   protocols: [TLSv1.2, TLSv1.3]
+  #   ciphers: [TLS_AES_256_GCM_SHA384, ECDHE-RSA-AES256-GCM-SHA384]
+  #   session_tickets: true
+  #   session_ticket_key: /etc/ferrix/ticket.key   ## 80 random bytes; resumption survives restarts
+  #   early_data: false           ## 0-RTT, HTTP/3 only
+
   ## Where route `cache:` entries live: memory (default), disk (nginx proxy_cache_path)
   ## or redis (Redis, Dragonfly, KeyDB, Valkey: anything speaking RESP).
   # cache_store:
@@ -236,6 +245,7 @@ upstreams:
     #   client_key: /etc/ferrix/certs/client.key
     #   trusted_ca: /etc/ferrix/certs/backend-ca.pem
     #   server_name: backend.internal
+    #   crl: /etc/ferrix/certs/backend.crl   ## revoked backend certificates (proxy_ssl_crl)
 
 ## -----------------------------------------------------------------------------
 ## vhosts: sites, like nginx `server {}` blocks
@@ -256,6 +266,9 @@ vhosts:
     #   verify_client: off          ## off, on or optional (client certificates)
     #   client_ca: /etc/ferrix/certs/clients-ca.pem
     #   ocsp_file: /etc/ferrix/certs/example.com.ocsp
+    #   key_password_file: /etc/ferrix/certs/key.pass   ## one password per line, for an encrypted key
+    #   crl: /etc/ferrix/certs/clients.crl              ## revoked client certificates (ssl_crl)
+    #   reject_handshake: false     ## refuse TLS for these names (no certificate needed)
 
     ## Headers added to this site's successful and redirect responses.
     # headers:

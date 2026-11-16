@@ -279,6 +279,9 @@ export interface TlsConfig {
   verify_client?: ClientVerify;
   client_ca?: string | null;
   ocsp_file?: string | null;
+  key_password_file?: string | null;
+  crl?: string | null;
+  reject_handshake?: boolean;
 }
 
 export interface UpstreamTlsConfig {
@@ -286,6 +289,7 @@ export interface UpstreamTlsConfig {
   client_key?: string | null;
   trusted_ca?: string | null;
   server_name?: string | null;
+  crl?: string | null;
 }
 
 export interface AuthRequestConfig {
@@ -413,6 +417,7 @@ export interface HttpConfig {
   access_log?: AccessLogConfig | null;
   variables?: Record<string, VariableDef>;
   proxy_protocol?: boolean;
+  tls?: { protocols?: string[]; ciphers?: string[]; session_tickets?: boolean; session_ticket_key?: string | null; early_data?: boolean };
   cache_store?: { kind: "memory" | "disk" | "redis"; path?: string | null; max_bytes?: number; url?: string | null; prefix?: string | null };
   proxy_forwarded_headers?: boolean;
   x_accel_redirect?: boolean;

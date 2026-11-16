@@ -31,6 +31,38 @@ pub struct FerrixConfig {
     pub logging: LoggingConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsSettings {
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub ciphers: Vec<String>,
+    #[serde(default = "default_true")]
+    pub session_tickets: bool,
+    #[serde(default)]
+    pub session_ticket_key: Option<String>,
+    #[serde(default)]
+    pub early_data: bool,
+}
+
+impl Default for TlsSettings {
+    fn default() -> Self {
+        Self {
+            protocols: Vec::new(),
+            ciphers: Vec::new(),
+            session_tickets: true,
+            session_ticket_key: None,
+            early_data: false,
+        }
+    }
+}
+
+impl TlsSettings {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LoggingConfig {
     #[serde(default)]
@@ -351,6 +383,9 @@ pub struct HttpConfig {
 
     #[serde(default)]
     pub cache_store: CacheStoreConfig,
+
+    #[serde(default, skip_serializing_if = "TlsSettings::is_default")]
+    pub tls: TlsSettings,
 
     #[serde(default)]
     pub proxy_forwarded_headers: bool,
@@ -728,6 +763,7 @@ impl Default for HttpConfig {
             default_type: None,
             mime_types: HashMap::new(),
             cache_store: CacheStoreConfig::default(),
+            tls: TlsSettings::default(),
             proxy_forwarded_headers: false,
             x_accel_redirect: false,
             underscores_in_headers: false,
@@ -865,6 +901,8 @@ pub struct UpstreamTlsConfig {
     pub trusted_ca: Option<String>,
     #[serde(default)]
     pub server_name: Option<String>,
+    #[serde(default)]
+    pub crl: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -947,6 +985,12 @@ pub struct TlsConfig {
     pub client_ca: Option<String>,
     #[serde(default)]
     pub ocsp_file: Option<String>,
+    #[serde(default)]
+    pub key_password_file: Option<String>,
+    #[serde(default)]
+    pub crl: Option<String>,
+    #[serde(default)]
+    pub reject_handshake: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

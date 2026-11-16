@@ -57,12 +57,14 @@ maxminddb = { version = "0.24", optional = true }
 bcrypt = { version = "0.15", default-features = false, features = ["std"], optional = true }
 sha1 = { version = "0.10", optional = true }
 sha-crypt = { version = "0.5", default-features = false, features = ["simple"], optional = true }
+pkcs8 = { version = "0.10", features = ["encryption", "pem", "std"], optional = true }
+ring = "0.17"
 
 # Optional modules, like nginx's `--with-*` build options. All are on by default; a
 # minimal build (`cargo build --release --no-default-features`) leaves them out and
 # keeps less code resident in every running server.
 [features]
-default = ["http2", "brotli", "zstd", "acme", "admin", "nginx-import", "geoip", "htpasswd"]
+default = ["http2", "brotli", "zstd", "acme", "admin", "nginx-import", "geoip", "htpasswd", "encrypted-keys"]
 # HTTP/2 for clients (h2c and over TLS via ALPN).
 http2 = ["hyper/http2", "hyper-util/http2", "hyper-util/server-auto"]
 # HTTP/3 (QUIC) for clients on TLS ports, served when `http.protocols` lists `http3`.
@@ -84,4 +86,6 @@ image-filter = ["dep:image"]
 geoip = ["dep:maxminddb"]
 # Hashed passwords for basic auth and htpasswd files (bcrypt, SHA-crypt, {SHA}).
 htpasswd = ["dep:bcrypt", "dep:sha1", "dep:sha-crypt"]
+# Password-protected private keys (nginx `ssl_password_file`).
+encrypted-keys = ["dep:pkcs8"]
 
