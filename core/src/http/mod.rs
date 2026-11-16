@@ -640,6 +640,13 @@ impl ProxyEngine {
             &path_info,
             client_ip,
             is_tls,
+            compiled
+                .config
+                .vhosts
+                .iter()
+                .find(|v| v.routes.iter().any(|r| std::ptr::eq(r, route)))
+                .map(|v| v.listen_port)
+                .unwrap_or(0),
             body.len(),
             &cfg.params,
         );

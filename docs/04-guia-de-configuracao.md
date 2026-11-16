@@ -474,7 +474,7 @@ routes:
 
 ### FastCGI, SCGI and uwsgi (`target_type: cgi`)
 
-nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept `$document_root`, `$fastcgi_script_name` and `$fastcgi_path_info`. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
+nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept the nginx variables used by `fastcgi_params` (`$document_root`, `$realpath_root`, `$fastcgi_script_name`, `$fastcgi_path_info`, `$query_string`, `$request_method`, `$request_uri`, `$scheme`, `$https`, `$server_name`, `$server_port`, `$remote_addr`, `$content_type`, `$content_length`, `$http_*`), so an imported `include fastcgi_params;` works as is. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
 
 ```yaml
 routes:

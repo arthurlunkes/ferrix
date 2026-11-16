@@ -216,6 +216,7 @@ fn is_plain_proxy(config: &FerrixConfig, vhost: &VirtualHost, route: &RouteRule)
         && !route.compression.unwrap_or(http.compression.enabled)
         && !http.request_id
         && http.access_log.is_none()
+        && config.logging.access.targets.is_empty()
         && !route_needs_full_path(route)
 }
 
@@ -647,6 +648,20 @@ mod tests {
                 .id
                 .as_str()
         })
+    }
+
+    #[test]
+    fn access_log_targets_disable_the_raw_fast_path() {
+        let mut r = route("r", "/", RouteMatchType::Prefix);
+        r.upstream_name = Some("default_backend".into());
+        r.websocket_enabled = false;
+        let mut cfg = FerrixConfig {
+            vhosts: vec![vhost("v", &["*"], vec![r])],
+            ..Default::default()
+        };
+        assert!(CompiledConfig::build(Arc::new(cfg.clone())).plain_proxy(0, 0));
+        cfg.logging.access.targets = vec![crate::config::LogTarget::Stdout];
+        assert!(!CompiledConfig::build(Arc::new(cfg)).plain_proxy(0, 0));
     }
 
     #[test]

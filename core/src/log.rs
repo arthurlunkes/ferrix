@@ -160,7 +160,12 @@ fn render(json: bool, time: &str, level: &Level, target: &str, f: &Fields) -> St
         m.insert("target".into(), target.into());
         m.insert("msg".into(), f.message.clone().into());
         for (k, v) in &f.rest {
-            m.insert((*k).into(), v.clone().into());
+            let key = if m.contains_key(*k) {
+                format!("field_{}", k)
+            } else {
+                (*k).to_string()
+            };
+            m.insert(key, v.clone().into());
         }
         let mut s = serde_json::Value::Object(m).to_string();
         s.push('\n');

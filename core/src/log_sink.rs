@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,9 @@ pub struct Line {
     pub text: String,
 }
 
-pub type Sink = Sender<Line>;
+pub type Sink = SyncSender<Line>;
+
+const QUEUE: usize = 65536;
 
 static SINKS: LazyLock<Mutex<HashMap<LogTarget, Sink>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -24,7 +26,7 @@ pub fn sink(target: &LogTarget) -> Option<Sink> {
     if let Some(tx) = map.get(target) {
         return Some(tx.clone());
     }
-    let (tx, rx) = mpsc::channel::<Line>();
+    let (tx, rx) = mpsc::sync_channel::<Line>(QUEUE);
     let t = target.clone();
     std::thread::Builder::new()
         .name("ferrix-log".into())
@@ -36,7 +38,7 @@ pub fn sink(target: &LogTarget) -> Option<Sink> {
 
 pub fn send(target: &LogTarget, severity: u8, text: String) {
     if let Some(tx) = sink(target) {
-        if tx.send(Line { severity, text }).is_err() {
+        if let Err(TrySendError::Disconnected(_)) = tx.try_send(Line { severity, text }) {
             if let Ok(mut m) = SINKS.lock() {
                 m.remove(target);
             }
