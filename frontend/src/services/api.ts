@@ -409,6 +409,12 @@ export interface HttpConfig {
   client_header_timeout_ms: number;
   client_body_timeout_ms: number;
   keepalive_timeout_ms: number;
+  keepalive_requests?: number;
+  keepalive_time_ms?: number;
+  etag?: boolean;
+  if_modified_since?: "off" | "exact" | "before";
+  max_ranges?: number | null;
+  shutdown_timeout_ms?: number;
   proxy_connect_timeout_ms: number;
   proxy_read_timeout_ms: number;
   proxy_send_timeout_ms: number;

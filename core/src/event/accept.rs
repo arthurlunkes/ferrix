@@ -109,6 +109,8 @@ pub async fn serve(
     let fast = Arc::new(crate::http::server::Settings {
         header_timeout: Duration::from_millis(http.client_header_timeout_ms.max(1)),
         keepalive_timeout: Duration::from_millis(http.keepalive_timeout_ms.max(1)),
+        keepalive_requests: http.keepalive_requests,
+        keepalive_time: Duration::from_millis(http.keepalive_time_ms),
     });
 
     let max_conns = http.worker_connections.max(1) as usize;
@@ -184,6 +186,7 @@ pub async fn serve(
                     req.extensions_mut().insert(c.clone());
                 }
                 async move {
+                    let _busy = crate::event::drain::begin();
                     let mut resp = engine.handle_request(port, is_tls, addr, req).await;
                     resp.headers_mut()
                         .entry(hyper::header::DATE)

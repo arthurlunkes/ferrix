@@ -963,6 +963,16 @@ async fn run_server(args: Args) -> Result<(), String> {
         }
     }
 
+    let wait = store.config().http.shutdown_timeout_ms;
+    if wait > 0 {
+        let left = ferrix::event::drain::drain(std::time::Duration::from_millis(wait)).await;
+        if left > 0 {
+            warn!(
+                "Shutdown timeout reached with {} request(s) still running",
+                left
+            );
+        }
+    }
     if !args.worker_process {
         let _ = std::fs::remove_file(&pid_file);
     }

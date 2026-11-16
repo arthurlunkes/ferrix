@@ -44,6 +44,16 @@ http:
   # client_header_timeout_ms: 60000
   # client_body_timeout_ms: 60000
   # keepalive_timeout_ms: 75000
+  ## Close a keep-alive connection after this many requests / this long (0 = no limit).
+  # keepalive_requests: 1000
+  # keepalive_time_ms: 3600000
+  ## Static files: ETag header, If-Modified-Since comparison (off, exact, before) and
+  ## how many byte ranges one request may ask for (0 turns ranges off).
+  # etag: true
+  # if_modified_since: exact
+  # max_ranges: 32
+  ## On stop/restart, wait this long for requests in flight to finish (0 = exit at once).
+  # shutdown_timeout_ms: 30000
   # proxy_connect_timeout_ms: 60000
   # proxy_read_timeout_ms: 60000
   # proxy_send_timeout_ms: 60000

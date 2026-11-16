@@ -327,6 +327,31 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         <LogTargetsEditor value={accLog.targets ?? []} onChange={(t) => setLogging({ access: { ...accLog, targets: t } })} />
       </Section>
 
+      <Section title="Connection limits and shutdown" hint="keepalive_requests, keepalive_time, etag, if_modified_since, max_ranges, worker_shutdown_timeout">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Field label="Keep-alive requests" hint="0 = no limit">
+            <Input type="number" value={http.keepalive_requests ?? 1000} onChange={(e) => setHttp({ keepalive_requests: parseInt(e.target.value) || 0 })} mono />
+          </Field>
+          <Field label="Keep-alive time (ms)" hint="0 = no limit">
+            <Input type="number" value={http.keepalive_time_ms ?? 3600000} onChange={(e) => setHttp({ keepalive_time_ms: parseInt(e.target.value) || 0 })} mono />
+          </Field>
+          <Field label="Shutdown timeout (ms)" hint="wait for requests in flight">
+            <Input type="number" value={http.shutdown_timeout_ms ?? 30000} onChange={(e) => setHttp({ shutdown_timeout_ms: parseInt(e.target.value) || 0 })} mono />
+          </Field>
+          <Field label="If-Modified-Since">
+            <Select value={http.if_modified_since ?? "exact"} onChange={(e) => setHttp({ if_modified_since: e.target.value as "off" | "exact" | "before" })}>
+              <option value="exact">exact</option>
+              <option value="before">before</option>
+              <option value="off">off</option>
+            </Select>
+          </Field>
+          <Field label="Max ranges" hint="empty = default, 0 = off">
+            <Input type="number" value={http.max_ranges ?? ""} onChange={(e) => setHttp({ max_ranges: e.target.value === "" ? null : parseInt(e.target.value) })} mono />
+          </Field>
+        </div>
+        <Toggle checked={http.etag !== false} onChange={(v) => setHttp({ etag: v })} label="ETag on static files" />
+      </Section>
+
       <Section title="TLS (http.tls)" hint="ssl_protocols, ssl_ciphers and session tickets for every HTTPS port; applies after a restart">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Protocols" hint="Empty = TLSv1.2 TLSv1.3">
