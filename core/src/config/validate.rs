@@ -116,7 +116,8 @@ pub fn validate(cfg: &FerrixConfig) -> ValidationReport {
     validate_real_ip(cfg, &mut report);
     validate_upstreams(cfg, &mut report);
     validate_logging(cfg, &mut report);
-    if let Err(e) = crate::tls::settings::check(&cfg.http.tls) {
+    if cfg.http.tls.is_default() {
+    } else if let Err(e) = crate::tls::settings::check(&cfg.http.tls) {
         report.error("http.tls", e);
     }
 

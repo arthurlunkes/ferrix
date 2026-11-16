@@ -297,6 +297,7 @@ vhosts:
     #   password: change-me
     #   user_file: /etc/ferrix/htpasswd
     #   realm: Restricted
+    #   delay_ms: 0                 ## wait before answering 401 (nginx auth_delay)
     # satisfy: all                  ## all: IP and password; any: either is enough
 
     ## Request rate and concurrent connections per client IP.
@@ -307,9 +308,11 @@ vhosts:
     #   delay: 5                    ## for mode: delay
     #   status: 429
     #   retry_after: 1
+    #   dry_run: false              ## only log, never reject
     # limit_conn:
     #   max_connections: 20
     #   status: 429
+    #   dry_run: false
 
     ## Custom error pages for errors Ferrix itself generates.
     # error_pages:
@@ -456,6 +459,11 @@ vhosts:
         #   timeout_ms: 2000
         ## Send a copy of each request elsewhere and ignore its response.
         # mirror: [http://127.0.0.1:8080]
+        # mirror_request_body: true   ## the copy carries the request body too
+        ## Call this address after each request, ignoring its answer (nginx post_action).
+        # post_action: http://127.0.0.1:8080
+        ## Save each 200 GET answer under this folder, at the request path (nginx proxy_store).
+        # proxy_store: /var/cache/ferrix/mirror
         ## Rewrite Location headers and cookies coming from the upstream.
         # proxy_redirect: [[default, default]]
         # proxy_cookie_path: [[/app/, /]]
@@ -486,6 +494,8 @@ vhosts:
         # gunzip: false               ## decompress for clients without gzip
         # ssi: false
         # ssi_types: [text/shtml]
+        # ssi_silent_errors: false    ## hide the error text of a failed directive
+        # ssi_last_modified: false    ## keep Last-Modified on processed pages
         # userid:
         #   name: uid
         #   domain: example.com
@@ -499,6 +509,8 @@ vhosts:
         #   jpeg_quality: 80
         #   rotate: 90                ## for op: rotate (90, 180 or 270)
         #   buffer_bytes: 5242880     ## largest image read, in bytes
+        #   sharpen: 0                ## 0-100
+        #   transparency: true        ## false flattens transparent images onto white
 
       ## Static files: serve a folder (like nginx `root` + `try_files`).
       # - id: site
@@ -507,6 +519,10 @@ vhosts:
       #   static_root: /var/www/html
       #   try_files: $uri $uri/ /index.html
       #   autoindex: false            ## list folders without an index.html
+      #   autoindex_format: html      ## html, json or xml
+      #   autoindex_exact_size: true  ## false shows 1K / 2M / 3G
+      #   autoindex_localtime: false  ## dates in the server's time zone instead of UTC
+      #   disable_symlinks: false     ## 403 when the path goes through a symbolic link
       #   random_index: false
       #   flv: false                  ## FLV pseudo-streaming (?start=)
       #   dav:                        ## WebDAV uploads
@@ -572,6 +588,11 @@ vhosts:
 #     send_proxy_protocol: false
 #     upload_rate: 0              ## bytes per second, 0 = unlimited
 #     download_rate: 0
+#     access_log: false           ## one line per session in logging.access targets
+#     half_close: true            ## keep one direction open after the other side closes
+#     preread_timeout_ms: 30000   ## how long to wait for the TLS name (sni_routes)
+#     proxy_requests: 1           ## udp: client datagrams before a new session is picked
+#     proxy_responses: 1          ## udp: answers expected per datagram (0 = none)
 #     ## TLS towards the upstream.
 #     upstream_tls:
 #       verify: true

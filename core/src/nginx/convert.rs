@@ -498,6 +498,12 @@ impl Converter {
                     }
                 }
                 "ssl_preread" => {}
+                "preread_timeout" => extra.preread_timeout_ms = item.arg(0).and_then(parse_time_ms),
+                "proxy_responses" => {
+                    extra.proxy_responses = item.arg(0).and_then(|v| v.parse().ok())
+                }
+                "proxy_requests" => extra.proxy_requests = item.arg(0).and_then(|v| v.parse().ok()),
+                "proxy_half_close" => extra.half_close = item.arg(0) == Some("on"),
                 "proxy_protocol" => send_pp = item.arg(0) == Some("on"),
                 "allow" => extra.allowed_ips.extend(item.arg(0).map(String::from)),
                 "deny" => extra.denied_ips.extend(item.arg(0).map(String::from)),
@@ -2317,7 +2323,7 @@ impl Converter {
                         ),
                     },
                 },
-                "mirror_request_body" => {}
+                "mirror_request_body" => route.mirror_request_body = item.arg(0) != Some("off"),
                 "limit_rate" | "limit_rate_after" => {
                     if let Some(v) = item.arg(0).and_then(parse_size) {
                         if item.name == "limit_rate" {
@@ -2504,6 +2510,59 @@ impl Converter {
                     }
                 }
                 "ssi" => route.ssi = item.arg(0) == Some("on"),
+                "ssi_silent_errors" => route.ssi_silent_errors = item.arg(0) == Some("on"),
+                "ssi_last_modified" => route.ssi_last_modified = item.arg(0) == Some("on"),
+                "autoindex_format" => {
+                    use crate::config::AutoindexFormat;
+                    route.autoindex_format = match item.arg(0) {
+                        Some("json") | Some("jsonp") => AutoindexFormat::Json,
+                        Some("xml") => AutoindexFormat::Xml,
+                        _ => AutoindexFormat::Html,
+                    };
+                }
+                "autoindex_exact_size" => {
+                    route.autoindex_exact_size = item.arg(0) != Some("off")
+                }
+                "autoindex_localtime" => route.autoindex_localtime = item.arg(0) == Some("on"),
+                "disable_symlinks" => {
+                    route.disable_symlinks = item.arg(0).is_some_and(|v| v != "off");
+                    self.converted(item, "virou disable_symlinks: true");
+                }
+                "proxy_store" => match item.arg(0) {
+                    Some("off") | None => {}
+                    Some("on") => route.proxy_store = route.static_root.clone(),
+                    Some(path) if !path.contains('$') => {
+                        route.proxy_store = Some(path.to_string())
+                    }
+                    Some(_) => self.note_unsupported(item),
+                },
+                "auth_delay" => {
+                    let ms = item.arg(0).and_then(parse_time_ms).unwrap_or(0);
+                    match route.basic_auth.as_mut() {
+                        Some(b) => b.delay_ms = ms,
+                        None => self.note_unsupported(item),
+                    }
+                }
+                "limit_req_dry_run" => {
+                    if let Some(r) = route.rate_limit.as_mut() {
+                        r.dry_run = item.arg(0) == Some("on");
+                    }
+                }
+                "limit_conn_dry_run" => {
+                    if let Some(r) = route.limit_conn.as_mut() {
+                        r.dry_run = item.arg(0) == Some("on");
+                    }
+                }
+                "image_filter_sharpen" => {
+                    route.image_filter.get_or_insert_with(Default::default).sharpen =
+                        item.arg(0).and_then(|v| v.parse().ok()).unwrap_or(0);
+                }
+                "image_filter_transparency" => {
+                    route
+                        .image_filter
+                        .get_or_insert_with(Default::default)
+                        .transparency = item.arg(0) != Some("off");
+                }
                 "ssi_types" => route.ssi_types = item.args.clone(),
                 "empty_gif" => {
                     route.empty_gif = true;
@@ -3106,6 +3165,7 @@ impl Converter {
             delay,
             status: 429,
             retry_after: None,
+            dry_run: false,
         })
     }
 
@@ -3129,6 +3189,7 @@ impl Converter {
         Some(LimitConnConfig {
             max_connections: max,
             status: 429,
+            dry_run: false,
         })
     }
 

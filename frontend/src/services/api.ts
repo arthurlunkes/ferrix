@@ -111,10 +111,12 @@ export interface RateLimitConfig {
   delay?: number | null;
   status: number;
   retry_after?: number | null;
+  dry_run?: boolean;
 }
 
 export interface LimitConnConfig {
   max_connections: number;
+  dry_run?: boolean;
   status: number;
 }
 
@@ -123,6 +125,7 @@ export interface BasicAuthConfig {
   password: string;
   user_file?: string | null;
   realm?: string | null;
+  delay_ms?: number;
 }
 
 export type Satisfy = "all" | "any";
@@ -162,6 +165,15 @@ export interface RouteRule {
   static_root?: string | null;
   try_files?: string | null;
   autoindex?: boolean;
+  autoindex_format?: "html" | "json" | "xml";
+  autoindex_exact_size?: boolean;
+  autoindex_localtime?: boolean;
+  disable_symlinks?: boolean;
+  mirror_request_body?: boolean;
+  proxy_store?: string | null;
+  post_action?: string | null;
+  ssi_silent_errors?: boolean;
+  ssi_last_modified?: boolean;
   redirect_url?: string | null;
   redirect_code?: number | null;
   return_body?: string | null;
@@ -340,6 +352,8 @@ export interface ImageFilterConfig {
   height: number;
   rotate: number;
   jpeg_quality: number;
+  sharpen?: number;
+  transparency?: boolean;
   buffer_bytes: number;
 }
 
@@ -467,6 +481,11 @@ export interface StreamConfig {
   upload_rate?: number;
   download_rate?: number;
   return_text?: string | null;
+  access_log?: boolean;
+  half_close?: boolean;
+  preread_timeout_ms?: number | null;
+  proxy_requests?: number | null;
+  proxy_responses?: number | null;
   pass?: string | null;
 }
 

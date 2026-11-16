@@ -10,6 +10,7 @@ pub mod image;
 pub mod limit_rate;
 pub mod request_id;
 pub mod ssi;
+pub mod store;
 pub mod sub;
 pub mod upstream_headers;
 pub mod userid;

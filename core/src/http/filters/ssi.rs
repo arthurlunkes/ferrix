@@ -171,6 +171,8 @@ pub async fn apply(
     root: Option<&str>,
     url_dir: &str,
     ctx: &mut Ctx<'_>,
+    silent_errors: bool,
+    keep_last_modified: bool,
 ) -> Response<Body> {
     let (mut parts, body) = resp.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
@@ -183,8 +185,14 @@ pub async fn apply(
         return Response::from_parts(parts, Body::from(bytes));
     }
     let root = root.map(PathBuf::from);
-    let out = process(text, root.as_deref(), url_dir, ctx, 0);
+    let mut out = process(text, root.as_deref(), url_dir, ctx, 0);
+    if silent_errors {
+        out = out.replace(ERROR, "");
+    }
     for h in [header::ETAG, header::LAST_MODIFIED, header::ACCEPT_RANGES] {
+        if h == header::LAST_MODIFIED && keep_last_modified {
+            continue;
+        }
         parts.headers.remove(h);
     }
     parts

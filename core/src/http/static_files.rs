@@ -708,7 +708,40 @@ pub async fn flv(root_dir: &str, path: &str, query: Option<&str>) -> Option<Resp
         .ok()
 }
 
-pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>> {
+pub fn has_symlink(root_dir: &str, path: &str) -> bool {
+    let mut p = PathBuf::from(root_dir);
+    for part in path.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        p.push(part);
+        match std::fs::symlink_metadata(&p) {
+            Ok(md) if md.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn human_size(len: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)];
+    for (unit, size) in UNITS {
+        if len >= size {
+            return format!("{}{}", len / size, unit);
+        }
+    }
+    len.to_string()
+}
+
+fn json_escape(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
+}
+
+pub fn autoindex(
+    root_dir: &str,
+    path: &str,
+    uri: &str,
+    route: &crate::config::RouteRule,
+) -> Option<Response<Body>> {
+    use crate::config::AutoindexFormat;
     let base_root = PathBuf::from(root_dir).canonicalize().ok()?;
     let dir = base_root
         .join(path.trim_start_matches('/'))
@@ -725,58 +758,119 @@ pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>
             .ok();
     }
 
-    let mut entries: Vec<(String, bool, u64, String)> = std::fs::read_dir(&dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            if name.starts_with('.') {
-                return None;
-            }
-            let md = e.metadata().ok()?;
-            let mtime = md
-                .modified()
-                .ok()
-                .map(|m| {
-                    let dt: chrono::DateTime<chrono::Utc> = m.into();
-                    dt.format("%d-%b-%Y %H:%M").to_string()
-                })
-                .unwrap_or_default();
-            Some((name, md.is_dir(), md.len(), mtime))
-        })
-        .collect();
+    let mut entries: Vec<(String, bool, u64, Option<chrono::DateTime<chrono::Utc>>)> =
+        std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                if name.starts_with('.') {
+                    return None;
+                }
+                let md = e.metadata().ok()?;
+                let mtime = md
+                    .modified()
+                    .ok()
+                    .map(chrono::DateTime::<chrono::Utc>::from);
+                Some((name, md.is_dir(), md.len(), mtime))
+            })
+            .collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let title = html_escape(uri);
-    let mut html = format!(
-        "<html>\r\n<head><title>Index of {title}</title></head>\r\n<body>\r\n\
-         <h1>Index of {title}</h1><hr><pre><a href=\"../\">../</a>\r\n"
-    );
-    for (name, is_dir, len, mtime) in entries {
-        let shown = if is_dir {
-            format!("{name}/")
-        } else {
-            name.clone()
-        };
-        let href = percent_encode_segment(&shown);
-        let size = if is_dir {
-            "-".to_string()
-        } else {
-            len.to_string()
-        };
-        let pad = 51usize.saturating_sub(shown.chars().count()).max(1);
-        html.push_str(&format!(
-            "<a href=\"{href}\">{}</a>{}{mtime} {size:>19}\r\n",
-            html_escape(&shown),
-            " ".repeat(pad)
-        ));
-    }
-    html.push_str("</pre><hr></body>\r\n</html>\r\n");
+    let stamp = |t: &Option<chrono::DateTime<chrono::Utc>>, fmt: &str| -> String {
+        match t {
+            Some(t) if route.autoindex_localtime => {
+                t.with_timezone(&chrono::Local).format(fmt).to_string()
+            }
+            Some(t) => t.format(fmt).to_string(),
+            None => String::new(),
+        }
+    };
+
+    let (body, content_type) = match route.autoindex_format {
+        AutoindexFormat::Json => {
+            let items: Vec<String> = entries
+                .iter()
+                .map(|(name, is_dir, len, mtime)| {
+                    let m = match mtime {
+                        Some(t) if route.autoindex_localtime => t
+                            .with_timezone(&chrono::Local)
+                            .format("%a, %d %b %Y %H:%M:%S %Z")
+                            .to_string(),
+                        Some(t) => t.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+                        None => String::new(),
+                    };
+                    if *is_dir {
+                        format!(
+                            "{{ \"name\":{}, \"type\":\"directory\", \"mtime\":\"{m}\" }}",
+                            json_escape(name)
+                        )
+                    } else {
+                        format!(
+                            "{{ \"name\":{}, \"type\":\"file\", \"mtime\":\"{m}\", \"size\":{len} }}",
+                            json_escape(name)
+                        )
+                    }
+                })
+                .collect();
+            (format!("[\n{}\n]\n", items.join(",\n")), "application/json")
+        }
+        AutoindexFormat::Xml => {
+            let mut xml = String::from("<?xml version=\"1.0\"?>\n<list>\n");
+            for (name, is_dir, len, mtime) in &entries {
+                let m = stamp(mtime, "%Y-%m-%dT%H:%M:%SZ");
+                if *is_dir {
+                    xml.push_str(&format!(
+                        "<directory mtime=\"{m}\">{}</directory>\n",
+                        html_escape(name)
+                    ));
+                } else {
+                    xml.push_str(&format!(
+                        "<file mtime=\"{m}\" size=\"{len}\">{}</file>\n",
+                        html_escape(name)
+                    ));
+                }
+            }
+            xml.push_str("</list>\n");
+            (xml, "text/xml")
+        }
+        AutoindexFormat::Html => {
+            let title = html_escape(uri);
+            let mut html = format!(
+                "<html>\r\n<head><title>Index of {title}</title></head>\r\n<body>\r\n\
+                 <h1>Index of {title}</h1><hr><pre><a href=\"../\">../</a>\r\n"
+            );
+            for (name, is_dir, len, mtime) in &entries {
+                let shown = if *is_dir {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                };
+                let href = percent_encode_segment(&shown);
+                let size = if *is_dir {
+                    "-".to_string()
+                } else if route.autoindex_exact_size {
+                    len.to_string()
+                } else {
+                    human_size(*len)
+                };
+                let mtime = stamp(mtime, "%d-%b-%Y %H:%M");
+                let pad = 51usize.saturating_sub(shown.chars().count()).max(1);
+                html.push_str(&format!(
+                    "<a href=\"{href}\">{}</a>{}{mtime} {size:>19}\r\n",
+                    html_escape(&shown),
+                    " ".repeat(pad)
+                ));
+            }
+            html.push_str("</pre><hr></body>\r\n</html>\r\n");
+            (html, "text/html; charset=utf-8")
+        }
+    };
 
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(html))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
         .ok()
 }
 
@@ -902,6 +996,25 @@ mod tests {
         assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     }
 
+    #[test]
+    fn autoindex_json_and_symlinks() {
+        let d = dir_with("a.txt", "abc");
+        let route = crate::config::RouteRule {
+            autoindex_format: crate::config::AutoindexFormat::Json,
+            ..Default::default()
+        };
+        let r = autoindex(d.root(), "/", "/", &route).unwrap();
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        assert_eq!(human_size(3 << 20), "3M");
+        assert!(!has_symlink(d.root(), "/a.txt"));
+        #[cfg(unix)]
+        {
+            let link = PathBuf::from(d.root()).join("l.txt");
+            std::os::unix::fs::symlink(PathBuf::from(d.root()).join("a.txt"), &link).unwrap();
+            assert!(has_symlink(d.root(), "/l.txt"));
+        }
+    }
+
     #[tokio::test]
     async fn etag_and_ranges_can_be_turned_off() {
         let d = dir_with("o.txt", "0123456789");
@@ -958,19 +1071,19 @@ mod tests {
     fn autoindex_lists_directory() {
         let d = dir_with("a&b.txt", "hi");
         std::fs::create_dir(d.0.join("sub")).unwrap();
-        let r = autoindex(d.root(), "/", "/").unwrap();
+        let r = autoindex(d.root(), "/", "/", &Default::default()).unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        let r = autoindex(d.root(), "/sub", "/sub").unwrap();
+        let r = autoindex(d.root(), "/sub", "/sub", &Default::default()).unwrap();
         assert_eq!(r.status(), StatusCode::MOVED_PERMANENTLY);
-        assert!(autoindex(d.root(), "/a&b.txt", "/a&b.txt").is_none());
-        assert!(autoindex(d.root(), "/../", "/../").is_none());
+        assert!(autoindex(d.root(), "/a&b.txt", "/a&b.txt", &Default::default()).is_none());
+        assert!(autoindex(d.root(), "/../", "/../", &Default::default()).is_none());
     }
 
     #[tokio::test]
     async fn autoindex_html_escapes_and_sorts_dirs_first() {
         let d = dir_with("a&b.txt", "hi");
         std::fs::create_dir(d.0.join("zdir")).unwrap();
-        let r = autoindex(d.root(), "/", "/").unwrap();
+        let r = autoindex(d.root(), "/", "/", &Default::default()).unwrap();
         let body = r.into_body().collect().await.unwrap().to_bytes();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("href=\"a%26b.txt\">a&amp;b.txt</a>"));

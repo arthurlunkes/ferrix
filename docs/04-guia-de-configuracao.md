@@ -423,6 +423,25 @@ logging:
 
 When `logging.access.targets` is set it replaces `http.access_log`. The in-memory log (dashboard, `/api/logs`) stays controlled by `metrics.enabled`. Changes apply on reload. `ferrix import` converts `error_log` (file, stderr, syslog, level) and `access_log syslog:...`.
 
+### More nginx options
+
+| Field | nginx | Where |
+|---|---|---|
+| `autoindex_format: html\|json\|xml`, `autoindex_exact_size`, `autoindex_localtime` | same names | static route with `autoindex: true` |
+| `disable_symlinks: true` | `disable_symlinks on` | static route: 403 when the path crosses a symbolic link |
+| `rate_limit.dry_run`, `limit_conn.dry_run` | `limit_req_dry_run`, `limit_conn_dry_run` | vhost or route: the excess is logged (`warn`) and let through |
+| `basic_auth.delay_ms` | `auth_delay` | wait before the 401, to slow down password guessing |
+| `mirror_request_body: false` | `mirror_request_body off` | mirrors are sent without the body (default: with it, buffered) |
+| `post_action: http://host:port` | `post_action` | fire-and-forget call after each request, same method and path |
+| `proxy_store: /dir` | `proxy_store` | every 200 answer to a GET is also written to `/dir/<path>` (at most 64 MB each) |
+| `ssi_silent_errors`, `ssi_last_modified` | same names | routes with `ssi: true` |
+| `image_filter.sharpen`, `image_filter.transparency` | `image_filter_sharpen`, `image_filter_transparency` | `interlace` and `webp_quality` are not available (the encoder has no such modes) |
+| stream `access_log`, `half_close`, `preread_timeout_ms`, `proxy_requests`, `proxy_responses` | `access_log`, `proxy_half_close`, `preread_timeout`, `proxy_requests`, `proxy_responses` | `streams[]`; session lines go to `logging.access.targets` |
+
+Extra variables for `map`, `if`, `set` and proxy headers: `$time_local`, `$time_iso8601`, `$msec`, `$server_name`, `$server_port`, `$server_protocol`, `$request`, `$remote_user`, `$hostname`, `$pid`, `$nginx_version`. `$status`, `$request_time` and `$upstream_addr` only exist once the answer is ready, so they stay access-log variables.
+
+Not ported: `add_trailer`, `early_hints`, `proxy_ignore_client_abort` and `memcached_next_upstream`.
+
 ### Sticky sessions (`upstreams.<name>.sticky`)
 
 nginx `sticky cookie srv_id expires=1h path=/`. The cookie stores a hash of the target, never its address.

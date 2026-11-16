@@ -96,6 +96,18 @@ pub fn transform(
         270 => img.rotate270(),
         _ => img,
     };
+    if cfg.sharpen > 0 {
+        img = img.unsharpen(1.0 + cfg.sharpen.min(100) as f32 / 50.0, 1);
+    }
+    if !cfg.transparency && img.color().has_alpha() {
+        let mut flat = image::RgbImage::from_pixel(img.width(), img.height(), image::Rgb([255; 3]));
+        for (x, y, p) in img.to_rgba8().enumerate_pixels() {
+            let a = p.0[3] as u32;
+            let mix = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as u8;
+            flat.put_pixel(x, y, image::Rgb([mix(p.0[0]), mix(p.0[1]), mix(p.0[2])]));
+        }
+        img = DynamicImage::ImageRgb8(flat);
+    }
     let mut out = Cursor::new(Vec::new());
     let r = if format == ImageFormat::Jpeg {
         let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(

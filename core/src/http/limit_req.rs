@@ -121,6 +121,7 @@ mod tests {
 
     fn limit(rps: u32, burst: u32, mode: RateLimitMode) -> RateLimitConfig {
         RateLimitConfig {
+            dry_run: false,
             requests_per_second: rps,
             burst,
             mode,
