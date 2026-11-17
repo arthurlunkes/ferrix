@@ -395,7 +395,7 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
           </Field>
         </div>
         <Field label="Extra MIME types (extension → type)">
-          <KeyValueEditor value={http.mime_types ?? {}} onChange={(v) => setHttp({ mime_types: v })} keyPlaceholder="webmanifest" valuePlaceholder="application/manifest+json" />
+          <KeyValueEditor value={http.mime_types ?? {}} onChange={(v) => setHttp({ mime_types: v })} keyPlaceholder="webmanifest" valuePlaceholder="application/manifest+json" addLabel="Add type" emptyText="No extra types." />
         </Field>
       </Section>
 
