@@ -84,8 +84,13 @@ pub async fn serve(
                 return Outcome::Done;
             }
             Err(HeadError::Bad(status)) => {
-                let _ =
-                    write_error(&mut tcp, status, engine.store.config().http.server_tokens).await;
+                let cfg = engine.store.config();
+                if crate::http::access_log::enabled(&cfg) {
+                    let first = buf[..].split(|b: &u8| *b == b'\n').next().unwrap_or(&[]);
+                    let line = String::from_utf8_lossy(first).trim_end().to_string();
+                    crate::http::access_log::rejected(&cfg, addr.ip(), &line, status.as_u16());
+                }
+                let _ = write_error(&mut tcp, status, cfg.http.server_tokens).await;
                 return Outcome::Done;
             }
             Err(HeadError::Handoff) => return Outcome::Handoff(tcp, buf.freeze()),

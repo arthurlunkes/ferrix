@@ -43,6 +43,7 @@ Everything can live in `ferrix.yaml`. On a server with many sites it is easier t
 - To park a site without deleting it, add `enabled: false` at the top and wrap it: `enabled: false` + `vhosts: [ {...} ]`. There is no `sites-available` / `sites-enabled` pair.
 - Saving from the dashboard or the API rewrites only the files that changed, one per site (`sites/<id>.yaml`); disabled files are left alone.
 - `ferrix convert-config /etc/ferrix/ferrix.yaml /tmp/all.yaml` writes everything back as one file.
+- `ferrix import --from nginx.conf --out /etc/ferrix/ferrix.yaml` writes the split layout when `sites/`, `upstreams/` or `streams/` already exists next to the output file.
 
 ## 🌐 Virtual Hosts (Sites)
 

@@ -9,6 +9,7 @@ interface KeyValueEditorProps {
   keyPlaceholder?: string;
   valuePlaceholder?: string;
   addLabel?: string;
+  emptyText?: string;
 }
 
 export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
@@ -17,6 +18,7 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   keyPlaceholder = "Header name",
   valuePlaceholder = "Value",
   addLabel = "Add header",
+  emptyText = "No headers defined.",
 }) => {
   const entries = Object.entries(value);
 
@@ -43,7 +45,7 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   return (
     <div className="space-y-2">
       {entries.length === 0 && (
-        <p className="text-[11px] text-content-muted">No headers defined.</p>
+        <p className="text-[11px] text-content-muted">{emptyText}</p>
       )}
       {entries.map(([k, v], i) => (
         <div key={i} className="flex items-center gap-2">
