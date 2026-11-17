@@ -59,12 +59,16 @@ pub fn verifier_for_port(
 ) -> Result<Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>, String> {
     let mut roots = rustls::RootCertStore::empty();
     let mut wanted = false;
+    let mut crls = Vec::new();
     for v in config.vhosts.iter().filter(|v| v.listen_port == port) {
         let Some(tls) = &v.tls else { continue };
         if tls.verify_client == ClientVerify::Off {
             continue;
         }
         wanted = true;
+        if let Some(f) = &tls.crl {
+            crls.extend(crate::tls::settings::crls(f)?);
+        }
         if let Some(ca) = &tls.client_ca {
             let pem = std::fs::read(ca).map_err(|e| format!("{ca}: {e}"))?;
             for c in rustls_pemfile::certs(&mut pem.as_slice()) {
@@ -83,6 +87,7 @@ pub fn verifier_for_port(
         ));
     }
     let v = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .with_crls(crls)
         .allow_unauthenticated()
         .build()
         .map_err(|e| e.to_string())?;

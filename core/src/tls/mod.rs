@@ -1,5 +1,6 @@
 pub mod acme;
 pub mod client_cert;
+pub mod settings;
 pub mod sni;
 
 use std::collections::BTreeMap;

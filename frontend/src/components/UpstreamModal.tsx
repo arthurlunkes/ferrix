@@ -170,13 +170,13 @@ export const UpstreamModal: React.FC<UpstreamModalProps> = ({ upstream, onClose,
         <div className="space-y-3">
           <Toggle
             checked={!!formData.tls}
-            onChange={(on) => setFormData({ ...formData, tls: on ? { client_cert: null, client_key: null, trusted_ca: null, server_name: null } : null })}
+            onChange={(on) => setFormData({ ...formData, tls: on ? { client_cert: null, client_key: null, trusted_ca: null, server_name: null, crl: null } : null })}
             label="Backend TLS settings (proxy_ssl_*)"
             description="Client certificate (mTLS), private CA and SNI name for https:// servers"
           />
           {formData.tls && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {(["client_cert", "client_key", "trusted_ca", "server_name"] as const).map((k) => (
+              {(["client_cert", "client_key", "trusted_ca", "server_name", "crl"] as const).map((k) => (
                 <Field key={k} label={k}>
                   <Input
                     value={formData.tls![k] ?? ""}

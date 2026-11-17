@@ -875,6 +875,13 @@ export const VHostModal: React.FC<VHostModalProps> = ({ vhost, upstreams, onClos
                     <Field label="OCSP response file" hint="ssl_stapling_file (DER)">
                       <Input value={t.ocsp_file ?? ""} onChange={(e) => set({ ocsp_file: e.target.value || null })} mono className="text-xs" />
                     </Field>
+                    <Field label="Key password file" hint="ssl_password_file">
+                      <Input value={t.key_password_file ?? ""} onChange={(e) => set({ key_password_file: e.target.value || null })} mono className="text-xs" />
+                    </Field>
+                    <Field label="Client CRL (PEM)" hint="ssl_crl">
+                      <Input value={t.crl ?? ""} onChange={(e) => set({ crl: e.target.value || null })} mono className="text-xs" />
+                    </Field>
+                    <Toggle checked={!!t.reject_handshake} onChange={(v) => set({ reject_handshake: v })} label="Reject the TLS handshake" description="ssl_reject_handshake for these names" />
                   </div>
                 </>
               );

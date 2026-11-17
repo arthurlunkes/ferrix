@@ -577,6 +577,34 @@ vhosts:
 
 `on` answers 400 without a valid certificate; `optional` lets the request through and `$ssl_client_verify` says `SUCCESS` or `NONE`. Variables for `proxy_set_headers`: `$ssl_client_verify`, `$ssl_client_s_dn`, `$ssl_client_i_dn`, `$ssl_client_escaped_cert`. Vhosts sharing a port share one trust list (the union of their CAs). Changing `verify_client` or `client_ca` takes effect after a restart.
 
+Encrypted keys, revocation and refused names (per virtual host):
+
+```yaml
+tls:
+  cert_path: /etc/ferrix/site.pem
+  key_path: /etc/ferrix/site.key              # "BEGIN ENCRYPTED PRIVATE KEY" (PKCS#8)
+  key_password_file: /etc/ferrix/site.pass     # ssl_password_file: one password per line
+  crl: /etc/ferrix/clients.crl                 # ssl_crl: revoked client certificates (with verify_client)
+# a vhost that refuses the TLS handshake for its names (ssl_reject_handshake); no certificate needed:
+tls: { reject_handshake: true }
+```
+
+A legacy `Proc-Type: 4,ENCRYPTED` key must be converted once: `openssl pkcs8 -topk8 -v2 aes-256-cbc -in old.key -out new.key`. For backends, `upstreams.<name>.tls.crl` is nginx `proxy_ssl_crl`.
+
+Protocols, ciphers and session tickets apply to every HTTPS port (`http.tls`, restart to apply):
+
+```yaml
+http:
+  tls:
+    protocols: [TLSv1.3]                       # ssl_protocols; only TLSv1.2 and TLSv1.3 exist
+    ciphers: [ECDHE-RSA-AES256-GCM-SHA384]     # ssl_ciphers; OpenSSL or IANA names, AEAD suites only
+    session_tickets: true                      # ssl_session_tickets
+    session_ticket_key: /etc/ferrix/ticket.key # ssl_session_ticket_key: openssl rand 80 > ticket.key
+    early_data: false                          # ssl_early_data: 0-RTT, HTTP/3 only
+```
+
+Not available: `ssl_ocsp` (live OCSP checks of client certificates; use `crl`), 0-RTT over TCP, TLS 1.0/1.1 and CBC suites.
+
 OCSP stapling: `tls.ocsp_file: /etc/ferrix/site.ocsp` (nginx `ssl_stapling_file`) staples that DER OCSP response; refresh the file (e.g. `openssl ocsp ... -respout`) and run `ferrix reload`. Ferrix does not query OCSP responders itself (Let's Encrypt no longer runs one).
 
 ### memcached (`target_type: memcached`)

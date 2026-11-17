@@ -32,7 +32,16 @@ fn build(cfg: &UpstreamTlsConfig, verify: bool) -> Result<CustomTls, String> {
             }
             None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
         }
-        builder.with_root_certificates(roots)
+        match &cfg.crl {
+            Some(f) => {
+                let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+                    .with_crls(crate::tls::settings::crls(f)?)
+                    .build()
+                    .map_err(|e| format!("{f}: {e}"))?;
+                builder.with_webpki_verifier(verifier)
+            }
+            None => builder.with_root_certificates(roots),
+        }
     } else {
         return Ok(CustomTls {
             connector: super::h1::tls_connector_with_client_auth(false, client_auth(cfg)?),
@@ -76,8 +85,9 @@ fn client_auth(cfg: &UpstreamTlsConfig) -> Result<ClientAuth, String> {
 
 fn tag(cfg: &UpstreamTlsConfig, verify: bool) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         verify,
+        cfg.crl.as_deref().unwrap_or(""),
         cfg.client_cert.as_deref().unwrap_or(""),
         cfg.client_key.as_deref().unwrap_or(""),
         cfg.trusted_ca.as_deref().unwrap_or(""),
@@ -177,6 +187,7 @@ mod tests {
             client_key: Some(format!("{DIR}/client.key")),
             trusted_ca: Some(format!("{DIR}/ca.pem")),
             server_name: Some("backend.internal".into()),
+            crl: None,
         };
         let r = client(&ok)
             .send(

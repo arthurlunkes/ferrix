@@ -327,6 +327,24 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         <LogTargetsEditor value={accLog.targets ?? []} onChange={(t) => setLogging({ access: { ...accLog, targets: t } })} />
       </Section>
 
+      <Section title="TLS (http.tls)" hint="ssl_protocols, ssl_ciphers and session tickets for every HTTPS port; applies after a restart">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="Protocols" hint="Empty = TLSv1.2 TLSv1.3">
+            <Input value={(http.tls?.protocols ?? []).join(" ")} placeholder="TLSv1.2 TLSv1.3" onChange={(e) => setHttp({ tls: { ...http.tls, protocols: e.target.value.split(/[\s,]+/).filter(Boolean) } })} mono className="text-xs" />
+          </Field>
+          <Field label="Ciphers" hint="Empty = defaults; OpenSSL or IANA names separated by : or space">
+            <Input value={(http.tls?.ciphers ?? []).join(":")} onChange={(e) => setHttp({ tls: { ...http.tls, ciphers: e.target.value.split(/[\s:,]+/).filter(Boolean) } })} mono className="text-xs" />
+          </Field>
+          <Field label="Session ticket key file" hint="ssl_session_ticket_key (80 random bytes)">
+            <Input value={http.tls?.session_ticket_key ?? ""} onChange={(e) => setHttp({ tls: { ...http.tls, session_ticket_key: e.target.value || null } })} mono className="text-xs" />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Toggle checked={http.tls?.session_tickets !== false} onChange={(v) => setHttp({ tls: { ...http.tls, session_tickets: v } })} label="Session tickets" />
+          <Toggle checked={!!http.tls?.early_data} onChange={(v) => setHttp({ tls: { ...http.tls, early_data: v } })} label="0-RTT early data (HTTP/3 only)" />
+        </div>
+      </Section>
+
       <Section title="Cache storage (cache_store)" hint="Where route caches live: memory, disk (proxy_cache_path) or Redis / Dragonfly / KeyDB / Valkey">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <Field label="Kind">
