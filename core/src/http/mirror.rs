@@ -3,7 +3,13 @@ use std::time::Duration;
 
 use crate::http::upstream::{OutgoingBody, UpstreamClient};
 
-pub fn spawn(base: &str, method: &Method, uri: &Uri, headers: &HeaderMap) {
+pub fn spawn(
+    base: &str,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Option<axum::body::Bytes>,
+) {
     let base = base.trim_end_matches('/').to_string();
     let method = method.clone();
     let path = uri
@@ -21,7 +27,16 @@ pub fn spawn(base: &str, method: &Method, uri: &Uri, headers: &HeaderMap) {
     tokio::spawn(async move {
         let client = UpstreamClient::new(Duration::from_secs(2), Duration::from_secs(10), true);
         match client
-            .send(&method, &base, &path, &h, OutgoingBody::Empty)
+            .send(
+                &method,
+                &base,
+                &path,
+                &h,
+                match body {
+                    Some(b) => OutgoingBody::Buffered(b),
+                    None => OutgoingBody::Empty,
+                },
+            )
             .await
         {
             Ok(resp) => {

@@ -416,6 +416,14 @@ impl ProxyEngine {
                     .into_response();
             }
             AccessDecision::Unauthorized => {
+                if let Some(ms) = vhost
+                    .basic_auth
+                    .as_ref()
+                    .map(|b| b.delay_ms)
+                    .filter(|ms| *ms > 0)
+                {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
                 let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                 resp.headers_mut().insert(
                     header::WWW_AUTHENTICATE,
@@ -430,6 +438,10 @@ impl ProxyEngine {
                 let key = ("vhost", vhost.id.as_str(), client_ip);
                 match self.conn_limiter.acquire(key, cfg) {
                     Some(g) => Some(g),
+                    None if cfg.dry_run => {
+                        warn!(ip = %client_ip, "limit_conn dry run: limit exceeded");
+                        None
+                    }
                     None => return limit_response(cfg.status, "connection limit"),
                 }
             }
@@ -441,6 +453,9 @@ impl ProxyEngine {
             match self.rate_limiter.check(key, rl) {
                 RateLimitDecision::Allow => {}
                 RateLimitDecision::Delay(d) => tokio::time::sleep(d).await,
+                RateLimitDecision::Reject if rl.dry_run => {
+                    warn!(ip = %client_ip, "limit_req dry run: limit exceeded");
+                }
                 RateLimitDecision::Reject => {
                     warn!(ip = %client_ip, "limite de taxa do host excedido");
                     return rate_limit_response(rl);
@@ -945,6 +960,14 @@ impl ProxyEngine {
                         .into_response();
                 }
                 AccessDecision::Unauthorized => {
+                    if let Some(ms) = route
+                        .basic_auth
+                        .as_ref()
+                        .map(|b| b.delay_ms)
+                        .filter(|ms| *ms > 0)
+                    {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                    }
                     let mut resp = (StatusCode::UNAUTHORIZED, "401 Unauthorized").into_response();
                     resp.headers_mut().insert(
                         header::WWW_AUTHENTICATE,
@@ -1035,15 +1058,47 @@ impl ProxyEngine {
             }
         }
 
-        for base in &route.mirror {
-            mirror::spawn(base, req.method(), req.uri(), req.headers());
+        let mut req = req;
+        if !route.mirror.is_empty() {
+            let has_body = route.mirror_request_body
+                && (req.headers().contains_key(header::CONTENT_LENGTH)
+                    || req.headers().contains_key(header::TRANSFER_ENCODING));
+            let body = if has_body {
+                let (parts, body) = req.into_parts();
+                let limit = compiled.config.http.client_max_body_size as usize;
+                let bytes = match axum::body::to_bytes(body, limit).await {
+                    Ok(b) => b,
+                    Err(_) => {
+                        return (StatusCode::PAYLOAD_TOO_LARGE, "413 Payload Too Large")
+                            .into_response()
+                    }
+                };
+                req = Request::from_parts(parts, Body::from(bytes.clone()));
+                Some(bytes)
+            } else {
+                None
+            };
+            for base in &route.mirror {
+                mirror::spawn(base, req.method(), req.uri(), req.headers(), body.clone());
+            }
         }
+        let after_ctx = (route.proxy_store.is_some() || route.post_action.is_some()).then(|| {
+            (
+                req.uri().clone(),
+                req.method().clone(),
+                req.headers().clone(),
+            )
+        });
 
         let _route_conn_guard = match &route.limit_conn {
             Some(cfg) => {
                 let key = ("route", route.id.as_str(), client_ip);
                 match self.conn_limiter.acquire(key, cfg) {
                     Some(g) => Some(g),
+                    None if cfg.dry_run => {
+                        warn!(ip = %client_ip, "limit_conn dry run: limit exceeded");
+                        None
+                    }
                     None => return limit_response(cfg.status, "connection limit"),
                 }
             }
@@ -1055,6 +1110,9 @@ impl ProxyEngine {
             match self.rate_limiter.check(key, rl) {
                 RateLimitDecision::Allow => {}
                 RateLimitDecision::Delay(d) => tokio::time::sleep(d).await,
+                RateLimitDecision::Reject if rl.dry_run => {
+                    warn!(ip = %client_ip, "limit_req dry run: limit exceeded");
+                }
                 RateLimitDecision::Reject => return rate_limit_response(rl),
             }
         }
@@ -1211,6 +1269,9 @@ impl ProxyEngine {
                 } else {
                     file_path
                 };
+                if route.disable_symlinks && static_files::has_symlink(root_dir, file_path) {
+                    return (StatusCode::FORBIDDEN, "403 Forbidden").into_response();
+                }
                 if route.flv {
                     if let Some(r) =
                         Box::pin(static_files::flv(root_dir, file_path, parts.uri.query())).await
@@ -1228,7 +1289,7 @@ impl ProxyEngine {
                 {
                     Ok(r) => r,
                     Err(StatusCode::NOT_FOUND) if route.autoindex => {
-                        match static_files::autoindex(root_dir, file_path, &req_path) {
+                        match static_files::autoindex(root_dir, file_path, &req_path, route) {
                             Some(r) => r,
                             None => {
                                 (StatusCode::NOT_FOUND, "404 Static File Error").into_response()
@@ -1489,10 +1550,27 @@ impl ProxyEngine {
                 route.static_root.as_deref(),
                 &dir,
                 &mut ctx,
+                route.ssi_silent_errors,
+                route.ssi_last_modified,
             ))
             .await
         } else {
             resp
+        };
+
+        let resp = match &after_ctx {
+            Some((uri, method, headers)) => {
+                if let Some(base) = &route.post_action {
+                    mirror::spawn(base, method, uri, headers, None);
+                }
+                match &route.proxy_store {
+                    Some(dir) if resp.status() == StatusCode::OK && method == Method::GET => {
+                        Box::pin(filters::store::apply(resp, dir, uri.path())).await
+                    }
+                    _ => resp,
+                }
+            }
+            None => resp,
         };
 
         let resp = if needs_gunzip {

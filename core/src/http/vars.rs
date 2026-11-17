@@ -117,6 +117,46 @@ impl Ctx<'_> {
                 .as_ref()
                 .map(|c| c.escaped_pem())
                 .unwrap_or_default(),
+            "time_local" => chrono::Local::now()
+                .format("%d/%b/%Y:%H:%M:%S %z")
+                .to_string(),
+            "time_iso8601" => chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string(),
+            "msec" => format!(
+                "{:.3}",
+                crate::event::clock::utc_now().timestamp_millis() as f64 / 1000.0
+            ),
+            "server_name" => hdr("host").split(':').next().unwrap_or("").to_string(),
+            "server_port" => match hdr("host").rsplit_once(':') {
+                Some((_, p)) if p.parse::<u16>().is_ok() => p.to_string(),
+                _ => if self.is_tls { "443" } else { "80" }.to_string(),
+            },
+            "server_protocol" => "HTTP/1.1".to_string(),
+            "request" => format!(
+                "{} {} HTTP/1.1",
+                self.method,
+                self.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
+            ),
+            "request_length" => hdr("content-length"),
+            "pid" => std::process::id().to_string(),
+            "nginx_version" => env!("CARGO_PKG_VERSION").to_string(),
+            "hostname" => std::env::var("HOSTNAME")
+                .ok()
+                .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+                .map(|h| h.trim().to_string())
+                .unwrap_or_default(),
+            "remote_user" => hdr("authorization")
+                .strip_prefix("Basic ")
+                .and_then(|b| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b.trim())
+                        .ok()
+                })
+                .and_then(|d| String::from_utf8(d).ok())
+                .and_then(|s| s.split_once(':').map(|(u, _)| u.to_string()))
+                .unwrap_or_default(),
             "content_type" => hdr("content-type"),
             "content_length" => hdr("content-length"),
             n if n.starts_with("arg_") => query_arg(q, &n[4..]).unwrap_or("").to_string(),

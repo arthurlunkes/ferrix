@@ -296,8 +296,20 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
         )}
       </Section>
 
-      <Section title="Mirror (mirror)" hint="Each request is copied (no body) to these base URLs; responses are ignored">
+      <Section title="Mirror (mirror)" hint="Each request is copied to these base URLs; responses are ignored">
         <StringListEditor value={route.mirror ?? []} onChange={(v) => onChange({ mirror: v })} placeholder="http://shadow:8080" emptyText="No mirrors." />
+        <Toggle checked={route.mirror_request_body !== false} onChange={(v) => onChange({ mirror_request_body: v })} label="Send the request body too (mirror_request_body)" />
+      </Section>
+
+      <Section title="After the request (post_action, proxy_store)">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="post_action" hint="base URL called after each request">
+            <Input value={route.post_action ?? ""} onChange={(e) => onChange({ post_action: e.target.value || null })} placeholder="http://127.0.0.1:8080" mono className="text-xs" />
+          </Field>
+          <Field label="proxy_store" hint="folder where 200 GET answers are saved">
+            <Input value={route.proxy_store ?? ""} onChange={(e) => onChange({ proxy_store: e.target.value || null })} placeholder="/var/cache/ferrix/mirror" mono className="text-xs" />
+          </Field>
+        </div>
       </Section>
 
       <Section
@@ -321,6 +333,8 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
         <Field label="Extra MIME types (ssi_types)" hint="comma-separated">
           <Input value={(route.ssi_types ?? []).join(", ")} onChange={(e) => onChange({ ssi_types: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} mono className="text-xs" />
         </Field>
+        <Toggle checked={!!route.ssi_silent_errors} onChange={(v) => onChange({ ssi_silent_errors: v })} label="ssi_silent_errors" />
+        <Toggle checked={!!route.ssi_last_modified} onChange={(v) => onChange({ ssi_last_modified: v })} label="ssi_last_modified" />
       </Section>
 
       <Section
@@ -366,7 +380,18 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
 
       {isStatic && (
         <>
-          <Section title="Directory listing (autoindex)" hint="Lists directories without index.html" enabled={!!route.autoindex} onToggle={(on) => onChange({ autoindex: on })} />
+          <Section title="Directory listing (autoindex)" hint="Lists directories without index.html" enabled={!!route.autoindex} onToggle={(on) => onChange({ autoindex: on })}>
+            <Field label="Format" className="w-40">
+              <Select value={route.autoindex_format ?? "html"} onChange={(e) => onChange({ autoindex_format: e.target.value as "html" | "json" | "xml" })}>
+                <option value="html">html</option>
+                <option value="json">json</option>
+                <option value="xml">xml</option>
+              </Select>
+            </Field>
+            <Toggle checked={route.autoindex_exact_size !== false} onChange={(v) => onChange({ autoindex_exact_size: v })} label="Exact sizes in bytes (autoindex_exact_size)" />
+            <Toggle checked={!!route.autoindex_localtime} onChange={(v) => onChange({ autoindex_localtime: v })} label="Local time (autoindex_localtime)" />
+          </Section>
+          <Section title="Refuse symbolic links (disable_symlinks)" enabled={!!route.disable_symlinks} onToggle={(on) => onChange({ disable_symlinks: on })} />
           <Section title="FLV pseudo-streaming (flv)" hint="video.flv?start=<byte>" enabled={!!route.flv} onToggle={(on) => onChange({ flv: on })} />
           <Section
             title="WebDAV (dav_methods)"

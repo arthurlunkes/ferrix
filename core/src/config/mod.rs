@@ -199,6 +199,16 @@ pub struct StreamConfig {
     pub return_text: Option<String>,
     #[serde(default)]
     pub pass: Option<String>,
+    #[serde(default)]
+    pub access_log: bool,
+    #[serde(default = "default_true")]
+    pub half_close: bool,
+    #[serde(default)]
+    pub preread_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub proxy_requests: Option<u32>,
+    #[serde(default)]
+    pub proxy_responses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1066,6 +1076,8 @@ pub struct BasicAuthConfig {
     pub user_file: Option<String>,
     #[serde(default)]
     pub realm: Option<String>,
+    #[serde(default)]
+    pub delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1093,6 +1105,8 @@ pub struct RateLimitConfig {
 
     #[serde(default)]
     pub retry_after: Option<u64>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_limit_status() -> u16 {
@@ -1104,6 +1118,8 @@ pub struct LimitConnConfig {
     pub max_connections: u32,
     #[serde(default = "default_limit_status")]
     pub status: u16,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1156,6 +1172,10 @@ pub struct ImageFilterConfig {
     pub jpeg_quality: u8,
     #[serde(default = "default_image_buffer")]
     pub buffer_bytes: u64,
+    #[serde(default)]
+    pub sharpen: u32,
+    #[serde(default = "default_true")]
+    pub transparency: bool,
 }
 
 fn default_jpeg_quality() -> u8 {
@@ -1174,6 +1194,8 @@ impl Default for ImageFilterConfig {
             rotate: 0,
             jpeg_quality: default_jpeg_quality(),
             buffer_bytes: default_image_buffer(),
+            sharpen: 0,
+            transparency: true,
         }
     }
 }
@@ -1604,6 +1626,34 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub grpc: bool,
+
+    #[serde(default)]
+    pub autoindex_format: AutoindexFormat,
+    #[serde(default = "default_true")]
+    pub autoindex_exact_size: bool,
+    #[serde(default)]
+    pub autoindex_localtime: bool,
+    #[serde(default)]
+    pub disable_symlinks: bool,
+    #[serde(default = "default_true")]
+    pub mirror_request_body: bool,
+    #[serde(default)]
+    pub proxy_store: Option<String>,
+    #[serde(default)]
+    pub post_action: Option<String>,
+    #[serde(default)]
+    pub ssi_silent_errors: bool,
+    #[serde(default)]
+    pub ssi_last_modified: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoindexFormat {
+    #[default]
+    Html,
+    Json,
+    Xml,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1755,6 +1805,15 @@ impl Default for RouteRule {
             memcached: None,
             tunnel: None,
             grpc: false,
+            autoindex_format: AutoindexFormat::Html,
+            autoindex_exact_size: true,
+            autoindex_localtime: false,
+            disable_symlinks: false,
+            mirror_request_body: true,
+            proxy_store: None,
+            post_action: None,
+            ssi_silent_errors: false,
+            ssi_last_modified: false,
         }
     }
 }
