@@ -4,6 +4,7 @@ import {
   api,
   ApiError,
   FerrixConfig,
+  LogTarget,
   StreamConfig,
   StreamProtocol,
   ValidationIssue,
@@ -36,6 +37,83 @@ function newVariable(type: VariableDef["type"]): VariableDef {
       return { type: "split_clients", source: "$remote_addr", buckets: [{ percent: 10, value: "a" }, { percent: 0, value: "b" }] };
   }
 }
+
+function newTarget(kind: LogTarget["kind"]): LogTarget {
+  switch (kind) {
+    case "file":
+      return { kind, path: "/var/log/ferrix/ferrix.log", max_bytes: 104857600, keep: 5 };
+    case "syslog":
+      return { kind, addr: "127.0.0.1:514", facility: "local7", tag: "ferrix" };
+    case "http":
+      return { kind, url: "http://127.0.0.1:8686/", batch_size: 500, flush_ms: 1000 };
+    default:
+      return { kind };
+  }
+}
+
+const LogTargetsEditor: React.FC<{ value: LogTarget[]; onChange: (v: LogTarget[]) => void }> = ({ value, onChange }) => {
+  const patch = (i: number, t: LogTarget) => onChange(value.map((v, j) => (j === i ? t : v)));
+  return (
+    <div className="space-y-2">
+      {value.map((t, i) => (
+        <div key={i} className="flex flex-wrap items-end gap-2">
+          <Field label="Destination" className="w-32">
+            <Select value={t.kind} onChange={(e) => patch(i, newTarget(e.target.value as LogTarget["kind"]))}>
+              {["stderr", "stdout", "file", "syslog", "http", "off"].map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </Select>
+          </Field>
+          {t.kind === "file" && (
+            <>
+              <Field label="Path" className="flex-1 min-w-48">
+                <Input value={t.path} onChange={(e) => patch(i, { ...t, path: e.target.value })} mono className="text-xs" />
+              </Field>
+              <Field label="Rotate at (bytes)" hint="0 = never" className="w-36">
+                <Input type="number" value={t.max_bytes ?? 0} onChange={(e) => patch(i, { ...t, max_bytes: parseInt(e.target.value) || 0 })} mono />
+              </Field>
+              <Field label="Keep" className="w-20">
+                <Input type="number" value={t.keep ?? 0} onChange={(e) => patch(i, { ...t, keep: parseInt(e.target.value) || 0 })} mono />
+              </Field>
+            </>
+          )}
+          {t.kind === "syslog" && (
+            <>
+              <Field label="Address" hint="host:port (UDP) or /path" className="flex-1 min-w-48">
+                <Input value={t.addr ?? ""} onChange={(e) => patch(i, { ...t, addr: e.target.value || null })} mono className="text-xs" />
+              </Field>
+              <Field label="Facility" className="w-28">
+                <Input value={t.facility ?? ""} onChange={(e) => patch(i, { ...t, facility: e.target.value || null })} mono />
+              </Field>
+              <Field label="Tag" className="w-28">
+                <Input value={t.tag ?? ""} onChange={(e) => patch(i, { ...t, tag: e.target.value || null })} mono />
+              </Field>
+            </>
+          )}
+          {t.kind === "http" && (
+            <>
+              <Field label="URL (http://)" className="flex-1 min-w-48">
+                <Input value={t.url} onChange={(e) => patch(i, { ...t, url: e.target.value })} mono className="text-xs" />
+              </Field>
+              <Field label="Batch" className="w-24">
+                <Input type="number" value={t.batch_size ?? ""} onChange={(e) => patch(i, { ...t, batch_size: e.target.value ? parseInt(e.target.value) : null })} mono />
+              </Field>
+              <Field label="Flush (ms)" className="w-28">
+                <Input type="number" value={t.flush_ms ?? ""} onChange={(e) => patch(i, { ...t, flush_ms: e.target.value ? parseInt(e.target.value) : null })} mono />
+              </Field>
+            </>
+          )}
+          <button type="button" onClick={() => onChange(value.filter((_, j) => j !== i))} className="p-2 text-content-muted hover:text-danger-400" aria-label="Remove destination">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+      <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={() => onChange([...value, newTarget("file")])}>
+        Add destination
+      </Button>
+    </div>
+  );
+};
 
 const VariableCard: React.FC<{
   name: string;
@@ -131,6 +209,10 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
   }
 
   const http = draft.http;
+  const logging = draft.logging ?? {};
+  const errLog = logging.error ?? {};
+  const accLog = logging.access ?? {};
+  const setLogging = (p: Partial<typeof logging>) => setDraft({ ...draft, logging: { ...logging, ...p } });
   const vars = http.variables ?? {};
   const streams = draft.streams ?? [];
   const upstreamNames = Object.keys(draft.upstreams);
@@ -213,6 +295,36 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
             </Field>
           </div>
         )}
+      </Section>
+
+      <Section title="Error log (logging.error)" hint="Default: info level, text, stderr. RUST_LOG overrides the level">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Field label="Level" hint='error, warn, info, debug or "warn,ferrix=debug"'>
+            <Input value={errLog.level ?? ""} placeholder="info" onChange={(e) => setLogging({ error: { ...errLog, level: e.target.value || null } })} mono />
+          </Field>
+          <Field label="Format">
+            <Select value={errLog.format ?? "text"} onChange={(e) => setLogging({ error: { ...errLog, format: e.target.value as "text" | "json" } })}>
+              <option value="text">text</option>
+              <option value="json">json</option>
+            </Select>
+          </Field>
+        </div>
+        <Toggle
+          checked={Array.isArray(errLog.targets)}
+          onChange={(on) => setLogging({ error: { ...errLog, targets: on ? [{ kind: "stderr" }] : null } })}
+          label="Choose destinations"
+          description="Off = stderr. On with an empty list = error log disabled"
+        />
+        {Array.isArray(errLog.targets) && (
+          <LogTargetsEditor value={errLog.targets} onChange={(t) => setLogging({ error: { ...errLog, targets: t } })} />
+        )}
+      </Section>
+
+      <Section title="Access log destinations (logging.access)" hint="When set, replaces the access log file above. No destination = no access log">
+        <Field label="Format" hint={`"combined", "json" or variables: ${LOG_VARS}`}>
+          <Input value={accLog.format ?? ""} placeholder="combined" onChange={(e) => setLogging({ access: { ...accLog, format: e.target.value } })} mono className="text-xs" />
+        </Field>
+        <LogTargetsEditor value={accLog.targets ?? []} onChange={(t) => setLogging({ access: { ...accLog, targets: t } })} />
       </Section>
 
       <Section title="Cache storage (cache_store)" hint="Where route caches live: memory, disk (proxy_cache_path) or Redis / Dragonfly / KeyDB / Valkey">

@@ -12,6 +12,7 @@ pub struct ConfigStore {
 impl ConfigStore {
     pub fn new(mut config: FerrixConfig, path: impl Into<String>) -> Self {
         config.resolve_ports();
+        crate::log::configure(&config.logging.error);
         let compiled = CompiledConfig::build(Arc::new(config));
         Self {
             compiled: ArcSwap::from_pointee(compiled),

@@ -459,7 +459,19 @@ export interface StreamConfig {
   pass?: string | null;
 }
 
+export type LogTarget =
+  | { kind: "off" | "stdout" | "stderr" }
+  | { kind: "file"; path: string; max_bytes?: number; keep?: number }
+  | { kind: "syslog"; addr?: string | null; facility?: string | null; tag?: string | null }
+  | { kind: "http"; url: string; batch_size?: number | null; flush_ms?: number | null; headers?: Record<string, string> };
+
+export interface LoggingConfig {
+  error?: { level?: string | null; format?: "text" | "json"; targets?: LogTarget[] | null };
+  access?: { format?: string; targets?: LogTarget[] };
+}
+
 export interface FerrixConfig {
+  logging?: LoggingConfig;
   admin: AdminConfig;
   http: HttpConfig;
   real_ip: RealIpConfig;

@@ -186,7 +186,14 @@ impl Converter {
             return Vec::new();
         }
 
-        let mut paths = resolve_include_paths(pattern, base);
+        let mut paths = if Path::new(pattern).is_absolute() || base == self.search_root {
+            Vec::new()
+        } else {
+            resolve_include_paths(pattern, &self.search_root.clone())
+        };
+        if paths.is_empty() {
+            paths = resolve_include_paths(pattern, base);
+        }
 
         let mut resolved_by_name = false;
         if paths.is_empty() && !pattern.contains('*') && Path::new(pattern).is_absolute() {
@@ -4171,6 +4178,27 @@ mod tests {
         assert_eq!(r.report.vhosts_created, 1);
         assert_eq!(r.report.routes_created, 2);
         assert_eq!(r.report.upstreams_created, 1);
+    }
+
+    #[test]
+    fn relative_include_inside_an_included_file_resolves_from_the_config_root() {
+        let dir = std::env::temp_dir().join(format!("ferrix-inc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sites")).unwrap();
+        std::fs::create_dir_all(dir.join("snippets")).unwrap();
+        std::fs::write(
+            dir.join("nginx.conf"),
+            "events {} http { include sites/*.conf; }",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("sites/a.conf"),
+            "server { listen 80; location / { include snippets/p.conf; } }",
+        )
+        .unwrap();
+        std::fs::write(dir.join("snippets/p.conf"), "return 204;").unwrap();
+        let result = import_file(&dir.join("nginx.conf")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result.config.vhosts[0].routes[0].redirect_code, Some(204));
     }
 
     #[test]

@@ -249,6 +249,7 @@ pub fn build_params(
     path_info: &str,
     client_ip: std::net::IpAddr,
     is_tls: bool,
+    listen_port: u16,
     body_len: usize,
     extra: &HashMap<String, String>,
 ) -> Vec<(String, String)> {
@@ -259,6 +260,7 @@ pub fn build_params(
         .unwrap_or("");
     let (server_name, server_port) = match host.rsplit_once(':') {
         Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, p.to_string()),
+        _ if listen_port > 0 => (host, listen_port.to_string()),
         _ => (host, if is_tls { "443" } else { "80" }.to_string()),
     };
     let root = document_root.trim_end_matches('/');
@@ -287,7 +289,7 @@ pub fn build_params(
         ("PATH_INFO".into(), path_info.into()),
         ("REMOTE_ADDR".into(), client_ip.to_string()),
         ("SERVER_NAME".into(), server_name.into()),
-        ("SERVER_PORT".into(), server_port),
+        ("SERVER_PORT".into(), server_port.clone()),
         (
             "CONTENT_LENGTH".into(),
             if body_len > 0 {
@@ -306,6 +308,10 @@ pub fn build_params(
                 .into(),
         ),
         ("REDIRECT_STATUS".into(), "200".into()),
+        (
+            "REQUEST_SCHEME".into(),
+            if is_tls { "https" } else { "http" }.into(),
+        ),
     ];
     if is_tls {
         p.push(("HTTPS".into(), "on".into()));
@@ -319,17 +325,93 @@ pub fn build_params(
             p.push((name, v.to_string()));
         }
     }
+    let lookup = |name: &str| -> Option<String> {
+        Some(match name {
+            "document_root" | "realpath_root" => root.to_string(),
+            "fastcgi_script_name" => script_name.to_string(),
+            "fastcgi_path_info" | "path_info" => path_info.to_string(),
+            "query_string" | "args" => parts.uri.query().unwrap_or("").to_string(),
+            "request_method" => parts.method.to_string(),
+            "request_uri" => parts
+                .uri
+                .path_and_query()
+                .map(|p| p.as_str())
+                .unwrap_or("/")
+                .to_string(),
+            "document_uri" | "uri" => parts.uri.path().to_string(),
+            "server_protocol" => format!("{:?}", parts.version),
+            "scheme" | "request_scheme" => if is_tls { "https" } else { "http" }.to_string(),
+            "https" => if is_tls { "on" } else { "" }.to_string(),
+            "remote_addr" => client_ip.to_string(),
+            "remote_port" | "remote_user" | "server_addr" => String::new(),
+            "server_port" => server_port.clone(),
+            "server_name" | "host" => server_name.to_string(),
+            "http_host" => host.to_string(),
+            "nginx_version" => env!("CARGO_PKG_VERSION").to_string(),
+            "content_type" => parts
+                .headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string(),
+            "content_length" => {
+                if body_len > 0 {
+                    body_len.to_string()
+                } else {
+                    String::new()
+                }
+            }
+            n if n.starts_with("http_") => parts
+                .headers
+                .get(n[5..].replace('_', "-").as_str())
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string(),
+            _ => return None,
+        })
+    };
     for (k, v) in extra {
-        let v = v
-            .replace("$document_root", root)
-            .replace("$fastcgi_script_name", script_name)
-            .replace("$fastcgi_path_info", path_info);
+        let had_var = v.contains('$');
+        let v = expand(v, &lookup);
+        if had_var && v.is_empty() && matches!(k.as_str(), "HTTPS" | "REMOTE_PORT" | "SERVER_ADDR")
+        {
+            continue;
+        }
         match p.iter_mut().find(|(n, _)| n == k) {
             Some(slot) => slot.1 = v,
             None => p.push((k.clone(), v)),
         }
     }
     p
+}
+
+fn expand(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let (name, tail) = match after.strip_prefix('{') {
+            Some(b) => match b.find('}') {
+                Some(e) => (&b[..e], &b[e + 1..]),
+                None => ("", after),
+            },
+            None => {
+                let e = after
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(after.len());
+                (&after[..e], &after[e..])
+            }
+        };
+        if name.is_empty() {
+            out.push('$');
+        } else if let Some(v) = lookup(name) {
+            out.push_str(&v);
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 pub fn split_script(path: &str, index: Option<&str>) -> (String, String) {
@@ -351,6 +433,42 @@ pub fn split_script(path: &str, index: Option<&str>) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nginx_variables_in_params_are_expanded() {
+        let (parts, _) = axum::http::Request::builder()
+            .method("POST")
+            .uri("/index.php?a=1")
+            .header("host", "app.local")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let mut extra = HashMap::new();
+        extra.insert("QUERY_STRING".to_string(), "$query_string".to_string());
+        extra.insert(
+            "SCRIPT_FILENAME".to_string(),
+            "$realpath_root$fastcgi_script_name".to_string(),
+        );
+        extra.insert("HTTPS".to_string(), "$https".to_string());
+        extra.insert("SERVER_PORT".to_string(), "$server_port".to_string());
+        let p = build_params(
+            &parts,
+            "/srv/app",
+            "/index.php",
+            "",
+            "10.0.0.1".parse().unwrap(),
+            false,
+            8080,
+            0,
+            &extra,
+        );
+        let get = |k: &str| p.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("QUERY_STRING"), Some("a=1"));
+        assert_eq!(get("SCRIPT_FILENAME"), Some("/srv/app/index.php"));
+        assert_eq!(get("SERVER_PORT"), Some("8080"));
+        assert_eq!(get("REQUEST_SCHEME"), Some("http"));
+        assert_eq!(get("HTTPS"), None);
+    }
 
     #[test]
     fn cgi_reply_with_status() {
