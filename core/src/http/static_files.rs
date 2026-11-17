@@ -200,22 +200,31 @@ impl StaticFileServer {
             }
         }
 
-        if !path.is_empty()
-            && !path.ends_with('/')
-            && Path::new(root_dir)
-                .join(path.trim_start_matches('/'))
-                .is_dir()
-        {
-            return Err(StatusCode::MOVED_PERMANENTLY);
-        }
-
-        let loaded = load_file(
-            root_dir,
-            path,
-            try_files,
-            req.cache.max_file_bytes,
-            &req.types,
-        )?;
+        let (root, file, tries) = (
+            root_dir.to_string(),
+            path.to_string(),
+            try_files.map(str::to_string),
+        );
+        let (map, default) = (
+            req.types.map.cloned(),
+            req.types.default.map(str::to_string),
+        );
+        let max_file = req.cache.max_file_bytes;
+        let loaded = tokio::task::spawn_blocking(move || {
+            if !file.is_empty()
+                && !file.ends_with('/')
+                && Path::new(&root).join(file.trim_start_matches('/')).is_dir()
+            {
+                return Err(StatusCode::MOVED_PERMANENTLY);
+            }
+            let types = MimeTypes {
+                map: map.as_ref(),
+                default: default.as_deref(),
+            };
+            load_file(&root, &file, tries.as_deref(), max_file, &types)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
         match loaded {
             Loaded::Cacheable(entry) => {

@@ -74,6 +74,7 @@ impl ProxyEngine {
         &self,
         plan: RawRoute,
         head: &[u8],
+        spans: &[super::server::Span],
         method: &Method,
         path: &str,
         client_addr: SocketAddr,
@@ -144,7 +145,16 @@ impl ProxyEngine {
         let host = super::proxy::proxy_host(upstream);
         let forwarded = http.proxy_forwarded_headers;
         let encode = |_authority: &str, req: &mut Vec<u8>| {
-            encode_request(req, head, method, &target_path, host, client_ip, forwarded)
+            encode_request(
+                req,
+                head,
+                spans,
+                method,
+                &target_path,
+                host,
+                client_ip,
+                forwarded,
+            )
         };
 
         let mut last_error: Option<String> = None;
@@ -242,9 +252,11 @@ fn push_header(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
     out.extend_from_slice(b"\r\n");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_request(
     out: &mut Vec<u8>,
     head: &[u8],
+    spans: &[super::server::Span],
     method: &Method,
     path: &str,
     authority: &str,
@@ -259,18 +271,11 @@ fn encode_request(
     out.extend_from_slice(authority.as_bytes());
     out.extend_from_slice(b"\r\n");
 
-    let mut headers = [std::mem::MaybeUninit::<httparse::Header<'_>>::uninit(); 100];
-    let mut req = httparse::Request::new(&mut []);
-    let _ = httparse::ParserConfig::default().parse_request_with_uninit_headers(
-        &mut req,
-        head,
-        &mut headers,
-    );
     let mut xff = String::new();
-    for h in req.headers.iter() {
-        let name = h.name.as_bytes();
+    for &(ns, ne, vs, ve) in spans {
+        let (name, value) = (&head[ns..ne], &head[vs..ve]);
         if forwarded && name.eq_ignore_ascii_case(b"x-forwarded-for") {
-            for part in std::str::from_utf8(h.value)
+            for part in std::str::from_utf8(value)
                 .unwrap_or("")
                 .split(',')
                 .map(str::trim)
@@ -283,7 +288,7 @@ fn encode_request(
         if dropped_request_header(name, forwarded) {
             continue;
         }
-        push_header(out, name, h.value);
+        push_header(out, name, value);
     }
     if forwarded {
         let mut ip = [0u8; 64];
@@ -310,11 +315,28 @@ fn encode_request(
 mod tests {
     use super::*;
 
+    fn test_spans(head: &[u8]) -> Vec<crate::http::server::Span> {
+        let mut headers = [httparse::EMPTY_HEADER; 64];
+        let mut req = httparse::Request::new(&mut headers);
+        let _ = req.parse(head);
+        let base = head.as_ptr() as usize;
+        req.headers
+            .iter()
+            .map(|h| {
+                let n = h.name.as_ptr() as usize - base;
+                let v = h.value.as_ptr() as usize - base;
+                (n, n + h.name.len(), v, v + h.value.len())
+            })
+            .collect()
+    }
+
     fn encoded(head: &str, method: Method, ip: &str) -> String {
         let mut out = Vec::new();
+        let spans = test_spans(head.as_bytes());
         encode_request(
             &mut out,
             head.as_bytes(),
+            &spans,
             &method,
             "/a?b=1",
             "10.0.0.1:8080",
@@ -346,9 +368,11 @@ mod tests {
     #[test]
     fn nginx_mode_passes_client_headers_and_sends_the_upstream_name() {
         let mut out = Vec::new();
+        let head = b"GET /a HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 1.1.1.1\r\n\r\n";
         encode_request(
             &mut out,
-            b"GET /a HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 1.1.1.1\r\n\r\n",
+            head,
+            &test_spans(head),
             &Method::GET,
             "/a",
             "backend",

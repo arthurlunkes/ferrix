@@ -29,6 +29,8 @@ pub struct SendFile {
 
 pub const SENDFILE_MIN: u64 = 32 * 1024;
 
+pub(crate) type Span = (usize, usize, usize, usize);
+
 pub struct Settings {
     pub header_timeout: Duration,
     pub keepalive_timeout: Duration,
@@ -53,6 +55,7 @@ pub async fn serve(
     let mut first = true;
     let limits = Limits::from(engine);
     let mut served: u32 = 0;
+    let mut spans_buf: Vec<Span> = Vec::new();
     let opened = std::time::Instant::now();
 
     loop {
@@ -69,7 +72,17 @@ pub async fn serve(
         } else {
             settings.header_timeout
         };
-        let head = match read_head(&mut tcp, &mut buf, wait, engine, port, &limits).await {
+        let head = match read_head(
+            &mut tcp,
+            &mut buf,
+            wait,
+            engine,
+            port,
+            &limits,
+            &mut spans_buf,
+        )
+        .await
+        {
             Ok(Some(h)) => h,
             Ok(None) => return Outcome::Done,
             Err(HeadError::Http09(uri)) => {
@@ -126,6 +139,7 @@ pub async fn serve(
             let kept = Box::pin(engine.raw_proxy(
                 route,
                 &head.raw,
+                &spans_buf,
                 &head.method,
                 path,
                 addr,
@@ -247,6 +261,7 @@ async fn read_head(
     engine: &ProxyEngine,
     port: u16,
     limits: &Limits,
+    spans_out: &mut Vec<Span>,
 ) -> Result<Option<Head>, HeadError> {
     let deadline = crate::event::clock::mono_ms() + wait.as_millis() as u64;
     loop {
@@ -257,9 +272,12 @@ async fn read_head(
                 if buf.len() >= 14 {
                     return Err(HeadError::Handoff);
                 }
-            } else if let Some(head) =
-                parse(buf, limits, |host, path| engine.raw_route(port, host, path))?
-            {
+            } else if let Some(head) = parse(
+                buf,
+                limits,
+                |host, path| engine.raw_route(port, host, path),
+                spans_out,
+            )? {
                 return Ok(Some(head));
             } else if let Some(target) = http09_target(buf) {
                 if !first_line_has_version(buf) {
@@ -300,6 +318,7 @@ fn parse(
     buf: &mut BytesMut,
     limits: &Limits,
     raw_route: impl FnOnce(&str, &str) -> Option<crate::http::raw_proxy::RawRoute>,
+    spans_out: &mut Vec<Span>,
 ) -> Result<Option<Head>, HeadError> {
     let mut spans = [std::mem::MaybeUninit::<(usize, usize, usize, usize)>::uninit(); MAX_HEADERS];
     let (len, method, path, minor, count) = {
@@ -419,7 +438,10 @@ fn parse(
     };
 
     let mut headers = HeaderMap::new();
-    if raw_route.is_none() {
+    if raw_route.is_some() {
+        spans_out.clear();
+        spans_out.extend(spans[..count].iter().map(|s| unsafe { s.assume_init() }));
+    } else {
         headers.reserve(count);
         for span in &spans[..count] {
             let (ns, ne, vs, ve) = unsafe { span.assume_init() };
@@ -517,6 +539,20 @@ pub(super) fn finish_head(out: &mut Vec<u8>, framing: Framing, keep_alive: bool)
     out.extend_from_slice(b"\r\n");
 }
 
+async fn write_chunk(tcp: &mut TcpStream, out: &mut Vec<u8>, data: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    out.clear();
+    let _ = write!(out, "{:x}\r\n", data.len());
+    if data.len() <= COALESCE_LIMIT {
+        out.extend_from_slice(data);
+        out.extend_from_slice(b"\r\n");
+        return tcp.write_all(out).await;
+    }
+    tcp.write_all(out).await?;
+    tcp.write_all(data).await?;
+    tcp.write_all(b"\r\n").await
+}
+
 pub(super) async fn write_body<B>(
     tcp: &mut TcpStream,
     out: &mut Vec<u8>,
@@ -545,10 +581,7 @@ where
                 if data.is_empty() {
                     continue;
                 }
-                let size = format!("{:x}\r\n", data.len());
-                tcp.write_all(size.as_bytes()).await?;
-                tcp.write_all(&data).await?;
-                tcp.write_all(b"\r\n").await?;
+                write_chunk(tcp, out, &data).await?;
             }
             tcp.write_all(b"0\r\n\r\n").await
         }
@@ -665,10 +698,7 @@ pub(super) async fn write_response(
                 if data.is_empty() {
                     continue;
                 }
-                let size = format!("{:x}\r\n", data.len());
-                tcp.write_all(size.as_bytes()).await?;
-                tcp.write_all(&data).await?;
-                tcp.write_all(b"\r\n").await?;
+                write_chunk(tcp, out, &data).await?;
             }
             tcp.write_all(b"0\r\n\r\n").await
         }
@@ -820,7 +850,7 @@ mod tests {
 
     fn parse_str(s: &str) -> Result<Option<Head>, HeadError> {
         let mut buf = BytesMut::from(s.as_bytes());
-        parse(&mut buf, &Limits::test(), |_, _| None)
+        parse(&mut buf, &Limits::test(), |_, _| None, &mut Vec::new())
     }
 
     #[test]
