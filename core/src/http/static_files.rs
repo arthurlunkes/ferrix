@@ -104,6 +104,41 @@ pub struct StaticRequest<'a> {
     pub encoding: Option<(CompressionAlgorithm, &'a CompressionConfig)>,
     pub cache: &'a StaticCacheConfig,
     pub types: MimeTypes<'a>,
+    pub opts: StaticOpts,
+}
+
+#[derive(Clone, Copy)]
+pub struct StaticOpts {
+    pub etag: bool,
+    pub if_modified_since: crate::config::IfModifiedSince,
+    pub max_ranges: Option<usize>,
+}
+
+impl Default for StaticOpts {
+    fn default() -> Self {
+        Self {
+            etag: true,
+            if_modified_since: crate::config::IfModifiedSince::Before,
+            max_ranges: None,
+        }
+    }
+}
+
+impl StaticOpts {
+    pub fn from_http(http: &crate::config::HttpConfig) -> Self {
+        Self {
+            etag: http.etag,
+            if_modified_since: http.if_modified_since,
+            max_ranges: http.max_ranges,
+        }
+    }
+
+    fn finish(&self, mut resp: Response<Body>) -> Response<Body> {
+        if !self.etag {
+            resp.headers_mut().remove(header::ETAG);
+        }
+        resp
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -116,6 +151,17 @@ pub struct StaticFileServer;
 
 impl StaticFileServer {
     pub async fn serve_file(
+        root_dir: &str,
+        path: &str,
+        try_files: Option<&str>,
+        req: &StaticRequest<'_>,
+    ) -> Result<Response<Body>, StatusCode> {
+        Self::serve_file_inner(root_dir, path, try_files, req)
+            .await
+            .map(|r| req.opts.finish(r))
+    }
+
+    async fn serve_file_inner(
         root_dir: &str,
         path: &str,
         try_files: Option<&str>,
@@ -174,10 +220,12 @@ enum Conditional {
     Proceed,
 }
 
-fn check_conditional(meta: &FileMeta, headers: &HeaderMap) -> Conditional {
+fn check_conditional(meta: &FileMeta, headers: &HeaderMap, opts: &StaticOpts) -> Conditional {
+    use crate::config::IfModifiedSince;
     if let Some(inm) = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
+        .filter(|_| opts.etag)
     {
         let ours = meta.etag.to_str().unwrap_or("");
         let matches = inm
@@ -197,7 +245,12 @@ fn check_conditional(meta: &FileMeta, headers: &HeaderMap) -> Conditional {
             .and_then(parse_http_date),
         meta.mtime_secs(),
     ) {
-        if mtime <= ims {
+        let hit = match opts.if_modified_since {
+            IfModifiedSince::Off => false,
+            IfModifiedSince::Exact => mtime == ims,
+            IfModifiedSince::Before => mtime <= ims,
+        };
+        if hit {
             return Conditional::NotModified;
         }
     }
@@ -294,7 +347,10 @@ fn multipart_len(meta: &FileMeta, ranges: &[(u64, u64)]) -> u64 {
         + multipart_tail().len() as u64
 }
 
-fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
+fn parse_range(headers: &HeaderMap, meta: &FileMeta, opts: &StaticOpts) -> RangeReq {
+    if opts.max_ranges == Some(0) {
+        return RangeReq::None;
+    }
     let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
         return RangeReq::None;
     };
@@ -319,7 +375,7 @@ fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
             Some(Some(r)) => ranges.push(r),
             Some(None) => {}
         }
-        if ranges.len() > MAX_RANGES {
+        if ranges.len() > opts.max_ranges.unwrap_or(MAX_RANGES).min(MAX_RANGES) {
             return RangeReq::None;
         }
     }
@@ -362,10 +418,10 @@ fn variant_index(algo: CompressionAlgorithm) -> usize {
 
 async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response<Body> {
     let meta = &entry.meta;
-    if let Conditional::NotModified = check_conditional(meta, req.headers) {
+    if let Conditional::NotModified = check_conditional(meta, req.headers, &req.opts) {
         return not_modified(meta);
     }
-    match parse_range(req.headers, meta) {
+    match parse_range(req.headers, meta, &req.opts) {
         RangeReq::Satisfiable(s, e) => {
             let body = Body::from(entry.body.slice(s as usize..=e as usize));
             let mut resp = partial(meta, s, e, body);
@@ -433,13 +489,13 @@ async fn respond_large(
     meta: FileMeta,
     req: &StaticRequest<'_>,
 ) -> Result<Response<Body>, StatusCode> {
-    if let Conditional::NotModified = check_conditional(&meta, req.headers) {
+    if let Conditional::NotModified = check_conditional(&meta, req.headers, &req.opts) {
         return Ok(not_modified(&meta));
     }
     let mut file = std::fs::File::open(&path)
         .map(tokio::fs::File::from_std)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match parse_range(req.headers, &meta) {
+    match parse_range(req.headers, &meta, &req.opts) {
         RangeReq::Satisfiable(s, e) => {
             file.seek(SeekFrom::Start(s))
                 .await
@@ -782,6 +838,7 @@ mod tests {
             encoding: None,
             cache: &StaticCacheConfig::default(),
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         StaticFileServer::serve_file(root, path, None, &req)
             .await
@@ -814,6 +871,7 @@ mod tests {
             encoding: None,
             cache: &limits,
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/big.txt", None, &req)
             .await
@@ -845,6 +903,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn etag_and_ranges_can_be_turned_off() {
+        let d = dir_with("o.txt", "0123456789");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,3-4"));
+        let req = StaticRequest {
+            headers: &headers,
+            encoding: None,
+            cache: &StaticCacheConfig::default(),
+            types: MimeTypes::default(),
+            opts: StaticOpts {
+                etag: false,
+                if_modified_since: crate::config::IfModifiedSince::Off,
+                max_ranges: Some(1),
+            },
+        };
+        let r = StaticFileServer::serve_file(d.root(), "/o.txt", None, &req)
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(!r.headers().contains_key(header::ETAG));
+    }
+
+    #[tokio::test]
     async fn precompressed_variant_is_served() {
         let text = "compress me ".repeat(500);
         let d = dir_with("c.txt", &text);
@@ -858,6 +939,7 @@ mod tests {
             encoding: Some((CompressionAlgorithm::Gzip, &cfg)),
             cache: &StaticCacheConfig::default(),
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/c.txt", None, &req)
             .await

@@ -239,6 +239,7 @@ async fn dashboard(dir: &str, req: &axum::http::request::Parts) -> Response {
         encoding: None,
         cache: &cache,
         types: Default::default(),
+        opts: Default::default(),
     };
     match crate::http::static_files::StaticFileServer::serve_file(
         dir,

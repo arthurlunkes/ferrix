@@ -335,6 +335,12 @@ impl Converter {
                     self.converted(d, "virou http.worker_cpu_affinity");
                 }
                 "error_log" => self.convert_error_log(d),
+                "worker_shutdown_timeout" => {
+                    if let Some(v) = d.arg(0).and_then(parse_time_ms) {
+                        self.config.http.shutdown_timeout_ms = v;
+                    }
+                    self.converted(d, "virou http.shutdown_timeout_ms");
+                }
                 "stream" => self.convert_stream(d),
                 "load_module" | "pid" | "user" | "daemon" => {
                     self.report.note(
@@ -1058,6 +1064,35 @@ impl Converter {
                 if let Some(v) = d.arg(0).and_then(parse_time_ms) {
                     self.config.http.keepalive_timeout_ms = v;
                 }
+            }
+            "keepalive_requests" => {
+                if let Some(v) = d.arg(0).and_then(|v| v.parse().ok()) {
+                    self.config.http.keepalive_requests = v;
+                }
+                self.converted(d, "virou http.keepalive_requests");
+            }
+            "keepalive_time" => {
+                if let Some(v) = d.arg(0).and_then(parse_time_ms) {
+                    self.config.http.keepalive_time_ms = v;
+                }
+                self.converted(d, "virou http.keepalive_time_ms");
+            }
+            "max_ranges" => {
+                self.config.http.max_ranges = d.arg(0).and_then(|v| v.parse().ok());
+                self.converted(d, "virou http.max_ranges");
+            }
+            "etag" => {
+                self.config.http.etag = d.arg(0) != Some("off");
+                self.converted(d, "virou http.etag");
+            }
+            "if_modified_since" => {
+                use crate::config::IfModifiedSince;
+                self.config.http.if_modified_since = match d.arg(0) {
+                    Some("off") => IfModifiedSince::Off,
+                    Some("before") => IfModifiedSince::Before,
+                    _ => IfModifiedSince::Exact,
+                };
+                self.converted(d, "virou http.if_modified_since");
             }
             "proxy_connect_timeout" => {
                 if let Some(v) = d.arg(0).and_then(parse_time_ms) {
@@ -3281,7 +3316,7 @@ fn reason_for(name: &str) -> String {
         "limit_req_status" | "limit_conn_status" | "limit_req_log_level" => {
             "o Ferrix responde 429; o código ainda não é configurável pela importação"
         }
-        "keepalive_requests" | "client_body_buffer_size" | "large_client_header_buffers" => {
+        "client_body_buffer_size" | "large_client_header_buffers" => {
             "ajuste fino de buffer que o Ferrix administra sozinho"
         }
         _ => "não há equivalente no Ferrix",

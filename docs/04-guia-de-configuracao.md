@@ -370,6 +370,17 @@ http:
 
 `ferrix import` converts the matching nginx directives (`worker_processes`, `worker_cpu_affinity`, `events { worker_connections }`, `worker_rlimit_nofile`, `server_tokens`) automatically.
 
+### Connection limits and graceful shutdown
+
+| Field | nginx | Meaning |
+|---|---|---|
+| `keepalive_requests` | `keepalive_requests` | Requests served on one keep-alive connection before it is closed (default 1000, 0 = no limit). |
+| `keepalive_time_ms` | `keepalive_time` | Maximum lifetime of a keep-alive connection (default 1 h, 0 = no limit). |
+| `etag` | `etag` | `false` stops sending `ETag` for static files (and ignores `If-None-Match`). |
+| `if_modified_since` | `if_modified_since` | `exact` (default): 304 only when the date equals the file's; `before`: also when the file is older; `off`: ignore the header. |
+| `max_ranges` | `max_ranges` | Byte ranges allowed per request; `0` disables ranges, `1` disables multipart answers. |
+| `shutdown_timeout_ms` | `worker_shutdown_timeout` | On `ferrix stop` / SIGTERM, Ferrix stops keeping connections alive and waits up to this long (default 30 s) for requests in flight; `0` exits at once. |
+
 ### Access log in a file (`http.access_log`)
 
 Equivalent to nginx `log_format` + `access_log`. Works with metrics on or off; routes with `access_log: false` are skipped.

@@ -31,6 +31,25 @@ pub struct FerrixConfig {
     pub logging: LoggingConfig,
 }
 
+fn default_keepalive_requests() -> u32 {
+    1000
+}
+fn default_keepalive_time_ms() -> u64 {
+    3_600_000
+}
+fn default_shutdown_timeout_ms() -> u64 {
+    30_000
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IfModifiedSince {
+    Off,
+    #[default]
+    Exact,
+    Before,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsSettings {
     #[serde(default)]
@@ -391,6 +410,19 @@ pub struct HttpConfig {
     pub proxy_forwarded_headers: bool,
     #[serde(default)]
     pub x_accel_redirect: bool,
+
+    #[serde(default = "default_keepalive_requests")]
+    pub keepalive_requests: u32,
+    #[serde(default = "default_keepalive_time_ms")]
+    pub keepalive_time_ms: u64,
+    #[serde(default)]
+    pub max_ranges: Option<usize>,
+    #[serde(default = "default_true")]
+    pub etag: bool,
+    #[serde(default)]
+    pub if_modified_since: IfModifiedSince,
+    #[serde(default = "default_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
 
     #[serde(default)]
     pub underscores_in_headers: bool,
@@ -766,6 +798,12 @@ impl Default for HttpConfig {
             tls: TlsSettings::default(),
             proxy_forwarded_headers: false,
             x_accel_redirect: false,
+            keepalive_requests: default_keepalive_requests(),
+            keepalive_time_ms: default_keepalive_time_ms(),
+            max_ranges: None,
+            etag: true,
+            if_modified_since: IfModifiedSince::default(),
+            shutdown_timeout_ms: default_shutdown_timeout_ms(),
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),

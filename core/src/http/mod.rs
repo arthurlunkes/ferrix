@@ -1202,6 +1202,7 @@ impl ProxyEngine {
                         map: Some(&compiled.config.http.mime_types).filter(|m| !m.is_empty()),
                         default: compiled.config.http.default_type.as_deref(),
                     },
+                    opts: static_files::StaticOpts::from_http(&compiled.config.http),
                 };
                 let random_pick;
                 let file_path = if route.random_index {
