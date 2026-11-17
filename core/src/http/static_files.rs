@@ -18,6 +18,7 @@ const REVALIDATE_AFTER: Duration = Duration::from_secs(1);
 struct CachedFile {
     body: Bytes,
     meta: FileMeta,
+    full_headers: HeaderMap,
 
     file_path: PathBuf,
 
@@ -93,8 +94,12 @@ impl FileMeta {
 
 #[derive(Default)]
 struct FileCache {
-    entries: HashMap<String, Arc<CachedFile>>,
+    entries: crate::fasthash::FastMap<String, Arc<CachedFile>>,
     total_bytes: u64,
+}
+
+thread_local! {
+    static KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 static CACHE: LazyLock<RwLock<FileCache>> = LazyLock::new(|| RwLock::new(FileCache::default()));
@@ -167,9 +172,20 @@ impl StaticFileServer {
         try_files: Option<&str>,
         req: &StaticRequest<'_>,
     ) -> Result<Response<Body>, StatusCode> {
-        let key = format!("{}\0{}\0{}", root_dir, path, try_files.unwrap_or(""));
-
-        let hit = CACHE.read().ok().and_then(|c| c.entries.get(&key).cloned());
+        let hit = KEY.with(|k| {
+            let mut k = k.borrow_mut();
+            k.clear();
+            k.push_str(root_dir);
+            k.push('\0');
+            k.push_str(path);
+            k.push('\0');
+            k.push_str(try_files.unwrap_or(""));
+            CACHE
+                .read()
+                .ok()
+                .and_then(|c| c.entries.get(k.as_str()).cloned())
+        });
+        let key = || format!("{}\0{}\0{}", root_dir, path, try_files.unwrap_or(""));
         if let Some(entry) = hit {
             let age = crate::event::clock::mono_ms()
                 .saturating_sub(entry.checked_at.load(Ordering::Relaxed));
@@ -178,10 +194,19 @@ impl StaticFileServer {
                 return Ok(respond_cached(&entry, req).await);
             }
             if let Ok(mut c) = CACHE.write() {
-                if let Some(old) = c.entries.remove(&key) {
+                if let Some(old) = c.entries.remove(&key()) {
                     c.total_bytes -= old.meta.len;
                 }
             }
+        }
+
+        if !path.is_empty()
+            && !path.ends_with('/')
+            && Path::new(root_dir)
+                .join(path.trim_start_matches('/'))
+                .is_dir()
+        {
+            return Err(StatusCode::MOVED_PERMANENTLY);
         }
 
         let loaded = load_file(
@@ -198,7 +223,7 @@ impl StaticFileServer {
                 if let Ok(mut c) = CACHE.write() {
                     if c.total_bytes + entry.meta.len <= req.cache.max_total_bytes {
                         c.total_bytes += entry.meta.len;
-                        if let Some(old) = c.entries.insert(key, entry.clone()) {
+                        if let Some(old) = c.entries.insert(key(), entry.clone()) {
                             c.total_bytes -= old.meta.len;
                         }
                     }
@@ -465,10 +490,7 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
     }
 
     let mut resp = Response::new(Body::from(entry.body.clone()));
-    let h = resp.headers_mut();
-    meta.apply(h);
-    h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len));
-    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    *resp.headers_mut() = entry.full_headers.clone();
     mark_sendfile(&mut resp, &entry.file_path, 0, meta.len);
     resp
 }
@@ -613,8 +635,13 @@ fn load_file(
     let contents = std::fs::read(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut meta = meta;
     meta.len = contents.len() as u64;
+    let mut full_headers = HeaderMap::with_capacity(8);
+    meta.apply(&mut full_headers);
+    full_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len));
+    full_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     Ok(Loaded::Cacheable(Box::new(CachedFile {
         body: Bytes::from(contents),
+        full_headers,
         meta,
         file_path,
         checked_at: AtomicU64::new(crate::event::clock::mono_ms()),
