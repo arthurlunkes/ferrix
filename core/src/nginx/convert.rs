@@ -335,6 +335,12 @@ impl Converter {
                     self.converted(d, "virou http.worker_cpu_affinity");
                 }
                 "error_log" => self.convert_error_log(d),
+                "worker_shutdown_timeout" => {
+                    if let Some(v) = d.arg(0).and_then(parse_time_ms) {
+                        self.config.http.shutdown_timeout_ms = v;
+                    }
+                    self.converted(d, "virou http.shutdown_timeout_ms");
+                }
                 "stream" => self.convert_stream(d),
                 "load_module" | "pid" | "user" | "daemon" => {
                     self.report.note(
@@ -492,6 +498,12 @@ impl Converter {
                     }
                 }
                 "ssl_preread" => {}
+                "preread_timeout" => extra.preread_timeout_ms = item.arg(0).and_then(parse_time_ms),
+                "proxy_responses" => {
+                    extra.proxy_responses = item.arg(0).and_then(|v| v.parse().ok())
+                }
+                "proxy_requests" => extra.proxy_requests = item.arg(0).and_then(|v| v.parse().ok()),
+                "proxy_half_close" => extra.half_close = item.arg(0) == Some("on"),
                 "proxy_protocol" => send_pp = item.arg(0) == Some("on"),
                 "allow" => extra.allowed_ips.extend(item.arg(0).map(String::from)),
                 "deny" => extra.denied_ips.extend(item.arg(0).map(String::from)),
@@ -515,6 +527,7 @@ impl Converter {
                 "proxy_ssl" => proxy_ssl = item.arg(0) == Some("on"),
                 "proxy_ssl_verify" => up_tls.verify = item.arg(0) == Some("on"),
                 "proxy_ssl_name" => up_tls.settings.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_crl" => up_tls.settings.crl = item.arg(0).map(String::from),
                 "proxy_ssl_trusted_certificate" => {
                     up_tls.settings.trusted_ca = item.arg(0).map(String::from)
                 }
@@ -951,6 +964,11 @@ impl Converter {
                 }
             }
             "error_log" => self.convert_error_log(d),
+            "ssl_protocols"
+            | "ssl_ciphers"
+            | "ssl_session_tickets"
+            | "ssl_session_ticket_key"
+            | "ssl_early_data" => self.apply_tls_setting(d),
             "access_log" => match d.arg(0) {
                 Some("off") => self.converted(d, "sem log em arquivo"),
                 Some(path) if path.starts_with("syslog:") => {
@@ -1007,6 +1025,11 @@ impl Converter {
             }
             "gzip_comp_level" | "brotli_comp_level" => {
                 let level = d.arg(0).and_then(|v| v.parse::<u32>().ok()).unwrap_or(5);
+                if d.name == "gzip_comp_level" {
+                    self.config.http.compression.gzip_level = Some(level.clamp(1, 9) as u8);
+                } else {
+                    self.config.http.compression.brotli_level = Some(level.min(11) as u8);
+                }
                 self.config.http.compression.level = match level {
                     0..=3 => crate::config::CompressionLevel::Fastest,
                     4..=6 => crate::config::CompressionLevel::Default,
@@ -1052,6 +1075,35 @@ impl Converter {
                 if let Some(v) = d.arg(0).and_then(parse_time_ms) {
                     self.config.http.keepalive_timeout_ms = v;
                 }
+            }
+            "keepalive_requests" => {
+                if let Some(v) = d.arg(0).and_then(|v| v.parse().ok()) {
+                    self.config.http.keepalive_requests = v;
+                }
+                self.converted(d, "virou http.keepalive_requests");
+            }
+            "keepalive_time" => {
+                if let Some(v) = d.arg(0).and_then(parse_time_ms) {
+                    self.config.http.keepalive_time_ms = v;
+                }
+                self.converted(d, "virou http.keepalive_time_ms");
+            }
+            "max_ranges" => {
+                self.config.http.max_ranges = d.arg(0).and_then(|v| v.parse().ok());
+                self.converted(d, "virou http.max_ranges");
+            }
+            "etag" => {
+                self.config.http.etag = d.arg(0) != Some("off");
+                self.converted(d, "virou http.etag");
+            }
+            "if_modified_since" => {
+                use crate::config::IfModifiedSince;
+                self.config.http.if_modified_since = match d.arg(0) {
+                    Some("off") => IfModifiedSince::Off,
+                    Some("before") => IfModifiedSince::Before,
+                    _ => IfModifiedSince::Exact,
+                };
+                self.converted(d, "virou http.if_modified_since");
             }
             "proxy_connect_timeout" => {
                 if let Some(v) = d.arg(0).and_then(parse_time_ms) {
@@ -1377,6 +1429,9 @@ impl Converter {
         let mut client_verify = crate::config::ClientVerify::Off;
         let mut client_ca: Option<String> = None;
         let mut ocsp_file: Option<String> = None;
+        let mut key_password_file: Option<String> = None;
+        let mut crl: Option<String> = None;
+        let mut reject_handshake = false;
 
         let mut server_gzip: Option<bool> = None;
         let mut error_pages: Vec<&Directive> = Vec::new();
@@ -1401,6 +1456,23 @@ impl Converter {
                     self.converted(item, "virou tls.verify_client");
                 }
                 "ssl_stapling_file" => ocsp_file = item.arg(0).map(String::from),
+                "ssl_password_file" => {
+                    key_password_file = item.arg(0).map(String::from);
+                    self.converted(item, "virou tls.key_password_file");
+                }
+                "ssl_crl" => {
+                    crl = item.arg(0).map(String::from);
+                    self.converted(item, "virou tls.crl");
+                }
+                "ssl_reject_handshake" => {
+                    reject_handshake = item.arg(0) == Some("on");
+                    self.converted(item, "virou tls.reject_handshake");
+                }
+                "ssl_protocols"
+                | "ssl_ciphers"
+                | "ssl_session_tickets"
+                | "ssl_session_ticket_key"
+                | "ssl_early_data" => self.apply_tls_setting(item),
                 "ssl_stapling" | "ssl_stapling_verify" => self.converted(
                     item,
                     "o Ferrix grampeia a resposta OCSP de tls.ocsp_file (ssl_stapling_file); \
@@ -1586,6 +1658,9 @@ impl Converter {
                     verify_client: client_verify,
                     client_ca: client_ca.clone(),
                     ocsp_file: ocsp_file.clone(),
+                    key_password_file: key_password_file.clone(),
+                    crl: crl.clone(),
+                    reject_handshake,
                 });
                 if saw_ssl_listen {
                     self.report.note(
@@ -1784,6 +1859,55 @@ impl Converter {
         route.path_prefix = "/".to_string();
         route.match_type = RouteMatchType::PrefixLiteral;
         Some(route)
+    }
+
+    fn apply_tls_setting(&mut self, d: &Directive) {
+        let tls = &mut self.config.http.tls;
+        match d.name.as_str() {
+            "ssl_protocols" => {
+                let kept: Vec<String> = d
+                    .args
+                    .iter()
+                    .filter(|a| crate::tls::settings::protocol_version(a).is_some())
+                    .cloned()
+                    .collect();
+                if kept.is_empty() {
+                    return self.note_unsupported(d);
+                }
+                tls.protocols = kept;
+                self.converted(d, "virou http.tls.protocols (só TLSv1.2 e TLSv1.3 existem)");
+            }
+            "ssl_ciphers" => {
+                let mut kept: Vec<String> = Vec::new();
+                for c in d.arg(0).unwrap_or("").split(':') {
+                    if let Some(name) = crate::tls::settings::canonical_cipher(c) {
+                        if !kept.iter().any(|k| k == name) {
+                            kept.push(name.to_string());
+                        }
+                    }
+                }
+                if kept.is_empty() {
+                    return self.converted(
+                        d,
+                        "nenhuma cifra da lista existe no Ferrix; ficam as cifras padrão (AEAD modernas)",
+                    );
+                }
+                tls.ciphers = kept;
+                self.converted(d, "virou http.tls.ciphers (só as cifras AEAD suportadas)");
+            }
+            "ssl_session_tickets" => {
+                tls.session_tickets = d.arg(0) != Some("off");
+                self.converted(d, "virou http.tls.session_tickets");
+            }
+            "ssl_session_ticket_key" => {
+                tls.session_ticket_key = d.arg(0).map(String::from);
+                self.converted(d, "virou http.tls.session_ticket_key");
+            }
+            _ => {
+                tls.early_data = d.arg(0) == Some("on");
+                self.converted(d, "virou http.tls.early_data (0-RTT só no HTTP/3)");
+            }
+        }
     }
 
     fn convert_error_log(&mut self, d: &Directive) {
@@ -2204,7 +2328,7 @@ impl Converter {
                         ),
                     },
                 },
-                "mirror_request_body" => {}
+                "mirror_request_body" => route.mirror_request_body = item.arg(0) != Some("off"),
                 "limit_rate" | "limit_rate_after" => {
                     if let Some(v) = item.arg(0).and_then(parse_size) {
                         if item.name == "limit_rate" {
@@ -2230,6 +2354,7 @@ impl Converter {
                 "proxy_ssl_certificate_key" => upstream_tls.client_key = item.arg(0).map(String::from),
                 "proxy_ssl_trusted_certificate" => upstream_tls.trusted_ca = item.arg(0).map(String::from),
                 "proxy_ssl_name" => upstream_tls.server_name = item.arg(0).map(String::from),
+                "proxy_ssl_crl" => upstream_tls.crl = item.arg(0).map(String::from),
                 "proxy_ssl_verify" => upstream_verify = Some(item.arg(0) == Some("on")),
                 "proxy_ssl_server_name" | "proxy_ssl_session_reuse" | "proxy_ssl_protocols" => {}
                 "internal" => route.internal = true,
@@ -2390,6 +2515,59 @@ impl Converter {
                     }
                 }
                 "ssi" => route.ssi = item.arg(0) == Some("on"),
+                "ssi_silent_errors" => route.ssi_silent_errors = item.arg(0) == Some("on"),
+                "ssi_last_modified" => route.ssi_last_modified = item.arg(0) == Some("on"),
+                "autoindex_format" => {
+                    use crate::config::AutoindexFormat;
+                    route.autoindex_format = match item.arg(0) {
+                        Some("json") | Some("jsonp") => AutoindexFormat::Json,
+                        Some("xml") => AutoindexFormat::Xml,
+                        _ => AutoindexFormat::Html,
+                    };
+                }
+                "autoindex_exact_size" => {
+                    route.autoindex_exact_size = item.arg(0) != Some("off")
+                }
+                "autoindex_localtime" => route.autoindex_localtime = item.arg(0) == Some("on"),
+                "disable_symlinks" => {
+                    route.disable_symlinks = item.arg(0).is_some_and(|v| v != "off");
+                    self.converted(item, "virou disable_symlinks: true");
+                }
+                "proxy_store" => match item.arg(0) {
+                    Some("off") | None => {}
+                    Some("on") => route.proxy_store = route.static_root.clone(),
+                    Some(path) if !path.contains('$') => {
+                        route.proxy_store = Some(path.to_string())
+                    }
+                    Some(_) => self.note_unsupported(item),
+                },
+                "auth_delay" => {
+                    let ms = item.arg(0).and_then(parse_time_ms).unwrap_or(0);
+                    match route.basic_auth.as_mut() {
+                        Some(b) => b.delay_ms = ms,
+                        None => self.note_unsupported(item),
+                    }
+                }
+                "limit_req_dry_run" => {
+                    if let Some(r) = route.rate_limit.as_mut() {
+                        r.dry_run = item.arg(0) == Some("on");
+                    }
+                }
+                "limit_conn_dry_run" => {
+                    if let Some(r) = route.limit_conn.as_mut() {
+                        r.dry_run = item.arg(0) == Some("on");
+                    }
+                }
+                "image_filter_sharpen" => {
+                    route.image_filter.get_or_insert_with(Default::default).sharpen =
+                        item.arg(0).and_then(|v| v.parse().ok()).unwrap_or(0);
+                }
+                "image_filter_transparency" => {
+                    route
+                        .image_filter
+                        .get_or_insert_with(Default::default)
+                        .transparency = item.arg(0) != Some("off");
+                }
                 "ssi_types" => route.ssi_types = item.args.clone(),
                 "empty_gif" => {
                     route.empty_gif = true;
@@ -2992,6 +3170,7 @@ impl Converter {
             delay,
             status: 429,
             retry_after: None,
+            dry_run: false,
         })
     }
 
@@ -3015,6 +3194,7 @@ impl Converter {
         Some(LimitConnConfig {
             max_connections: max,
             status: 429,
+            dry_run: false,
         })
     }
 
@@ -3087,15 +3267,12 @@ impl Converter {
             }
         }
 
-        const RUSTLS_PERMANENT_DEFAULTS: [&str; 8] = [
-            "ssl_protocols",
-            "ssl_ciphers",
+        const RUSTLS_PERMANENT_DEFAULTS: [&str; 5] = [
             "ssl_prefer_server_ciphers",
             "ssl_ecdh_curve",
             "ssl_dhparam",
             "ssl_session_cache",
             "ssl_session_timeout",
-            "ssl_session_tickets",
         ];
         if RUSTLS_PERMANENT_DEFAULTS.contains(&d.name.as_str()) {
             self.report.ignored(
@@ -3205,7 +3382,7 @@ fn reason_for(name: &str) -> String {
         "limit_req_status" | "limit_conn_status" | "limit_req_log_level" => {
             "o Ferrix responde 429; o código ainda não é configurável pela importação"
         }
-        "keepalive_requests" | "client_body_buffer_size" | "large_client_header_buffers" => {
+        "client_body_buffer_size" | "large_client_header_buffers" => {
             "ajuste fino de buffer que o Ferrix administra sozinho"
         }
         _ => "não há equivalente no Ferrix",
@@ -4640,25 +4817,28 @@ mod tests {
     }
 
     #[test]
-    fn ssl_ciphers_reports_a_permanent_limitation_not_a_future_phase() {
+    fn tls_settings_are_converted() {
         let r = convert(
-            r#"http { server {
+            r#"http {
+                ssl_protocols TLSv1 TLSv1.2 TLSv1.3;
+                ssl_session_tickets off;
+                server {
                 listen 443 ssl;
                 ssl_certificate /a.pem;
                 ssl_certificate_key /a.key;
-                ssl_ciphers HIGH:!aNULL;
+                ssl_password_file /a.pass;
+                ssl_crl /a.crl;
+                ssl_ciphers ECDHE-RSA-AES256-GCM-SHA384:DES-CBC3-SHA:!aNULL;
                 location / { proxy_pass http://x:1; }
             } }"#,
         );
-        let note = r
-            .report
-            .notes
-            .iter()
-            .find(|n| n.directive == "ssl_ciphers")
-            .expect("nota esperada");
-        assert_eq!(note.level, NoteLevel::Ignored);
-        assert!(!note.reason.contains("próxima fase"));
-        assert!(note.reason.contains("definitiva"));
+        let tls = &r.config.http.tls;
+        assert_eq!(tls.protocols, vec!["TLSv1.2", "TLSv1.3"]);
+        assert_eq!(tls.ciphers, vec!["TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"]);
+        assert!(!tls.session_tickets);
+        let v = r.config.vhosts[0].tls.as_ref().unwrap();
+        assert_eq!(v.key_password_file.as_deref(), Some("/a.pass"));
+        assert_eq!(v.crl.as_deref(), Some("/a.crl"));
     }
 
     #[test]

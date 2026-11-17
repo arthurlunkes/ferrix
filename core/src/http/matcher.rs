@@ -253,6 +253,8 @@ fn route_needs_full_path(route: &RouteRule) -> bool {
         || !route.proxy_pass_request_headers
         || !route.proxy_pass_request_body
         || route.internal
+        || route.proxy_store.is_some()
+        || route.post_action.is_some()
         || !route.error_redirects.is_empty()
 }
 

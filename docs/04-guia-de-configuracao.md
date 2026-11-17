@@ -20,6 +20,30 @@ vhosts:
 
 ---
 
+
+## One file or a folder per kind
+
+Everything can live in `ferrix.yaml`. On a server with many sites it is easier to keep only the core settings there (`http`, `admin`, `logging`, `acme`, `metrics`, `real_ip`) and one file per item in folders next to it:
+
+```
+/etc/ferrix/
+├── ferrix.yaml            # core settings
+├── sites/                 # one virtual host per file
+│   ├── example.com.yaml
+│   └── api.example.com.yaml
+├── upstreams/             # one upstream per file
+│   └── backend.yaml
+└── streams/               # TCP/UDP proxies
+    └── postgres.yaml
+```
+
+- `ferrix split-config` (or `ferrix -c /etc/ferrix/ferrix.yaml split-config`) converts an existing single file; the old one is kept as `ferrix.yaml.bak`.
+- Ferrix reads the folders whenever one of them exists; nothing has to be declared. `ferrix reload` picks up new, changed and removed files.
+- A site file is the virtual host itself (`id`, `server_names`, `routes`...), a list of them, or `vhosts: [...]`. An upstream file is `name: {targets: ...}`. A stream file is one entry of `streams`.
+- To park a site without deleting it, add `enabled: false` at the top and wrap it: `enabled: false` + `vhosts: [ {...} ]`. There is no `sites-available` / `sites-enabled` pair.
+- Saving from the dashboard or the API rewrites only the files that changed, one per site (`sites/<id>.yaml`); disabled files are left alone.
+- `ferrix convert-config /etc/ferrix/ferrix.yaml /tmp/all.yaml` writes everything back as one file.
+
 ## 🌐 Virtual Hosts (Sites)
 
 Each Virtual Host represents a server block (equivalent to an Nginx `server { ... }` block).
@@ -229,7 +253,7 @@ http:
       - image/svg+xml
 ```
 
-The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`. A route can override the global switch with `compression: true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
+The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`; `gzip_level` (1-9, nginx `gzip_comp_level`), `brotli_level` (0-11) and `zstd_level` (1-22) set an exact level per algorithm. A route can override the global switch with `compression: true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
 
 ## 📁 Static files: caching and ranges
 
@@ -370,6 +394,17 @@ http:
 
 `ferrix import` converts the matching nginx directives (`worker_processes`, `worker_cpu_affinity`, `events { worker_connections }`, `worker_rlimit_nofile`, `server_tokens`) automatically.
 
+### Connection limits and graceful shutdown
+
+| Field | nginx | Meaning |
+|---|---|---|
+| `keepalive_requests` | `keepalive_requests` | Requests served on one keep-alive connection before it is closed (default 1000, 0 = no limit). |
+| `keepalive_time_ms` | `keepalive_time` | Maximum lifetime of a keep-alive connection (default 1 h, 0 = no limit). |
+| `etag` | `etag` | `false` stops sending `ETag` for static files (and ignores `If-None-Match`). |
+| `if_modified_since` | `if_modified_since` | `exact` (default): 304 only when the date equals the file's; `before`: also when the file is older; `off`: ignore the header. |
+| `max_ranges` | `max_ranges` | Byte ranges allowed per request; `0` disables ranges, `1` disables multipart answers. |
+| `shutdown_timeout_ms` | `worker_shutdown_timeout` | On `ferrix stop` / SIGTERM, Ferrix stops keeping connections alive and waits up to this long (default 30 s) for requests in flight; `0` exits at once. |
+
 ### Access log in a file (`http.access_log`)
 
 Equivalent to nginx `log_format` + `access_log`. Works with metrics on or off; routes with `access_log: false` are skipped.
@@ -411,6 +446,25 @@ logging:
 | `http` | `url`, `batch_size`, `flush_ms`, `headers` | POSTs NDJSON batches; send it to Vector/Fluent Bit/Loki/ClickHouse/Elastic (a database through its HTTP ingest) |
 
 When `logging.access.targets` is set it replaces `http.access_log`. The in-memory log (dashboard, `/api/logs`) stays controlled by `metrics.enabled`. Changes apply on reload. `ferrix import` converts `error_log` (file, stderr, syslog, level) and `access_log syslog:...`.
+
+### More nginx options
+
+| Field | nginx | Where |
+|---|---|---|
+| `autoindex_format: html\|json\|xml`, `autoindex_exact_size`, `autoindex_localtime` | same names | static route with `autoindex: true` |
+| `disable_symlinks: true` | `disable_symlinks on` | static route: 403 when the path crosses a symbolic link |
+| `rate_limit.dry_run`, `limit_conn.dry_run` | `limit_req_dry_run`, `limit_conn_dry_run` | vhost or route: the excess is logged (`warn`) and let through |
+| `basic_auth.delay_ms` | `auth_delay` | wait before the 401, to slow down password guessing |
+| `mirror_request_body: false` | `mirror_request_body off` | mirrors are sent without the body (default: with it, buffered) |
+| `post_action: http://host:port` | `post_action` | fire-and-forget call after each request, same method and path |
+| `proxy_store: /dir` | `proxy_store` | every 200 answer to a GET is also written to `/dir/<path>` (at most 64 MB each) |
+| `ssi_silent_errors`, `ssi_last_modified` | same names | routes with `ssi: true` |
+| `image_filter.sharpen`, `image_filter.transparency` | `image_filter_sharpen`, `image_filter_transparency` | `interlace` and `webp_quality` are not available (the encoder has no such modes) |
+| stream `access_log`, `half_close`, `preread_timeout_ms`, `proxy_requests`, `proxy_responses` | `access_log`, `proxy_half_close`, `preread_timeout`, `proxy_requests`, `proxy_responses` | `streams[]`; session lines go to `logging.access.targets` |
+
+Extra variables for `map`, `if`, `set` and proxy headers: `$time_local`, `$time_iso8601`, `$msec`, `$server_name`, `$server_port`, `$server_protocol`, `$request`, `$remote_user`, `$hostname`, `$pid`, `$nginx_version`. `$status`, `$request_time` and `$upstream_addr` only exist once the answer is ready, so they stay access-log variables.
+
+Not ported: `add_trailer`, `early_hints`, `proxy_ignore_client_abort` and `memcached_next_upstream`.
 
 ### Sticky sessions (`upstreams.<name>.sticky`)
 
@@ -474,7 +528,7 @@ routes:
 
 ### FastCGI, SCGI and uwsgi (`target_type: cgi`)
 
-nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept the nginx variables used by `fastcgi_params` (`$document_root`, `$realpath_root`, `$fastcgi_script_name`, `$fastcgi_path_info`, `$query_string`, `$request_method`, `$request_uri`, `$scheme`, `$https`, `$server_name`, `$server_port`, `$remote_addr`, `$content_type`, `$content_length`, `$http_*`), so an imported `include fastcgi_params;` works as is. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
+nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept the nginx variables used by `fastcgi_params` (`$document_root`, `$realpath_root`, `$fastcgi_script_name`, `$fastcgi_path_info`, `$query_string`, `$request_method`, `$request_uri`, `$scheme`, `$https`, `$server_name`, `$server_port`, `$remote_addr`, `$content_type`, `$content_length`, `$http_*`), so an imported `include fastcgi_params;` works as is. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB). `proxy_read_timeout_ms` is the longest silence allowed between two reads from the backend, not a limit on the whole answer. With several targets, a request that was already sent is only repeated on the next one when its method is idempotent (GET, HEAD, PUT, DELETE...), never a POST.
 
 ```yaml
 routes:
@@ -576,6 +630,34 @@ vhosts:
 ```
 
 `on` answers 400 without a valid certificate; `optional` lets the request through and `$ssl_client_verify` says `SUCCESS` or `NONE`. Variables for `proxy_set_headers`: `$ssl_client_verify`, `$ssl_client_s_dn`, `$ssl_client_i_dn`, `$ssl_client_escaped_cert`. Vhosts sharing a port share one trust list (the union of their CAs). Changing `verify_client` or `client_ca` takes effect after a restart.
+
+Encrypted keys, revocation and refused names (per virtual host):
+
+```yaml
+tls:
+  cert_path: /etc/ferrix/site.pem
+  key_path: /etc/ferrix/site.key              # "BEGIN ENCRYPTED PRIVATE KEY" (PKCS#8)
+  key_password_file: /etc/ferrix/site.pass     # ssl_password_file: one password per line
+  crl: /etc/ferrix/clients.crl                 # ssl_crl: revoked client certificates (with verify_client)
+# a vhost that refuses the TLS handshake for its names (ssl_reject_handshake); no certificate needed:
+tls: { reject_handshake: true }
+```
+
+A legacy `Proc-Type: 4,ENCRYPTED` key must be converted once: `openssl pkcs8 -topk8 -v2 aes-256-cbc -in old.key -out new.key`. For backends, `upstreams.<name>.tls.crl` is nginx `proxy_ssl_crl`.
+
+Protocols, ciphers and session tickets apply to every HTTPS port (`http.tls`, restart to apply):
+
+```yaml
+http:
+  tls:
+    protocols: [TLSv1.3]                       # ssl_protocols; only TLSv1.2 and TLSv1.3 exist
+    ciphers: [ECDHE-RSA-AES256-GCM-SHA384]     # ssl_ciphers; OpenSSL or IANA names, AEAD suites only
+    session_tickets: true                      # ssl_session_tickets
+    session_ticket_key: /etc/ferrix/ticket.key # ssl_session_ticket_key: openssl rand 80 > ticket.key
+    early_data: false                          # ssl_early_data: 0-RTT, HTTP/3 only
+```
+
+Not available: `ssl_ocsp` (live OCSP checks of client certificates; use `crl`), 0-RTT over TCP, TLS 1.0/1.1 and CBC suites.
 
 OCSP stapling: `tls.ocsp_file: /etc/ferrix/site.ocsp` (nginx `ssl_stapling_file`) staples that DER OCSP response; refresh the file (e.g. `openssl ocsp ... -respout`) and run `ferrix reload`. Ferrix does not query OCSP responders itself (Let's Encrypt no longer runs one).
 

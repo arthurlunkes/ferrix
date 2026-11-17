@@ -73,11 +73,42 @@ async fn run_tcp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
         let acl = acl.clone();
         let per_ip = per_ip.clone();
         tokio::spawn(async move {
+            let started = std::time::Instant::now();
             let r = handle_tcp(&engine, &stream, client, addr, acceptor, &acl, &per_ip).await;
+            if stream.access_log {
+                session_log(&engine, &stream, addr, "TCP", r.is_ok(), started.elapsed());
+            }
             if let Err(e) = r {
                 debug!(stream = %stream.id, client = %addr, "tcp session ended: {}", e);
             }
         });
+    }
+}
+
+fn session_log(
+    engine: &ProxyEngine,
+    stream: &StreamConfig,
+    addr: SocketAddr,
+    protocol: &str,
+    ok: bool,
+    took: Duration,
+) {
+    let cfg = engine.store.config();
+    if cfg.logging.access.targets.is_empty() {
+        return;
+    }
+    let line = format!(
+        "{} [{}] {} {} {:.3} stream={} upstream={}",
+        addr.ip(),
+        chrono::Local::now().format("%d/%b/%Y:%H:%M:%S %z"),
+        protocol,
+        if ok { 200 } else { 502 },
+        took.as_secs_f64(),
+        stream.id,
+        stream.pass.as_deref().unwrap_or(&stream.upstream),
+    );
+    for t in &cfg.logging.access.targets {
+        crate::log_sink::send(t, 6, line.clone());
     }
 }
 
@@ -155,7 +186,14 @@ async fn handle_tcp(
     let upstream_name = if stream.sni_routes.is_empty() {
         stream.upstream.clone()
     } else {
-        let name = preread_sni(&client, connect_timeout).await;
+        let name = preread_sni(
+            &client,
+            stream
+                .preread_timeout_ms
+                .map(Duration::from_millis)
+                .unwrap_or(connect_timeout),
+        )
+        .await;
         crate::net::sni::lookup(&stream.sni_routes, name.as_deref())
             .cloned()
             .unwrap_or_else(|| stream.upstream.clone())
@@ -186,7 +224,7 @@ async fn handle_tcp(
 
     if let Some(dest) = &stream.pass {
         let upstream = connect_upstream(stream, dest, connect_timeout, addr, local).await?;
-        return pipe(client_io, upstream, idle, rates)
+        return pipe(client_io, upstream, idle, rates, stream.half_close)
             .await
             .map_err(|e| e.to_string());
     }
@@ -200,7 +238,7 @@ async fn handle_tcp(
                     .health_checker
                     .mark_success(&upstream_name, &target.url, 0.0);
                 engine.pool_manager.inc_conn(&target.url);
-                let r = pipe(client_io, upstream, idle, rates).await;
+                let r = pipe(client_io, upstream, idle, rates, stream.half_close).await;
                 engine.pool_manager.dec_conn(&target.url);
                 return r.map_err(|e| e.to_string());
             }
@@ -277,6 +315,7 @@ async fn pipe(
     upstream: Box<dyn Io>,
     idle: Duration,
     (upload_rate, download_rate): (u64, u64),
+    half_close: bool,
 ) -> std::io::Result<()> {
     let (cr, cw) = tokio::io::split(client);
     let (ur, uw) = tokio::io::split(upstream);
@@ -295,6 +334,21 @@ async fn pipe(
             }
         }
     };
+    if !half_close {
+        tokio::pin!(up, down);
+        let grace = Duration::from_secs(1);
+        return tokio::select! {
+            r = &mut up => {
+                let _ = tokio::time::timeout(grace, &mut down).await;
+                r
+            }
+            r = &mut down => {
+                let _ = tokio::time::timeout(grace, &mut up).await;
+                r
+            }
+            _ = watchdog => Ok(()),
+        };
+    }
     tokio::select! {
         r = async { tokio::try_join!(up, down).map(|_| ()) } => r,
         _ = watchdog => Ok(()),
@@ -337,6 +391,8 @@ async fn copy_half(
 struct UdpSession {
     upstream: Arc<UdpSocket>,
     last_seen: Arc<std::sync::atomic::AtomicU64>,
+    requests: u32,
+    pending: Arc<std::sync::atomic::AtomicI64>,
 }
 
 async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Result<()> {
@@ -389,32 +445,61 @@ async fn run_udp(engine: Arc<ProxyEngine>, stream: &StreamConfig) -> std::io::Re
             ));
             let (reply_up, reply_sock, reply_seen) =
                 (upstream.clone(), socket.clone(), last_seen.clone());
-            tokio::spawn(async move {
-                let mut rbuf = vec![0u8; 64 * 1024];
-                loop {
-                    match tokio::time::timeout(idle, reply_up.recv(&mut rbuf)).await {
-                        Ok(Ok(m)) => {
-                            reply_seen.store(
-                                crate::event::clock::mono_ms(),
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
-                            let _ = reply_sock.send_to(&rbuf[..m], client).await;
+            let pending = Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let (reply_pending, limited) = (pending.clone(), stream.proxy_responses.is_some());
+            let reply_sessions = sessions.clone();
+            if stream.proxy_responses != Some(0) {
+                tokio::spawn(async move {
+                    let mut rbuf = vec![0u8; 64 * 1024];
+                    loop {
+                        match tokio::time::timeout(idle, reply_up.recv(&mut rbuf)).await {
+                            Ok(Ok(m)) => {
+                                reply_seen.store(
+                                    crate::event::clock::mono_ms(),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                let _ = reply_sock.send_to(&rbuf[..m], client).await;
+                                if limited
+                                    && reply_pending
+                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                                        <= 1
+                                {
+                                    reply_sessions.lock().await.remove(&client);
+                                    return;
+                                }
+                            }
+                            _ => return,
                         }
-                        _ => return,
                     }
-                }
-            });
+                });
+            }
+            if stream.access_log {
+                session_log(&engine, stream, client, "UDP", true, Duration::ZERO);
+            }
             e.insert(UdpSession {
                 upstream,
                 last_seen,
+                requests: 0,
+                pending,
             });
         }
-        if let Some(s) = map.get(&client) {
+        let mut done = false;
+        if let Some(s) = map.get_mut(&client) {
             s.last_seen.store(
                 crate::event::clock::mono_ms(),
                 std::sync::atomic::Ordering::Relaxed,
             );
+            s.requests += 1;
+            if let Some(per) = stream.proxy_responses {
+                s.pending
+                    .fetch_add(per as i64, std::sync::atomic::Ordering::Relaxed);
+            }
             let _ = s.upstream.send(&buf[..n]).await;
+            done = stream.proxy_responses == Some(0)
+                || stream.proxy_requests.is_some_and(|max| s.requests >= max);
+        }
+        if done && stream.proxy_responses.is_none_or(|r| r == 0) {
+            map.remove(&client);
         }
     }
 }
@@ -445,9 +530,15 @@ mod tests {
         tokio::spawn(async move {
             let (c, _) = front.accept().await.unwrap();
             let u = TcpStream::connect(echo_addr).await.unwrap();
-            pipe(Box::new(c), Box::new(u), Duration::from_secs(5), (0, 0))
-                .await
-                .unwrap();
+            pipe(
+                Box::new(c),
+                Box::new(u),
+                Duration::from_secs(5),
+                (0, 0),
+                true,
+            )
+            .await
+            .unwrap();
         });
         let mut client = TcpStream::connect(front_addr).await.unwrap();
         client.write_all(b"hello").await.unwrap();

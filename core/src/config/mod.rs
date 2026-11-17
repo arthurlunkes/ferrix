@@ -1,3 +1,4 @@
+pub mod layout;
 pub mod store;
 pub mod validate;
 
@@ -29,6 +30,57 @@ pub struct FerrixConfig {
     pub streams: Vec<StreamConfig>,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
     pub logging: LoggingConfig,
+}
+
+fn default_keepalive_requests() -> u32 {
+    1000
+}
+fn default_keepalive_time_ms() -> u64 {
+    3_600_000
+}
+fn default_shutdown_timeout_ms() -> u64 {
+    30_000
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IfModifiedSince {
+    Off,
+    #[default]
+    Exact,
+    Before,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsSettings {
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub ciphers: Vec<String>,
+    #[serde(default = "default_true")]
+    pub session_tickets: bool,
+    #[serde(default)]
+    pub session_ticket_key: Option<String>,
+    #[serde(default)]
+    pub early_data: bool,
+}
+
+impl Default for TlsSettings {
+    fn default() -> Self {
+        Self {
+            protocols: Vec::new(),
+            ciphers: Vec::new(),
+            session_tickets: true,
+            session_ticket_key: None,
+            early_data: false,
+        }
+    }
+}
+
+impl TlsSettings {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -148,6 +200,16 @@ pub struct StreamConfig {
     pub return_text: Option<String>,
     #[serde(default)]
     pub pass: Option<String>,
+    #[serde(default)]
+    pub access_log: bool,
+    #[serde(default = "default_true")]
+    pub half_close: bool,
+    #[serde(default)]
+    pub preread_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub proxy_requests: Option<u32>,
+    #[serde(default)]
+    pub proxy_responses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -352,10 +414,26 @@ pub struct HttpConfig {
     #[serde(default)]
     pub cache_store: CacheStoreConfig,
 
+    #[serde(default, skip_serializing_if = "TlsSettings::is_default")]
+    pub tls: TlsSettings,
+
     #[serde(default)]
     pub proxy_forwarded_headers: bool,
     #[serde(default)]
     pub x_accel_redirect: bool,
+
+    #[serde(default = "default_keepalive_requests")]
+    pub keepalive_requests: u32,
+    #[serde(default = "default_keepalive_time_ms")]
+    pub keepalive_time_ms: u64,
+    #[serde(default)]
+    pub max_ranges: Option<usize>,
+    #[serde(default = "default_true")]
+    pub etag: bool,
+    #[serde(default)]
+    pub if_modified_since: IfModifiedSince,
+    #[serde(default = "default_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
 
     #[serde(default)]
     pub underscores_in_headers: bool,
@@ -578,6 +656,12 @@ pub struct CompressionConfig {
     pub algorithms: Vec<CompressionAlgorithm>,
     #[serde(default = "default_compression_types")]
     pub types: Vec<String>,
+    #[serde(default)]
+    pub gzip_level: Option<u8>,
+    #[serde(default)]
+    pub brotli_level: Option<u8>,
+    #[serde(default)]
+    pub zstd_level: Option<u8>,
 }
 
 fn default_compression_min_length() -> u64 {
@@ -618,6 +702,9 @@ impl Default for CompressionConfig {
             min_length: default_compression_min_length(),
             algorithms: default_compression_algorithms(),
             types: default_compression_types(),
+            gzip_level: None,
+            brotli_level: None,
+            zstd_level: None,
         }
     }
 }
@@ -728,8 +815,15 @@ impl Default for HttpConfig {
             default_type: None,
             mime_types: HashMap::new(),
             cache_store: CacheStoreConfig::default(),
+            tls: TlsSettings::default(),
             proxy_forwarded_headers: false,
             x_accel_redirect: false,
+            keepalive_requests: default_keepalive_requests(),
+            keepalive_time_ms: default_keepalive_time_ms(),
+            max_ranges: None,
+            etag: true,
+            if_modified_since: IfModifiedSince::default(),
+            shutdown_timeout_ms: default_shutdown_timeout_ms(),
             underscores_in_headers: false,
             ignore_invalid_headers: true,
             max_header_line_bytes: default_header_line_bytes(),
@@ -865,6 +959,8 @@ pub struct UpstreamTlsConfig {
     pub trusted_ca: Option<String>,
     #[serde(default)]
     pub server_name: Option<String>,
+    #[serde(default)]
+    pub crl: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -947,6 +1043,12 @@ pub struct TlsConfig {
     pub client_ca: Option<String>,
     #[serde(default)]
     pub ocsp_file: Option<String>,
+    #[serde(default)]
+    pub key_password_file: Option<String>,
+    #[serde(default)]
+    pub crl: Option<String>,
+    #[serde(default)]
+    pub reject_handshake: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -984,6 +1086,8 @@ pub struct BasicAuthConfig {
     pub user_file: Option<String>,
     #[serde(default)]
     pub realm: Option<String>,
+    #[serde(default)]
+    pub delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1011,6 +1115,8 @@ pub struct RateLimitConfig {
 
     #[serde(default)]
     pub retry_after: Option<u64>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_limit_status() -> u16 {
@@ -1022,6 +1128,8 @@ pub struct LimitConnConfig {
     pub max_connections: u32,
     #[serde(default = "default_limit_status")]
     pub status: u16,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1074,6 +1182,10 @@ pub struct ImageFilterConfig {
     pub jpeg_quality: u8,
     #[serde(default = "default_image_buffer")]
     pub buffer_bytes: u64,
+    #[serde(default)]
+    pub sharpen: u32,
+    #[serde(default = "default_true")]
+    pub transparency: bool,
 }
 
 fn default_jpeg_quality() -> u8 {
@@ -1092,6 +1204,8 @@ impl Default for ImageFilterConfig {
             rotate: 0,
             jpeg_quality: default_jpeg_quality(),
             buffer_bytes: default_image_buffer(),
+            sharpen: 0,
+            transparency: true,
         }
     }
 }
@@ -1522,6 +1636,34 @@ pub struct RouteRule {
 
     #[serde(default)]
     pub grpc: bool,
+
+    #[serde(default)]
+    pub autoindex_format: AutoindexFormat,
+    #[serde(default = "default_true")]
+    pub autoindex_exact_size: bool,
+    #[serde(default)]
+    pub autoindex_localtime: bool,
+    #[serde(default)]
+    pub disable_symlinks: bool,
+    #[serde(default = "default_true")]
+    pub mirror_request_body: bool,
+    #[serde(default)]
+    pub proxy_store: Option<String>,
+    #[serde(default)]
+    pub post_action: Option<String>,
+    #[serde(default)]
+    pub ssi_silent_errors: bool,
+    #[serde(default)]
+    pub ssi_last_modified: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoindexFormat {
+    #[default]
+    Html,
+    Json,
+    Xml,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1673,6 +1815,15 @@ impl Default for RouteRule {
             memcached: None,
             tunnel: None,
             grpc: false,
+            autoindex_format: AutoindexFormat::Html,
+            autoindex_exact_size: true,
+            autoindex_localtime: false,
+            disable_symlinks: false,
+            mirror_request_body: true,
+            proxy_store: None,
+            post_action: None,
+            ssi_silent_errors: false,
+            ssi_last_modified: false,
         }
     }
 }
@@ -1844,8 +1995,13 @@ impl FerrixConfig {
         let p = path.as_ref();
         let data = std::fs::read_to_string(p)
             .map_err(|e| format!("Failed to read config file {}: {}", p.display(), e))?;
-        Self::parse(&data, ConfigFormat::of(p))
-            .map_err(|e| format!("Invalid config {}: {}", p.display(), e))
+        let mut cfg = Self::parse(&data, ConfigFormat::of(p))
+            .map_err(|e| format!("Invalid config {}: {}", p.display(), e))?;
+        if layout::is_split(p) {
+            layout::merge(&mut cfg, p)?;
+            cfg.resolve_ports();
+        }
+        Ok(cfg)
     }
 
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> Result<ConfigLoad, String> {
@@ -1895,6 +2051,9 @@ impl FerrixConfig {
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let p = path.as_ref();
+        if layout::is_split(p) {
+            return layout::save(self, p);
+        }
         let text = self
             .render(ConfigFormat::of(p))
             .map_err(|e| format!("Failed to serialize config: {}", e))?;

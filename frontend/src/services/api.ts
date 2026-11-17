@@ -111,10 +111,12 @@ export interface RateLimitConfig {
   delay?: number | null;
   status: number;
   retry_after?: number | null;
+  dry_run?: boolean;
 }
 
 export interface LimitConnConfig {
   max_connections: number;
+  dry_run?: boolean;
   status: number;
 }
 
@@ -123,6 +125,7 @@ export interface BasicAuthConfig {
   password: string;
   user_file?: string | null;
   realm?: string | null;
+  delay_ms?: number;
 }
 
 export type Satisfy = "all" | "any";
@@ -162,6 +165,15 @@ export interface RouteRule {
   static_root?: string | null;
   try_files?: string | null;
   autoindex?: boolean;
+  autoindex_format?: "html" | "json" | "xml";
+  autoindex_exact_size?: boolean;
+  autoindex_localtime?: boolean;
+  disable_symlinks?: boolean;
+  mirror_request_body?: boolean;
+  proxy_store?: string | null;
+  post_action?: string | null;
+  ssi_silent_errors?: boolean;
+  ssi_last_modified?: boolean;
   redirect_url?: string | null;
   redirect_code?: number | null;
   return_body?: string | null;
@@ -279,6 +291,9 @@ export interface TlsConfig {
   verify_client?: ClientVerify;
   client_ca?: string | null;
   ocsp_file?: string | null;
+  key_password_file?: string | null;
+  crl?: string | null;
+  reject_handshake?: boolean;
 }
 
 export interface UpstreamTlsConfig {
@@ -286,6 +301,7 @@ export interface UpstreamTlsConfig {
   client_key?: string | null;
   trusted_ca?: string | null;
   server_name?: string | null;
+  crl?: string | null;
 }
 
 export interface AuthRequestConfig {
@@ -336,6 +352,8 @@ export interface ImageFilterConfig {
   height: number;
   rotate: number;
   jpeg_quality: number;
+  sharpen?: number;
+  transparency?: boolean;
   buffer_bytes: number;
 }
 
@@ -405,6 +423,13 @@ export interface HttpConfig {
   client_header_timeout_ms: number;
   client_body_timeout_ms: number;
   keepalive_timeout_ms: number;
+  compression?: { enabled?: boolean; level?: "fastest" | "default" | "best"; min_length?: number; algorithms?: string[]; types?: string[]; gzip_level?: number | null; brotli_level?: number | null; zstd_level?: number | null };
+  keepalive_requests?: number;
+  keepalive_time_ms?: number;
+  etag?: boolean;
+  if_modified_since?: "off" | "exact" | "before";
+  max_ranges?: number | null;
+  shutdown_timeout_ms?: number;
   proxy_connect_timeout_ms: number;
   proxy_read_timeout_ms: number;
   proxy_send_timeout_ms: number;
@@ -413,6 +438,7 @@ export interface HttpConfig {
   access_log?: AccessLogConfig | null;
   variables?: Record<string, VariableDef>;
   proxy_protocol?: boolean;
+  tls?: { protocols?: string[]; ciphers?: string[]; session_tickets?: boolean; session_ticket_key?: string | null; early_data?: boolean };
   cache_store?: { kind: "memory" | "disk" | "redis"; path?: string | null; max_bytes?: number; url?: string | null; prefix?: string | null };
   proxy_forwarded_headers?: boolean;
   x_accel_redirect?: boolean;
@@ -456,6 +482,11 @@ export interface StreamConfig {
   upload_rate?: number;
   download_rate?: number;
   return_text?: string | null;
+  access_log?: boolean;
+  half_close?: boolean;
+  preread_timeout_ms?: number | null;
+  proxy_requests?: number | null;
+  proxy_responses?: number | null;
   pass?: string | null;
 }
 

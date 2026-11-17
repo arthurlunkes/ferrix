@@ -70,6 +70,7 @@ mod tests {
     fn conn_limiter_blocks_above_the_ceiling() {
         let cl = ConnLimiter::new();
         let cfg = LimitConnConfig {
+            dry_run: false,
             max_connections: 2,
             status: 429,
         };
@@ -87,6 +88,7 @@ mod tests {
     fn conn_guard_releases_the_slot_when_dropped() {
         let cl = ConnLimiter::new();
         let cfg = LimitConnConfig {
+            dry_run: false,
             max_connections: 1,
             status: 429,
         };
@@ -102,6 +104,7 @@ mod tests {
     fn conn_sweep_keeps_active_keys() {
         let cl = ConnLimiter::new();
         let cfg = LimitConnConfig {
+            dry_run: false,
             max_connections: 5,
             status: 429,
         };

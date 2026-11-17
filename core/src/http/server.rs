@@ -32,6 +32,8 @@ pub const SENDFILE_MIN: u64 = 32 * 1024;
 pub struct Settings {
     pub header_timeout: Duration,
     pub keepalive_timeout: Duration,
+    pub keepalive_requests: u32,
+    pub keepalive_time: Duration,
 }
 
 pub enum Outcome {
@@ -50,6 +52,8 @@ pub async fn serve(
     let mut out: Vec<u8> = Vec::new();
     let mut first = true;
     let limits = Limits::from(engine);
+    let mut served: u32 = 0;
+    let opened = std::time::Instant::now();
 
     loop {
         if buf.is_empty() {
@@ -99,7 +103,12 @@ pub async fn serve(
             return Outcome::Handoff(tcp, prefix.freeze());
         }
 
-        let keep_alive = head.keep_alive;
+        served += 1;
+        let _busy = crate::event::drain::begin();
+        let keep_alive = head.keep_alive
+            && (settings.keepalive_requests == 0 || served < settings.keepalive_requests)
+            && !crate::event::drain::draining()
+            && (settings.keepalive_time.is_zero() || opened.elapsed() < settings.keepalive_time);
         let is_head = head.method == Method::HEAD;
         let http10 = head.version == Version::HTTP_10;
 
@@ -926,6 +935,8 @@ mod footprint {
         let settings = super::Settings {
             header_timeout: std::time::Duration::ZERO,
             keepalive_timeout: std::time::Duration::ZERO,
+            keepalive_requests: 0,
+            keepalive_time: std::time::Duration::ZERO,
         };
         let addr = "127.0.0.1:1".parse().unwrap();
         let fut = super::serve(tcp, addr, &engine, 1, &settings);

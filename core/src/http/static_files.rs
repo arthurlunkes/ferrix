@@ -104,6 +104,41 @@ pub struct StaticRequest<'a> {
     pub encoding: Option<(CompressionAlgorithm, &'a CompressionConfig)>,
     pub cache: &'a StaticCacheConfig,
     pub types: MimeTypes<'a>,
+    pub opts: StaticOpts,
+}
+
+#[derive(Clone, Copy)]
+pub struct StaticOpts {
+    pub etag: bool,
+    pub if_modified_since: crate::config::IfModifiedSince,
+    pub max_ranges: Option<usize>,
+}
+
+impl Default for StaticOpts {
+    fn default() -> Self {
+        Self {
+            etag: true,
+            if_modified_since: crate::config::IfModifiedSince::Before,
+            max_ranges: None,
+        }
+    }
+}
+
+impl StaticOpts {
+    pub fn from_http(http: &crate::config::HttpConfig) -> Self {
+        Self {
+            etag: http.etag,
+            if_modified_since: http.if_modified_since,
+            max_ranges: http.max_ranges,
+        }
+    }
+
+    fn finish(&self, mut resp: Response<Body>) -> Response<Body> {
+        if !self.etag {
+            resp.headers_mut().remove(header::ETAG);
+        }
+        resp
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -116,6 +151,17 @@ pub struct StaticFileServer;
 
 impl StaticFileServer {
     pub async fn serve_file(
+        root_dir: &str,
+        path: &str,
+        try_files: Option<&str>,
+        req: &StaticRequest<'_>,
+    ) -> Result<Response<Body>, StatusCode> {
+        Self::serve_file_inner(root_dir, path, try_files, req)
+            .await
+            .map(|r| req.opts.finish(r))
+    }
+
+    async fn serve_file_inner(
         root_dir: &str,
         path: &str,
         try_files: Option<&str>,
@@ -174,10 +220,12 @@ enum Conditional {
     Proceed,
 }
 
-fn check_conditional(meta: &FileMeta, headers: &HeaderMap) -> Conditional {
+fn check_conditional(meta: &FileMeta, headers: &HeaderMap, opts: &StaticOpts) -> Conditional {
+    use crate::config::IfModifiedSince;
     if let Some(inm) = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
+        .filter(|_| opts.etag)
     {
         let ours = meta.etag.to_str().unwrap_or("");
         let matches = inm
@@ -197,7 +245,12 @@ fn check_conditional(meta: &FileMeta, headers: &HeaderMap) -> Conditional {
             .and_then(parse_http_date),
         meta.mtime_secs(),
     ) {
-        if mtime <= ims {
+        let hit = match opts.if_modified_since {
+            IfModifiedSince::Off => false,
+            IfModifiedSince::Exact => mtime == ims,
+            IfModifiedSince::Before => mtime <= ims,
+        };
+        if hit {
             return Conditional::NotModified;
         }
     }
@@ -294,7 +347,10 @@ fn multipart_len(meta: &FileMeta, ranges: &[(u64, u64)]) -> u64 {
         + multipart_tail().len() as u64
 }
 
-fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
+fn parse_range(headers: &HeaderMap, meta: &FileMeta, opts: &StaticOpts) -> RangeReq {
+    if opts.max_ranges == Some(0) {
+        return RangeReq::None;
+    }
     let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
         return RangeReq::None;
     };
@@ -319,7 +375,7 @@ fn parse_range(headers: &HeaderMap, meta: &FileMeta) -> RangeReq {
             Some(Some(r)) => ranges.push(r),
             Some(None) => {}
         }
-        if ranges.len() > MAX_RANGES {
+        if ranges.len() > opts.max_ranges.unwrap_or(MAX_RANGES).min(MAX_RANGES) {
             return RangeReq::None;
         }
     }
@@ -362,10 +418,10 @@ fn variant_index(algo: CompressionAlgorithm) -> usize {
 
 async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response<Body> {
     let meta = &entry.meta;
-    if let Conditional::NotModified = check_conditional(meta, req.headers) {
+    if let Conditional::NotModified = check_conditional(meta, req.headers, &req.opts) {
         return not_modified(meta);
     }
-    match parse_range(req.headers, meta) {
+    match parse_range(req.headers, meta, &req.opts) {
         RangeReq::Satisfiable(s, e) => {
             let body = Body::from(entry.body.slice(s as usize..=e as usize));
             let mut resp = partial(meta, s, e, body);
@@ -390,9 +446,8 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
         if meta.len >= cfg.min_length && compress::type_matches(Some(&meta.content_type), cfg) {
             let variant = entry.variants[variant_index(algo)]
                 .get_or_init(|| async {
-                    let level = cfg.level;
                     let data = entry.body.clone();
-                    compress::compress_bytes(data, algo, level)
+                    compress::compress_bytes(data, algo, cfg)
                         .await
                         .ok()
                         .filter(|c| (c.len() as u64) < meta.len)
@@ -433,13 +488,13 @@ async fn respond_large(
     meta: FileMeta,
     req: &StaticRequest<'_>,
 ) -> Result<Response<Body>, StatusCode> {
-    if let Conditional::NotModified = check_conditional(&meta, req.headers) {
+    if let Conditional::NotModified = check_conditional(&meta, req.headers, &req.opts) {
         return Ok(not_modified(&meta));
     }
     let mut file = std::fs::File::open(&path)
         .map(tokio::fs::File::from_std)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match parse_range(req.headers, &meta) {
+    match parse_range(req.headers, &meta, &req.opts) {
         RangeReq::Satisfiable(s, e) => {
             file.seek(SeekFrom::Start(s))
                 .await
@@ -652,7 +707,40 @@ pub async fn flv(root_dir: &str, path: &str, query: Option<&str>) -> Option<Resp
         .ok()
 }
 
-pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>> {
+pub fn has_symlink(root_dir: &str, path: &str) -> bool {
+    let mut p = PathBuf::from(root_dir);
+    for part in path.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        p.push(part);
+        match std::fs::symlink_metadata(&p) {
+            Ok(md) if md.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn human_size(len: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)];
+    for (unit, size) in UNITS {
+        if len >= size {
+            return format!("{}{}", len / size, unit);
+        }
+    }
+    len.to_string()
+}
+
+fn json_escape(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
+}
+
+pub fn autoindex(
+    root_dir: &str,
+    path: &str,
+    uri: &str,
+    route: &crate::config::RouteRule,
+) -> Option<Response<Body>> {
+    use crate::config::AutoindexFormat;
     let base_root = PathBuf::from(root_dir).canonicalize().ok()?;
     let dir = base_root
         .join(path.trim_start_matches('/'))
@@ -669,58 +757,119 @@ pub fn autoindex(root_dir: &str, path: &str, uri: &str) -> Option<Response<Body>
             .ok();
     }
 
-    let mut entries: Vec<(String, bool, u64, String)> = std::fs::read_dir(&dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            if name.starts_with('.') {
-                return None;
-            }
-            let md = e.metadata().ok()?;
-            let mtime = md
-                .modified()
-                .ok()
-                .map(|m| {
-                    let dt: chrono::DateTime<chrono::Utc> = m.into();
-                    dt.format("%d-%b-%Y %H:%M").to_string()
-                })
-                .unwrap_or_default();
-            Some((name, md.is_dir(), md.len(), mtime))
-        })
-        .collect();
+    let mut entries: Vec<(String, bool, u64, Option<chrono::DateTime<chrono::Utc>>)> =
+        std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                if name.starts_with('.') {
+                    return None;
+                }
+                let md = e.metadata().ok()?;
+                let mtime = md
+                    .modified()
+                    .ok()
+                    .map(chrono::DateTime::<chrono::Utc>::from);
+                Some((name, md.is_dir(), md.len(), mtime))
+            })
+            .collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let title = html_escape(uri);
-    let mut html = format!(
-        "<html>\r\n<head><title>Index of {title}</title></head>\r\n<body>\r\n\
-         <h1>Index of {title}</h1><hr><pre><a href=\"../\">../</a>\r\n"
-    );
-    for (name, is_dir, len, mtime) in entries {
-        let shown = if is_dir {
-            format!("{name}/")
-        } else {
-            name.clone()
-        };
-        let href = percent_encode_segment(&shown);
-        let size = if is_dir {
-            "-".to_string()
-        } else {
-            len.to_string()
-        };
-        let pad = 51usize.saturating_sub(shown.chars().count()).max(1);
-        html.push_str(&format!(
-            "<a href=\"{href}\">{}</a>{}{mtime} {size:>19}\r\n",
-            html_escape(&shown),
-            " ".repeat(pad)
-        ));
-    }
-    html.push_str("</pre><hr></body>\r\n</html>\r\n");
+    let stamp = |t: &Option<chrono::DateTime<chrono::Utc>>, fmt: &str| -> String {
+        match t {
+            Some(t) if route.autoindex_localtime => {
+                t.with_timezone(&chrono::Local).format(fmt).to_string()
+            }
+            Some(t) => t.format(fmt).to_string(),
+            None => String::new(),
+        }
+    };
+
+    let (body, content_type) = match route.autoindex_format {
+        AutoindexFormat::Json => {
+            let items: Vec<String> = entries
+                .iter()
+                .map(|(name, is_dir, len, mtime)| {
+                    let m = match mtime {
+                        Some(t) if route.autoindex_localtime => t
+                            .with_timezone(&chrono::Local)
+                            .format("%a, %d %b %Y %H:%M:%S %Z")
+                            .to_string(),
+                        Some(t) => t.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+                        None => String::new(),
+                    };
+                    if *is_dir {
+                        format!(
+                            "{{ \"name\":{}, \"type\":\"directory\", \"mtime\":\"{m}\" }}",
+                            json_escape(name)
+                        )
+                    } else {
+                        format!(
+                            "{{ \"name\":{}, \"type\":\"file\", \"mtime\":\"{m}\", \"size\":{len} }}",
+                            json_escape(name)
+                        )
+                    }
+                })
+                .collect();
+            (format!("[\n{}\n]\n", items.join(",\n")), "application/json")
+        }
+        AutoindexFormat::Xml => {
+            let mut xml = String::from("<?xml version=\"1.0\"?>\n<list>\n");
+            for (name, is_dir, len, mtime) in &entries {
+                let m = stamp(mtime, "%Y-%m-%dT%H:%M:%SZ");
+                if *is_dir {
+                    xml.push_str(&format!(
+                        "<directory mtime=\"{m}\">{}</directory>\n",
+                        html_escape(name)
+                    ));
+                } else {
+                    xml.push_str(&format!(
+                        "<file mtime=\"{m}\" size=\"{len}\">{}</file>\n",
+                        html_escape(name)
+                    ));
+                }
+            }
+            xml.push_str("</list>\n");
+            (xml, "text/xml")
+        }
+        AutoindexFormat::Html => {
+            let title = html_escape(uri);
+            let mut html = format!(
+                "<html>\r\n<head><title>Index of {title}</title></head>\r\n<body>\r\n\
+                 <h1>Index of {title}</h1><hr><pre><a href=\"../\">../</a>\r\n"
+            );
+            for (name, is_dir, len, mtime) in &entries {
+                let shown = if *is_dir {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                };
+                let href = percent_encode_segment(&shown);
+                let size = if *is_dir {
+                    "-".to_string()
+                } else if route.autoindex_exact_size {
+                    len.to_string()
+                } else {
+                    human_size(*len)
+                };
+                let mtime = stamp(mtime, "%d-%b-%Y %H:%M");
+                let pad = 51usize.saturating_sub(shown.chars().count()).max(1);
+                html.push_str(&format!(
+                    "<a href=\"{href}\">{}</a>{}{mtime} {size:>19}\r\n",
+                    html_escape(&shown),
+                    " ".repeat(pad)
+                ));
+            }
+            html.push_str("</pre><hr></body>\r\n</html>\r\n");
+            (html, "text/html; charset=utf-8")
+        }
+    };
 
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(html))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
         .ok()
 }
 
@@ -782,6 +931,7 @@ mod tests {
             encoding: None,
             cache: &StaticCacheConfig::default(),
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         StaticFileServer::serve_file(root, path, None, &req)
             .await
@@ -814,6 +964,7 @@ mod tests {
             encoding: None,
             cache: &limits,
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/big.txt", None, &req)
             .await
@@ -844,6 +995,48 @@ mod tests {
         assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     }
 
+    #[test]
+    fn autoindex_json_and_symlinks() {
+        let d = dir_with("a.txt", "abc");
+        let route = crate::config::RouteRule {
+            autoindex_format: crate::config::AutoindexFormat::Json,
+            ..Default::default()
+        };
+        let r = autoindex(d.root(), "/", "/", &route).unwrap();
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        assert_eq!(human_size(3 << 20), "3M");
+        assert!(!has_symlink(d.root(), "/a.txt"));
+        #[cfg(unix)]
+        {
+            let link = PathBuf::from(d.root()).join("l.txt");
+            std::os::unix::fs::symlink(PathBuf::from(d.root()).join("a.txt"), &link).unwrap();
+            assert!(has_symlink(d.root(), "/l.txt"));
+        }
+    }
+
+    #[tokio::test]
+    async fn etag_and_ranges_can_be_turned_off() {
+        let d = dir_with("o.txt", "0123456789");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,3-4"));
+        let req = StaticRequest {
+            headers: &headers,
+            encoding: None,
+            cache: &StaticCacheConfig::default(),
+            types: MimeTypes::default(),
+            opts: StaticOpts {
+                etag: false,
+                if_modified_since: crate::config::IfModifiedSince::Off,
+                max_ranges: Some(1),
+            },
+        };
+        let r = StaticFileServer::serve_file(d.root(), "/o.txt", None, &req)
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(!r.headers().contains_key(header::ETAG));
+    }
+
     #[tokio::test]
     async fn precompressed_variant_is_served() {
         let text = "compress me ".repeat(500);
@@ -858,6 +1051,7 @@ mod tests {
             encoding: Some((CompressionAlgorithm::Gzip, &cfg)),
             cache: &StaticCacheConfig::default(),
             types: MimeTypes::default(),
+            opts: StaticOpts::default(),
         };
         let r = StaticFileServer::serve_file(d.root(), "/c.txt", None, &req)
             .await
@@ -876,19 +1070,19 @@ mod tests {
     fn autoindex_lists_directory() {
         let d = dir_with("a&b.txt", "hi");
         std::fs::create_dir(d.0.join("sub")).unwrap();
-        let r = autoindex(d.root(), "/", "/").unwrap();
+        let r = autoindex(d.root(), "/", "/", &Default::default()).unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        let r = autoindex(d.root(), "/sub", "/sub").unwrap();
+        let r = autoindex(d.root(), "/sub", "/sub", &Default::default()).unwrap();
         assert_eq!(r.status(), StatusCode::MOVED_PERMANENTLY);
-        assert!(autoindex(d.root(), "/a&b.txt", "/a&b.txt").is_none());
-        assert!(autoindex(d.root(), "/../", "/../").is_none());
+        assert!(autoindex(d.root(), "/a&b.txt", "/a&b.txt", &Default::default()).is_none());
+        assert!(autoindex(d.root(), "/../", "/../", &Default::default()).is_none());
     }
 
     #[tokio::test]
     async fn autoindex_html_escapes_and_sorts_dirs_first() {
         let d = dir_with("a&b.txt", "hi");
         std::fs::create_dir(d.0.join("zdir")).unwrap();
-        let r = autoindex(d.root(), "/", "/").unwrap();
+        let r = autoindex(d.root(), "/", "/", &Default::default()).unwrap();
         let body = r.into_body().collect().await.unwrap().to_bytes();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("href=\"a%26b.txt\">a&amp;b.txt</a>"));
