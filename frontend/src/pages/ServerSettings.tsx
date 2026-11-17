@@ -327,6 +327,95 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         <LogTargetsEditor value={accLog.targets ?? []} onChange={(t) => setLogging({ access: { ...accLog, targets: t } })} />
       </Section>
 
+      <Section title="Workers and protocols" hint="worker_processes, worker_connections, worker_rlimit_nofile, server_tokens; workers and protocols apply after a restart">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Field label="Worker threads">
+            <Input type="number" value={http.worker_threads} onChange={(e) => setHttp({ worker_threads: parseInt(e.target.value) || 1 })} mono />
+          </Field>
+          <Field label="Connections per worker">
+            <Input type="number" value={http.worker_connections ?? 4096} onChange={(e) => setHttp({ worker_connections: parseInt(e.target.value) || 1 })} mono />
+          </Field>
+          <Field label="Open files limit" hint="empty = system default">
+            <Input type="number" value={http.worker_rlimit_nofile ?? ""} onChange={(e) => setHttp({ worker_rlimit_nofile: e.target.value ? parseInt(e.target.value) : null })} mono />
+          </Field>
+          <Field label="CPU affinity" hint='"off", "auto" or 0,2,4'>
+            <Input
+              value={Array.isArray(http.worker_cpu_affinity) ? http.worker_cpu_affinity.join(",") : http.worker_cpu_affinity ?? "off"}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setHttp({ worker_cpu_affinity: /^[\d,\s]+$/.test(v) ? v.split(/[\s,]+/).filter(Boolean).map(Number) : v });
+              }}
+              mono
+            />
+          </Field>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          {(["http1", "http2", "http3"] as const).map((p) => (
+            <Toggle
+              key={p}
+              checked={(http.protocols ?? ["http1", "http2"]).includes(p)}
+              onChange={(on) => {
+                const cur = http.protocols ?? ["http1", "http2"];
+                setHttp({ protocols: on ? [...cur.filter((x) => x !== p), p] : cur.filter((x) => x !== p) });
+              }}
+              label={p.toUpperCase().replace("HTTP", "HTTP/")}
+            />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Toggle checked={http.server_tokens !== false} onChange={(v) => setHttp({ server_tokens: v })} label="Show the version (server_tokens)" />
+          <Toggle checked={http.default_page !== false} onChange={(v) => setHttp({ default_page: v })} label="Welcome page for unknown hosts" />
+          <Toggle checked={!!http.request_id} onChange={(v) => setHttp({ request_id: v })} label="X-Request-Id on every request" />
+        </div>
+      </Section>
+
+      <Section title="Request validation" hint="underscores_in_headers, ignore_invalid_headers, large_client_header_buffers, allowed methods">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="Max header line (bytes)">
+            <Input type="number" value={http.max_header_line_bytes ?? 8192} onChange={(e) => setHttp({ max_header_line_bytes: parseInt(e.target.value) || 8192 })} mono />
+          </Field>
+          <Field label="Allowed methods" hint="empty = GET HEAD POST PUT DELETE PATCH OPTIONS CONNECT">
+            <Input value={(http.allowed_methods ?? []).join(" ")} onChange={(e) => { const m = e.target.value.toUpperCase().split(/[\s,]+/).filter(Boolean); setHttp({ allowed_methods: m.length ? m : null }); }} mono className="text-xs" />
+          </Field>
+        </div>
+        <Toggle checked={!!http.underscores_in_headers} onChange={(v) => setHttp({ underscores_in_headers: v })} label="Accept headers with _ in the name" />
+        <Toggle checked={http.ignore_invalid_headers !== false} onChange={(v) => setHttp({ ignore_invalid_headers: v })} label="Ignore invalid header lines (off = 400)" />
+      </Section>
+
+      <Section title="Static files" hint="In-memory cache, default_type and extra MIME types">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Field label="Cache files up to (bytes)" hint="0 = cache off">
+            <Input type="number" value={http.static_cache?.max_file_bytes ?? 1048576} onChange={(e) => setHttp({ static_cache: { max_total_bytes: http.static_cache?.max_total_bytes ?? 67108864, max_file_bytes: parseInt(e.target.value) || 0 } })} mono />
+          </Field>
+          <Field label="Cache total (bytes)">
+            <Input type="number" value={http.static_cache?.max_total_bytes ?? 67108864} onChange={(e) => setHttp({ static_cache: { max_file_bytes: http.static_cache?.max_file_bytes ?? 1048576, max_total_bytes: parseInt(e.target.value) || 0 } })} mono />
+          </Field>
+          <Field label="default_type" hint="unknown extensions and return bodies">
+            <Input value={http.default_type ?? ""} placeholder="text/plain" onChange={(e) => setHttp({ default_type: e.target.value || null })} mono className="text-xs" />
+          </Field>
+        </div>
+        <Field label="Extra MIME types (extension → type)">
+          <KeyValueEditor value={http.mime_types ?? {}} onChange={(v) => setHttp({ mime_types: v })} keyPlaceholder="webmanifest" valuePlaceholder="application/manifest+json" />
+        </Field>
+      </Section>
+
+      <Section title="Let's Encrypt account (acme)" hint="Used by virtual hosts with tls.acme on">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="E-mail">
+            <Input value={draft.acme?.email ?? ""} onChange={(e) => setDraft({ ...draft, acme: { ...draft.acme, email: e.target.value || null } })} mono className="text-xs" />
+          </Field>
+          <Field label="Directory URL">
+            <Input value={draft.acme?.directory_url ?? "https://acme-v02.api.letsencrypt.org/directory"} onChange={(e) => setDraft({ ...draft, acme: { ...draft.acme, directory_url: e.target.value } })} mono className="text-xs" />
+          </Field>
+          <Field label="Storage folder">
+            <Input value={draft.acme?.storage_dir ?? "./acme"} onChange={(e) => setDraft({ ...draft, acme: { ...draft.acme, storage_dir: e.target.value } })} mono className="text-xs" />
+          </Field>
+          <Field label="Renew days before expiry">
+            <Input type="number" value={draft.acme?.renew_before_days ?? 30} onChange={(e) => setDraft({ ...draft, acme: { ...draft.acme, renew_before_days: parseInt(e.target.value) || 30 } })} mono />
+          </Field>
+        </div>
+      </Section>
+
       <Section
         title="Compression (gzip, brotli, zstd)"
         hint="Negotiated from Accept-Encoding; a route can override the switch"

@@ -165,6 +165,8 @@ export interface RouteRule {
   static_root?: string | null;
   try_files?: string | null;
   autoindex?: boolean;
+  cors?: CorsConfig | null;
+  compression?: boolean | null;
   autoindex_format?: "html" | "json" | "xml";
   autoindex_exact_size?: boolean;
   autoindex_localtime?: boolean;
@@ -449,6 +451,36 @@ export interface HttpConfig {
   geoip?: { country_db?: string | null; city_db?: string | null; asn_db?: string | null } | null;
   http2?: Record<string, number | null>;
   http3?: Record<string, number | null>;
+  worker_cpu_affinity?: string | number[];
+  worker_connections?: number;
+  worker_rlimit_nofile?: number | null;
+  server_tokens?: boolean;
+  default_page?: boolean;
+  request_id?: boolean;
+  protocols?: ("http1" | "http2" | "http3")[];
+  static_cache?: { max_file_bytes: number; max_total_bytes: number };
+  default_type?: string | null;
+  mime_types?: Record<string, string>;
+  underscores_in_headers?: boolean;
+  ignore_invalid_headers?: boolean;
+  max_header_line_bytes?: number;
+  allowed_methods?: string[] | null;
+}
+
+export interface CorsConfig {
+  allow_origins?: string[];
+  allow_methods?: string[];
+  allow_headers?: string[];
+  expose_headers?: string[];
+  allow_credentials?: boolean;
+  max_age_secs?: number | null;
+}
+
+export interface AcmeConfig {
+  email?: string | null;
+  directory_url?: string;
+  storage_dir?: string;
+  renew_before_days?: number;
 }
 
 export interface AccessLogConfig {
@@ -509,6 +541,8 @@ export interface FerrixConfig {
   upstreams: Record<string, UpstreamConfig>;
   vhosts: VirtualHost[];
   streams?: StreamConfig[];
+  acme?: AcmeConfig;
+  metrics?: { enabled: boolean };
 }
 
 export type IssueSeverity = "error" | "warning";

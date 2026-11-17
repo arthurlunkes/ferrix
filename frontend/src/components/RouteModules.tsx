@@ -301,6 +301,37 @@ export const RouteModulesEditor: React.FC<{ route: RouteRule; onChange: Patch }>
         <Toggle checked={route.mirror_request_body !== false} onChange={(v) => onChange({ mirror_request_body: v })} label="Send the request body too (mirror_request_body)" />
       </Section>
 
+      <Section
+        title="CORS"
+        hint="Answers preflight OPTIONS and adds Access-Control-* headers"
+        enabled={!!route.cors}
+        onToggle={(on) => onChange({ cors: on ? { allow_origins: ["*"], allow_methods: [], allow_headers: [], expose_headers: [], allow_credentials: false, max_age_secs: null } : null })}
+      >
+        {route.cors && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {(["allow_origins", "allow_methods", "allow_headers", "expose_headers"] as const).map((k) => (
+              <Field key={k} label={k} hint="space or comma separated">
+                <Input value={(route.cors![k] ?? []).join(" ")} onChange={(e) => onChange({ cors: { ...route.cors!, [k]: e.target.value.split(/[\s,]+/).filter(Boolean) } })} mono className="text-xs" />
+              </Field>
+            ))}
+            <Field label="max_age_secs">
+              <Input type="number" value={route.cors.max_age_secs ?? ""} onChange={(e) => onChange({ cors: { ...route.cors!, max_age_secs: e.target.value ? parseInt(e.target.value) : null } })} mono />
+            </Field>
+            <Toggle checked={!!route.cors.allow_credentials} onChange={(v) => onChange({ cors: { ...route.cors!, allow_credentials: v } })} label="allow_credentials" />
+          </div>
+        )}
+      </Section>
+
+      <Section title="Compression for this route">
+        <Field label="Compression" className="w-56">
+          <Select value={route.compression == null ? "inherit" : route.compression ? "on" : "off"} onChange={(e) => onChange({ compression: e.target.value === "inherit" ? null : e.target.value === "on" })}>
+            <option value="inherit">server setting</option>
+            <option value="on">on</option>
+            <option value="off">off</option>
+          </Select>
+        </Field>
+      </Section>
+
       <Section title="After the request (post_action, proxy_store)">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="post_action" hint="base URL called after each request">
