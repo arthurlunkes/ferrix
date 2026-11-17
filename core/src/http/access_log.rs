@@ -50,6 +50,44 @@ pub fn enabled(cfg: &crate::config::FerrixConfig) -> bool {
     !cfg.logging.access.targets.is_empty() || cfg.http.access_log.is_some()
 }
 
+pub fn rejected(
+    cfg: &crate::config::FerrixConfig,
+    ip: std::net::IpAddr,
+    request_line: &str,
+    status: u16,
+) {
+    let req: String = request_line
+        .chars()
+        .take(2048)
+        .map(|c| if c == '"' || c.is_control() { '?' } else { c })
+        .collect();
+    let time = chrono::Local::now().format("%d/%b/%Y:%H:%M:%S %z");
+    let json = cfg.logging.access.format == "json" && !cfg.logging.access.targets.is_empty();
+    let line = if json {
+        serde_json::json!({
+            "remote_addr": ip.to_string(),
+            "time_iso8601": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            "request": req,
+            "status": status.to_string(),
+            "body_bytes_sent": "0",
+        })
+        .to_string()
+    } else {
+        format!("{ip} - - [{time}] \"{req}\" {status} 0 \"-\" \"-\"")
+    };
+    if cfg.logging.access.targets.is_empty() {
+        if let Some(al) = &cfg.http.access_log {
+            if let Some(tx) = writer_for(&al.path) {
+                let _ = tx.send(format!("{line}\n"));
+            }
+        }
+        return;
+    }
+    for t in &cfg.logging.access.targets {
+        crate::log_sink::send(t, 6, line.clone());
+    }
+}
+
 pub fn emit(cfg: &crate::config::FerrixConfig, log: &RequestLog, extra: &Extra<'_>) {
     let access = &cfg.logging.access;
     if access.targets.is_empty() {
