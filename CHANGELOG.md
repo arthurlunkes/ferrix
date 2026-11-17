@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
 ### Added
 - Request hardening like nginx: ambiguous requests (`Content-Length` + `Transfer-Encoding`, duplicate `Host`), unknown methods, underscores in header names and oversized header lines are refused; HTTP/0.9 works.
 - Static files: percent-encoded paths, directory redirects, multipart byte ranges, HTML error pages, `default_type` / `mime_types`, `etag`, `if_modified_since`, `max_ranges`.
@@ -20,11 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `autoindex_format` (html/json/xml), `disable_symlinks`, dry-run limits, `proxy_store`, `post_action`, mirrors with the request body, SSI and stream options, more variables.
 - Configuration split in folders: `sites/`, `upstreams/`, `streams/` next to `ferrix.yaml` (`ferrix split-config`).
 - Exact compression levels (`gzip_level`, `brotli_level`, `zstd_level`).
+- Dashboard: workers and protocols, request validation, static files, Let's Encrypt account, logging, TLS, compression, connection limits; CORS and compression per route.
+
+### Changed
+- Proxied requests carry only the headers in `proxy_set_headers` and `Host` is the upstream name, like nginx; `http.proxy_forwarded_headers: true` restores the automatic `X-Forwarded-*` headers.
+- `if_modified_since` defaults to `exact` and keep-alive connections close after 1000 requests (`keepalive_requests`), like nginx.
+- `ferrix stop` waits up to 30 s (`shutdown_timeout_ms`) for requests in flight.
 
 ### Fixed
 - FastCGI: nginx variables in imported `fastcgi_param` lines are expanded; read timeout applies between reads; a sent POST is not repeated on another target.
 - nginx import: relative `include` inside an included file resolves from the configuration root.
 - Requests in flight are no longer cut on `ferrix stop` / SIGTERM.
+- Requests refused while parsing (400/405) are written to the access log.
 - Compression (zstd, brotli, gzip) negotiated from `Accept-Encoding`, with static files compressed once and cached.
 - `ETag` / `Last-Modified` revalidation (`304`) and single byte ranges (`206`) for static files.
 - Several TLS certificates per port, chosen by SNI and reloaded on config changes.
