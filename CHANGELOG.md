@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Request hardening like nginx: ambiguous requests (`Content-Length` + `Transfer-Encoding`, duplicate `Host`), unknown methods, underscores in header names and oversized header lines are refused; HTTP/0.9 works.
+- Static files: percent-encoded paths, directory redirects, multipart byte ranges, HTML error pages, `default_type` / `mime_types`, `etag`, `if_modified_since`, `max_ranges`.
+- Proxy parity with nginx: only `proxy_set_headers` are sent, `Host` is the upstream name, normalized paths, `proxy_hide_headers`, `proxy_pass_headers`, `proxy_method`, `proxy_set_body`.
+- htpasswd files and hashed passwords for basic auth; `auth_delay`.
+- Named routes (`@name`), `internal` routes, `error_page` redirects and `try_files` fallbacks.
+- Cache rules (`key`, `valid_by_status`, `methods`, `min_uses`, `no_cache`, `bypass`) and disk / Redis cache stores.
+- `logging`: error and access log destinations (file with rotation, syslog, HTTP, stdout/stderr, off) and JSON format.
+- TLS: `http.tls` (protocols, ciphers, session tickets, fixed ticket key), encrypted private keys, client and upstream CRLs, `reject_handshake`.
+- `keepalive_requests`, `keepalive_time_ms` and graceful shutdown (`shutdown_timeout_ms`).
+- `autoindex_format` (html/json/xml), `disable_symlinks`, dry-run limits, `proxy_store`, `post_action`, mirrors with the request body, SSI and stream options, more variables.
+- Configuration split in folders: `sites/`, `upstreams/`, `streams/` next to `ferrix.yaml` (`ferrix split-config`).
+- Exact compression levels (`gzip_level`, `brotli_level`, `zstd_level`).
+
+### Fixed
+- FastCGI: nginx variables in imported `fastcgi_param` lines are expanded; read timeout applies between reads; a sent POST is not repeated on another target.
+- nginx import: relative `include` inside an included file resolves from the configuration root.
+- Requests in flight are no longer cut on `ferrix stop` / SIGTERM.
 - Compression (zstd, brotli, gzip) negotiated from `Accept-Encoding`, with static files compressed once and cached.
 - `ETag` / `Last-Modified` revalidation (`304`) and single byte ranges (`206`) for static files.
 - Several TLS certificates per port, chosen by SNI and reloaded on config changes.

@@ -107,8 +107,16 @@ pub fn should_compress<B>(resp: &Response<B>, cfg: &CompressionConfig) -> bool {
     type_matches(h.get(header::CONTENT_TYPE), cfg)
 }
 
-fn level(algo: CompressionAlgorithm, level: CompressionLevel) -> Level {
-    match level {
+fn level(algo: CompressionAlgorithm, cfg: &CompressionConfig) -> Level {
+    let exact = match algo {
+        CompressionAlgorithm::Gzip => cfg.gzip_level.map(|l| l.clamp(1, 9)),
+        CompressionAlgorithm::Br => cfg.brotli_level.map(|l| l.min(11)),
+        CompressionAlgorithm::Zstd => cfg.zstd_level.map(|l| l.clamp(1, 22)),
+    };
+    if let Some(l) = exact {
+        return Level::Precise(l as i32);
+    }
+    match cfg.level {
         CompressionLevel::Fastest => Level::Fastest,
         CompressionLevel::Best => Level::Best,
         CompressionLevel::Default => Level::Precise(match algo {
@@ -138,7 +146,7 @@ pub fn mark_encoded(headers: &mut HeaderMap, algo: CompressionAlgorithm) {
 pub fn compress(
     resp: Response<Body>,
     algo: CompressionAlgorithm,
-    lvl: CompressionLevel,
+    cfg: &CompressionConfig,
 ) -> Response<Body> {
     let (mut parts, body) = resp.into_parts();
     parts.extensions.remove::<crate::http::server::SendFile>();
@@ -146,7 +154,7 @@ pub fn compress(
     mark_encoded(&mut parts.headers, algo);
 
     let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    let lvl = level(algo, lvl);
+    let lvl = level(algo, cfg);
     let body = match algo {
         #[cfg(feature = "brotli")]
         CompressionAlgorithm::Br => {
@@ -164,10 +172,10 @@ pub fn compress(
 pub async fn compress_bytes(
     data: Bytes,
     algo: CompressionAlgorithm,
-    lvl: CompressionLevel,
+    cfg: &CompressionConfig,
 ) -> std::io::Result<Bytes> {
     use tokio::io::AsyncReadExt;
-    let lvl = level(algo, lvl);
+    let lvl = level(algo, cfg);
     let reader = std::io::Cursor::new(data);
     let reader = tokio::io::BufReader::new(reader);
     let mut out = Vec::new();
@@ -272,7 +280,11 @@ mod tests {
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         resp.headers_mut()
             .insert(header::ETAG, HeaderValue::from_static("\"abc\""));
-        let out = compress(resp, CompressionAlgorithm::Gzip, CompressionLevel::Default);
+        let out = compress(
+            resp,
+            CompressionAlgorithm::Gzip,
+            &CompressionConfig::default(),
+        );
         assert_eq!(out.headers()[header::CONTENT_ENCODING], "gzip");
         assert_eq!(out.headers()[header::ETAG], "W/\"abc\"");
         assert!(out.headers().get(header::CONTENT_LENGTH).is_none());

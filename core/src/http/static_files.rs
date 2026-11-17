@@ -446,9 +446,8 @@ async fn respond_cached(entry: &CachedFile, req: &StaticRequest<'_>) -> Response
         if meta.len >= cfg.min_length && compress::type_matches(Some(&meta.content_type), cfg) {
             let variant = entry.variants[variant_index(algo)]
                 .get_or_init(|| async {
-                    let level = cfg.level;
                     let data = entry.body.clone();
-                    compress::compress_bytes(data, algo, level)
+                    compress::compress_bytes(data, algo, cfg)
                         .await
                         .ok()
                         .filter(|c| (c.len() as u64) < meta.len)

@@ -1025,6 +1025,11 @@ impl Converter {
             }
             "gzip_comp_level" | "brotli_comp_level" => {
                 let level = d.arg(0).and_then(|v| v.parse::<u32>().ok()).unwrap_or(5);
+                if d.name == "gzip_comp_level" {
+                    self.config.http.compression.gzip_level = Some(level.clamp(1, 9) as u8);
+                } else {
+                    self.config.http.compression.brotli_level = Some(level.min(11) as u8);
+                }
                 self.config.http.compression.level = match level {
                     0..=3 => crate::config::CompressionLevel::Fastest,
                     4..=6 => crate::config::CompressionLevel::Default,

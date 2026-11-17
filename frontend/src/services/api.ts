@@ -423,6 +423,7 @@ export interface HttpConfig {
   client_header_timeout_ms: number;
   client_body_timeout_ms: number;
   keepalive_timeout_ms: number;
+  compression?: { enabled?: boolean; level?: "fastest" | "default" | "best"; min_length?: number; algorithms?: string[]; types?: string[]; gzip_level?: number | null; brotli_level?: number | null; zstd_level?: number | null };
   keepalive_requests?: number;
   keepalive_time_ms?: number;
   etag?: boolean;

@@ -680,8 +680,11 @@ impl ProxyEngine {
             match upstream::cgi::call(cfg.protocol, &addr, &params, &body, connect, read).await {
                 Ok(r) => return r,
                 Err(e) => {
-                    warn!(backend = %addr, error = %e, "CGI backend failed");
-                    last = e;
+                    warn!(backend = %addr, error = %e.message, "CGI backend failed");
+                    last = e.message;
+                    if e.sent && !parts.method.is_idempotent() {
+                        break;
+                    }
                 }
             }
         }

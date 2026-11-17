@@ -253,7 +253,7 @@ http:
       - image/svg+xml
 ```
 
-The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`. A route can override the global switch with `compression: true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
+The encoding is negotiated from `Accept-Encoding` in the order of `algorithms`. `level` is `fastest`, `default` or `best`; `gzip_level` (1-9, nginx `gzip_comp_level`), `brotli_level` (0-11) and `zstd_level` (1-22) set an exact level per algorithm. A route can override the global switch with `compression: true|false`. Static files are compressed once and kept in memory (like `gzip_static`), so repeated requests cost no CPU. Proxied responses are compressed on the fly.
 
 ## 📁 Static files: caching and ranges
 
@@ -528,7 +528,7 @@ routes:
 
 ### FastCGI, SCGI and uwsgi (`target_type: cgi`)
 
-nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept the nginx variables used by `fastcgi_params` (`$document_root`, `$realpath_root`, `$fastcgi_script_name`, `$fastcgi_path_info`, `$query_string`, `$request_method`, `$request_uri`, `$scheme`, `$https`, `$server_name`, `$server_port`, `$remote_addr`, `$content_type`, `$content_length`, `$http_*`), so an imported `include fastcgi_params;` works as is. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB).
+nginx `fastcgi_pass` / `scgi_pass` / `uwsgi_pass` (PHP-FPM, Python apps...). `pass` is `host:port`, `unix:/path.sock` or an upstream name (its live targets are tried in order). Ferrix sends the standard `fastcgi_params` (`SCRIPT_FILENAME` = root + script, `PATH_INFO` split at `.php/`, `HTTP_*` headers...); `params` add or override entries and accept the nginx variables used by `fastcgi_params` (`$document_root`, `$realpath_root`, `$fastcgi_script_name`, `$fastcgi_path_info`, `$query_string`, `$request_method`, `$request_uri`, `$scheme`, `$https`, `$server_name`, `$server_port`, `$remote_addr`, `$content_type`, `$content_length`, `$http_*`), so an imported `include fastcgi_params;` works as is. The request body is buffered (up to `client_max_body_size`) and so is the reply (up to 64 MB). `proxy_read_timeout_ms` is the longest silence allowed between two reads from the backend, not a limit on the whole answer. With several targets, a request that was already sent is only repeated on the next one when its method is idempotent (GET, HEAD, PUT, DELETE...), never a POST.
 
 ```yaml
 routes:

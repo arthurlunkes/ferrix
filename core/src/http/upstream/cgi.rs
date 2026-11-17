@@ -75,11 +75,18 @@ pub fn fastcgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     out
 }
 
-async fn fastcgi_read(io: &mut (dyn Io + '_)) -> std::io::Result<Vec<u8>> {
+fn timed_out() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream timed out")
+}
+
+async fn fastcgi_read(io: &mut (dyn Io + '_), idle: Duration) -> std::io::Result<Vec<u8>> {
     let mut stdout = Vec::new();
     loop {
         let mut h = [0u8; 8];
-        match io.read_exact(&mut h).await {
+        match tokio::time::timeout(idle, io.read_exact(&mut h))
+            .await
+            .map_err(|_| timed_out())?
+        {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(stdout),
             Err(e) => return Err(e),
@@ -87,7 +94,9 @@ async fn fastcgi_read(io: &mut (dyn Io + '_)) -> std::io::Result<Vec<u8>> {
         let len = u16::from_be_bytes([h[4], h[5]]) as usize;
         let pad = h[6] as usize;
         let mut content = vec![0u8; len + pad];
-        io.read_exact(&mut content).await?;
+        tokio::time::timeout(idle, io.read_exact(&mut content))
+            .await
+            .map_err(|_| timed_out())??;
         content.truncate(len);
         match h[1] {
             FCGI_STDOUT => {
@@ -132,9 +141,12 @@ pub fn scgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn uwsgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
+pub fn uwsgi_request(params: &[(String, String)], body: &[u8]) -> Option<Vec<u8>> {
     let mut vars = Vec::new();
     for (k, v) in params {
+        if k.len() > u16::MAX as usize || v.len() > u16::MAX as usize {
+            return None;
+        }
         vars.extend((k.len() as u16).to_le_bytes());
         vars.extend(k.as_bytes());
         vars.extend((v.len() as u16).to_le_bytes());
@@ -142,10 +154,13 @@ pub fn uwsgi_request(params: &[(String, String)], body: &[u8]) -> Vec<u8> {
     }
     let mut out = vec![0];
     out.extend((vars.len() as u16).to_le_bytes());
+    if vars.len() > u16::MAX as usize {
+        return None;
+    }
     out.push(0);
     out.extend(vars);
     out.extend(body);
-    out
+    Some(out)
 }
 
 pub fn parse_reply(raw: &[u8]) -> Result<Response<Body>, String> {
@@ -203,6 +218,12 @@ pub fn parse_reply(raw: &[u8]) -> Result<Response<Body>, String> {
     Ok(resp)
 }
 
+#[derive(Debug)]
+pub struct CallError {
+    pub sent: bool,
+    pub message: String,
+}
+
 pub async fn call(
     protocol: CgiProtocol,
     addr: &str,
@@ -210,35 +231,53 @@ pub async fn call(
     body: &[u8],
     connect_timeout: Duration,
     read_timeout: Duration,
-) -> Result<Response<Body>, String> {
-    let mut io = connect(addr, connect_timeout)
-        .await
-        .map_err(|e| format!("{addr}: {e}"))?;
+) -> Result<Response<Body>, CallError> {
+    let early = |message: String| CallError {
+        sent: false,
+        message,
+    };
+    let late = |message: String| CallError {
+        sent: true,
+        message,
+    };
     let req = match protocol {
         CgiProtocol::Fastcgi => fastcgi_request(params, body),
         CgiProtocol::Scgi => scgi_request(params, body),
-        CgiProtocol::Uwsgi => uwsgi_request(params, body),
+        CgiProtocol::Uwsgi => uwsgi_request(params, body)
+            .ok_or_else(|| early("uwsgi request headers are larger than 64 KB".into()))?,
     };
-    let exchange = async {
+    let mut io = connect(addr, connect_timeout)
+        .await
+        .map_err(|e| early(format!("{addr}: {e}")))?;
+    tokio::time::timeout(read_timeout, async {
         io.write_all(&req).await?;
-        io.flush().await?;
-        match protocol {
-            CgiProtocol::Fastcgi => fastcgi_read(&mut *io).await,
-            _ => {
-                let mut out = Vec::new();
-                (&mut io)
-                    .take(MAX_REPLY as u64)
-                    .read_to_end(&mut out)
-                    .await?;
-                Ok(out)
+        io.flush().await
+    })
+    .await
+    .map_err(|_| late("upstream timed out".into()))?
+    .map_err(|e| late(e.to_string()))?;
+    let raw = match protocol {
+        CgiProtocol::Fastcgi => fastcgi_read(&mut *io, read_timeout).await,
+        _ => {
+            let mut out = Vec::new();
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                match tokio::time::timeout(read_timeout, io.read(&mut buf)).await {
+                    Err(_) => break Err(timed_out()),
+                    Ok(Err(e)) => break Err(e),
+                    Ok(Ok(0)) => break Ok(out),
+                    Ok(Ok(n)) => {
+                        out.extend_from_slice(&buf[..n]);
+                        if out.len() > MAX_REPLY {
+                            break Err(std::io::Error::other("reply too large"));
+                        }
+                    }
+                }
             }
         }
-    };
-    let raw = tokio::time::timeout(read_timeout, exchange)
-        .await
-        .map_err(|_| "upstream timed out".to_string())?
-        .map_err(|e| e.to_string())?;
-    parse_reply(&raw)
+    }
+    .map_err(|e| late(e.to_string()))?;
+    parse_reply(&raw).map_err(late)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -503,7 +542,7 @@ mod tests {
         );
         assert_eq!(
             uwsgi_request(&p, b""),
-            vec![0, 6, 0, 0, 1, 0, b'A', 1, 0, b'b']
+            Some(vec![0, 6, 0, 0, 1, 0, b'A', 1, 0, b'b'])
         );
         let f = fastcgi_request(&p, b"");
         assert_eq!(&f[..8], &[1, FCGI_BEGIN, 0, 1, 0, 8, 0, 0]);
