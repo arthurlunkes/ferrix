@@ -273,6 +273,29 @@ async fn async_main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::SplitConfig) => {
+            let path = args.config.clone();
+            let done = FerrixConfig::load(&path).and_then(|c| {
+                let mut backup = path.as_os_str().to_owned();
+                backup.push(".bak");
+                std::fs::copy(&path, &backup).map_err(|e| e.to_string())?;
+                ferrix::config::layout::save(&c, &path)
+            });
+            match done {
+                Ok(()) => {
+                    println!(
+                        "✔ {} now holds the core settings; sites/, upstreams/ and streams/ \
+                         were written next to it (previous file kept as .bak)",
+                        path.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("ferrix: {}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(Commands::ConvertConfig { ref from, ref to }) => {
             match FerrixConfig::load(from).and_then(|c| c.save_to_file(to)) {
                 Ok(()) => {

@@ -20,6 +20,30 @@ vhosts:
 
 ---
 
+
+## One file or a folder per kind
+
+Everything can live in `ferrix.yaml`. On a server with many sites it is easier to keep only the core settings there (`http`, `admin`, `logging`, `acme`, `metrics`, `real_ip`) and one file per item in folders next to it:
+
+```
+/etc/ferrix/
+├── ferrix.yaml            # core settings
+├── sites/                 # one virtual host per file
+│   ├── example.com.yaml
+│   └── api.example.com.yaml
+├── upstreams/             # one upstream per file
+│   └── backend.yaml
+└── streams/               # TCP/UDP proxies
+    └── postgres.yaml
+```
+
+- `ferrix split-config` (or `ferrix -c /etc/ferrix/ferrix.yaml split-config`) converts an existing single file; the old one is kept as `ferrix.yaml.bak`.
+- Ferrix reads the folders whenever one of them exists; nothing has to be declared. `ferrix reload` picks up new, changed and removed files.
+- A site file is the virtual host itself (`id`, `server_names`, `routes`...), a list of them, or `vhosts: [...]`. An upstream file is `name: {targets: ...}`. A stream file is one entry of `streams`.
+- To park a site without deleting it, add `enabled: false` at the top and wrap it: `enabled: false` + `vhosts: [ {...} ]`. There is no `sites-available` / `sites-enabled` pair.
+- Saving from the dashboard or the API rewrites only the files that changed, one per site (`sites/<id>.yaml`); disabled files are left alone.
+- `ferrix convert-config /etc/ferrix/ferrix.yaml /tmp/all.yaml` writes everything back as one file.
+
 ## 🌐 Virtual Hosts (Sites)
 
 Each Virtual Host represents a server block (equivalent to an Nginx `server { ... }` block).

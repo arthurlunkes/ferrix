@@ -14,6 +14,7 @@ pub enum Command {
     Reload,
     Status,
     Test,
+    SplitConfig,
     ConvertConfig {
         from: PathBuf,
         to: PathBuf,
@@ -54,6 +55,8 @@ Commands:
   reload                      Reload the configuration without dropping connections
   status                      Show whether the server is running
   test                        Check the configuration file (same as -t)
+  split-config                Move sites, upstreams and streams out of the config file
+                              into sites/, upstreams/ and streams/ next to it
   convert-config <FROM> <TO>  Rewrite a config file in another format
                               (e.g. an old ferrix.json as ferrix.yaml)
   import --from <nginx.conf> [--out <ferrix.yaml>] [--report <report.md>]
@@ -131,6 +134,7 @@ impl Args {
             Some("reload") => Some(Command::Reload),
             Some("status") => Some(Command::Status),
             Some("test") => Some(Command::Test),
+            Some("split-config") => Some(Command::SplitConfig),
             Some("convert-config") => {
                 let (Some(from), Some(to)) = (pos.next(), pos.next()) else {
                     return Err("usage: ferrix convert-config <FROM> <TO>".into());

@@ -7,6 +7,7 @@
 ##
 ## Check the file:   ferrix test
 ## Apply changes:    ferrix reload   (or SIGHUP; listener/port changes need `ferrix restart`)
+## Many sites:       ferrix split-config   (one file per site in sites/, upstreams/, streams/)
 ## Full guide:       https://arthurlunkes.github.io/ferrix (04. Configuration Guide)
 ## =============================================================================
 

@@ -1,3 +1,4 @@
+pub mod layout;
 pub mod store;
 pub mod validate;
 
@@ -1985,8 +1986,13 @@ impl FerrixConfig {
         let p = path.as_ref();
         let data = std::fs::read_to_string(p)
             .map_err(|e| format!("Failed to read config file {}: {}", p.display(), e))?;
-        Self::parse(&data, ConfigFormat::of(p))
-            .map_err(|e| format!("Invalid config {}: {}", p.display(), e))
+        let mut cfg = Self::parse(&data, ConfigFormat::of(p))
+            .map_err(|e| format!("Invalid config {}: {}", p.display(), e))?;
+        if layout::is_split(p) {
+            layout::merge(&mut cfg, p)?;
+            cfg.resolve_ports();
+        }
+        Ok(cfg)
     }
 
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> Result<ConfigLoad, String> {
@@ -2036,6 +2042,9 @@ impl FerrixConfig {
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let p = path.as_ref();
+        if layout::is_split(p) {
+            return layout::save(self, p);
+        }
         let text = self
             .render(ConfigFormat::of(p))
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
