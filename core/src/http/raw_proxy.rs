@@ -259,9 +259,13 @@ fn encode_request(
     out.extend_from_slice(authority.as_bytes());
     out.extend_from_slice(b"\r\n");
 
-    let mut headers = [httparse::EMPTY_HEADER; 100];
-    let mut req = httparse::Request::new(&mut headers);
-    let _ = req.parse(head);
+    let mut headers = [std::mem::MaybeUninit::<httparse::Header<'_>>::uninit(); 100];
+    let mut req = httparse::Request::new(&mut []);
+    let _ = httparse::ParserConfig::default().parse_request_with_uninit_headers(
+        &mut req,
+        head,
+        &mut headers,
+    );
     let mut xff = String::new();
     for h in req.headers.iter() {
         let name = h.name.as_bytes();

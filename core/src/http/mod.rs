@@ -914,7 +914,7 @@ impl ProxyEngine {
             "/".to_string()
         } else {
             match uri_path::normalize(req.uri().path()) {
-                Ok(p) => p,
+                Ok(p) => p.into_owned(),
                 Err(code) => return filters::error_page::plain_status(code),
             }
         };
@@ -1238,23 +1238,6 @@ impl ProxyEngine {
                 } else {
                     &req_path
                 };
-                if !file_path.is_empty()
-                    && !file_path.ends_with('/')
-                    && std::path::Path::new(root_dir)
-                        .join(file_path.trim_start_matches('/'))
-                        .is_dir()
-                {
-                    let target = match parts.uri.query() {
-                        Some(q) => format!("{}/?{}", parts.uri.path(), q),
-                        None => format!("{}/", parts.uri.path()),
-                    };
-                    let mut r = filters::error_page::plain_status(StatusCode::MOVED_PERMANENTLY);
-                    if let Ok(v) = HeaderValue::from_str(&target) {
-                        r.headers_mut().insert(header::LOCATION, v);
-                    }
-                    return r;
-                }
-
                 let static_req = StaticRequest {
                     headers: &parts.headers,
                     encoding: info.encoding.map(|a| (a, compression)),
@@ -1291,6 +1274,18 @@ impl ProxyEngine {
                 .await
                 {
                     Ok(r) => r,
+                    Err(StatusCode::MOVED_PERMANENTLY) => {
+                        let target = match parts.uri.query() {
+                            Some(q) => format!("{}/?{}", parts.uri.path(), q),
+                            None => format!("{}/", parts.uri.path()),
+                        };
+                        let mut r =
+                            filters::error_page::plain_status(StatusCode::MOVED_PERMANENTLY);
+                        if let Ok(v) = HeaderValue::from_str(&target) {
+                            r.headers_mut().insert(header::LOCATION, v);
+                        }
+                        r
+                    }
                     Err(StatusCode::NOT_FOUND) if route.autoindex => {
                         match static_files::autoindex(root_dir, file_path, &req_path, route) {
                             Some(r) => r,

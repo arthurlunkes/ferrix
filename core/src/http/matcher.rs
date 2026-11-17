@@ -417,23 +417,29 @@ impl CompiledConfig {
         if self.vhosts.is_empty() {
             return None;
         }
-        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        let trimmed = host.trim().trim_end_matches('.');
+        let lowered;
+        let host: &str = if trimmed.bytes().any(|b| b.is_ascii_uppercase()) {
+            lowered = trimmed.to_ascii_lowercase();
+            &lowered
+        } else {
+            trimmed
+        };
 
         let port_is_meaningful = self.vhosts.iter().any(|v| v.listen_port == port);
-        let candidates: Vec<usize> = (0..self.vhosts.len())
-            .filter(|&i| !port_is_meaningful || self.vhosts[i].listen_port == port)
-            .collect();
+        let candidates = (0..self.vhosts.len())
+            .filter(|&i| !port_is_meaningful || self.vhosts[i].listen_port == port);
 
         let mut best_wildcard_prefix: Option<(usize, usize)> = None;
         let mut best_wildcard_suffix: Option<(usize, usize)> = None;
         let mut first_regex: Option<usize> = None;
         let mut catch_all: Option<usize> = None;
 
-        for &i in &candidates {
+        for i in candidates.clone() {
             for pattern in &self.vhosts[i].server_names {
                 match pattern {
                     ServerNamePattern::Exact(name) => {
-                        if name == &host {
+                        if name == host {
                             return Some(VHostMatch {
                                 vhost_index: i,
                                 reason: VHostMatchReason::Exact,
@@ -457,7 +463,7 @@ impl CompiledConfig {
                         }
                     }
                     ServerNamePattern::Regex(re) => {
-                        if first_regex.is_none() && re.is_match(&host) {
+                        if first_regex.is_none() && re.is_match(host) {
                             first_regex = Some(i);
                         }
                     }
@@ -495,7 +501,8 @@ impl CompiledConfig {
             });
         }
 
-        candidates.first().map(|&i| VHostMatch {
+        let mut candidates = candidates;
+        candidates.next().map(|i| VHostMatch {
             vhost_index: i,
             reason: VHostMatchReason::Fallback,
         })

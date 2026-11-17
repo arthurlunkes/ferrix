@@ -301,14 +301,14 @@ fn parse(
     limits: &Limits,
     raw_route: impl FnOnce(&str, &str) -> Option<crate::http::raw_proxy::RawRoute>,
 ) -> Result<Option<Head>, HeadError> {
-    let mut spans = [(0usize, 0usize, 0usize, 0usize); MAX_HEADERS];
+    let mut spans = [std::mem::MaybeUninit::<(usize, usize, usize, usize)>::uninit(); MAX_HEADERS];
     let (len, method, path, minor, count) = {
-        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-        let mut req = httparse::Request::new(&mut headers);
+        let mut headers = [std::mem::MaybeUninit::<httparse::Header<'_>>::uninit(); MAX_HEADERS];
+        let mut req = httparse::Request::new(&mut []);
         let base = buf.as_ptr() as usize;
         let mut cfg = httparse::ParserConfig::default();
         cfg.ignore_invalid_headers_in_requests(limits.cfg.http.ignore_invalid_headers);
-        let len = match cfg.parse_request(&mut req, buf) {
+        let len = match cfg.parse_request_with_uninit_headers(&mut req, buf, &mut headers) {
             Ok(httparse::Status::Complete(n)) => n,
             Ok(httparse::Status::Partial) => return Ok(None),
             Err(_) if !first_line_has_version(buf) => return Ok(None),
@@ -325,7 +325,7 @@ fn parse(
             }
             let n = h.name.as_ptr() as usize - base;
             let v = h.value.as_ptr() as usize - base;
-            spans[count] = (n, n + h.name.len(), v, v + h.value.len());
+            spans[count].write((n, n + h.name.len(), v, v + h.value.len()));
             count += 1;
         }
         let mbytes = req.method.unwrap_or("").as_bytes();
@@ -360,7 +360,8 @@ fn parse(
     let mut content_length: Option<&[u8]> = None;
     let mut has_te = false;
     let mut underscore = false;
-    for &(ns, ne, vs, ve) in &spans[..count] {
+    for span in &spans[..count] {
+        let (ns, ne, vs, ve) = unsafe { span.assume_init() };
         let name = &raw[ns..ne];
         let value = &raw[vs..ve];
         underscore |= name.contains(&b'_');
@@ -420,7 +421,8 @@ fn parse(
     let mut headers = HeaderMap::new();
     if raw_route.is_none() {
         headers.reserve(count);
-        for &(ns, ne, vs, ve) in &spans[..count] {
+        for span in &spans[..count] {
+            let (ns, ne, vs, ve) = unsafe { span.assume_init() };
             let name = HeaderName::from_bytes(&raw[ns..ne])
                 .map_err(|_| HeadError::Bad(StatusCode::BAD_REQUEST))?;
             let value = HeaderValue::from_maybe_shared(raw.slice(vs..ve))

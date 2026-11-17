@@ -35,14 +35,18 @@ pub fn decode(raw: &str) -> Result<String, StatusCode> {
     String::from_utf8(out).map_err(|_| StatusCode::BAD_REQUEST)
 }
 
-pub fn normalize(raw: &str) -> Result<String, StatusCode> {
+pub fn normalize(raw: &str) -> Result<std::borrow::Cow<'_, str>, StatusCode> {
+    use std::borrow::Cow;
+    if !raw.contains('%') && !raw.contains("/.") {
+        return Ok(Cow::Borrowed(raw));
+    }
     let decoded = if raw.contains('%') {
         decode(raw)?
     } else {
         raw.to_string()
     };
     if !decoded.contains("/.") {
-        return Ok(decoded);
+        return Ok(Cow::Owned(decoded));
     }
     let trailing = decoded.ends_with('/') || decoded.ends_with("/.") || decoded.ends_with("/..");
     let mut segs: Vec<&str> = Vec::new();
@@ -65,7 +69,7 @@ pub fn normalize(raw: &str) -> Result<String, StatusCode> {
     if out.is_empty() || trailing {
         out.push('/');
     }
-    Ok(out)
+    Ok(std::borrow::Cow::Owned(out))
 }
 
 #[cfg(test)]

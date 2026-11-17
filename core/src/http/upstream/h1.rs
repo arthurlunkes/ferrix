@@ -468,9 +468,13 @@ fn parse_head_raw(
     method: &Method,
     out: &mut Vec<u8>,
 ) -> Result<Option<Option<(u16, BodyState, bool, bool)>>, H1Error> {
-    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-    let mut res = httparse::Response::new(&mut headers);
-    let len = match res.parse(buf) {
+    let mut headers = [std::mem::MaybeUninit::<httparse::Header<'_>>::uninit(); MAX_HEADERS];
+    let mut res = httparse::Response::new(&mut []);
+    let len = match httparse::ParserConfig::default().parse_response_with_uninit_headers(
+        &mut res,
+        buf,
+        &mut headers,
+    ) {
         Ok(httparse::Status::Complete(n)) => n,
         Ok(httparse::Status::Partial) => return Ok(None),
         Err(httparse::Error::TooManyHeaders) => {
@@ -636,12 +640,16 @@ enum Parsed {
 }
 
 fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1Error> {
-    let mut spans = [(0usize, 0usize, 0usize, 0usize); MAX_HEADERS];
+    let mut spans = [std::mem::MaybeUninit::<(usize, usize, usize, usize)>::uninit(); MAX_HEADERS];
     let (len, code, minor, count) = {
-        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-        let mut res = httparse::Response::new(&mut headers);
+        let mut headers = [std::mem::MaybeUninit::<httparse::Header<'_>>::uninit(); MAX_HEADERS];
+        let mut res = httparse::Response::new(&mut []);
         let base = buf.as_ptr() as usize;
-        let len = match res.parse(buf) {
+        let len = match httparse::ParserConfig::default().parse_response_with_uninit_headers(
+            &mut res,
+            buf,
+            &mut headers,
+        ) {
             Ok(httparse::Status::Complete(n)) => n,
             Ok(httparse::Status::Partial) => return Ok(None),
             Err(httparse::Error::TooManyHeaders) => {
@@ -653,7 +661,7 @@ fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1E
         for h in res.headers.iter() {
             let n = h.name.as_ptr() as usize - base;
             let v = h.value.as_ptr() as usize - base;
-            spans[count] = (n, n + h.name.len(), v, v + h.value.len());
+            spans[count].write((n, n + h.name.len(), v, v + h.value.len()));
             count += 1;
         }
         (len, res.code.unwrap_or(0), res.version.unwrap_or(1), count)
@@ -671,7 +679,8 @@ fn parse_head(buf: &mut BytesMut, method: &Method) -> Result<Option<Parsed>, H1E
     let mut content_length: Option<u64> = None;
     let mut chunked = false;
     let mut conn_close = minor == 0;
-    for &(ns, ne, vs, ve) in &spans[..count] {
+    for span in &spans[..count] {
+        let (ns, ne, vs, ve) = unsafe { span.assume_init() };
         let name = HeaderName::from_bytes(&head[ns..ne])
             .map_err(|_| H1Error::Protocol("invalid header name"))?;
         let value = HeaderValue::from_maybe_shared(head.slice(vs..ve))
