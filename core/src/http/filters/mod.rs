@@ -82,7 +82,7 @@ pub fn run(
     let compression = &compiled.config.http.compression;
     if let Some(algo) = info.encoding {
         if compress::should_compress(&resp, compression) {
-            resp = compress::compress(resp, algo, compression.level);
+            resp = compress::compress(resp, algo, compression);
         }
     }
     let status = resp.status();

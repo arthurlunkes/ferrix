@@ -327,6 +327,43 @@ export const ServerSettings: React.FC<Props> = ({ config, onRefreshConfig }) => 
         <LogTargetsEditor value={accLog.targets ?? []} onChange={(t) => setLogging({ access: { ...accLog, targets: t } })} />
       </Section>
 
+      <Section
+        title="Compression (gzip, brotli, zstd)"
+        hint="Negotiated from Accept-Encoding; a route can override the switch"
+        enabled={!!http.compression?.enabled}
+        onToggle={(on) => setHttp({ compression: { ...http.compression, enabled: on } })}
+      >
+        {http.compression?.enabled && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <Field label="Level">
+                <Select value={http.compression.level ?? "default"} onChange={(e) => setHttp({ compression: { ...http.compression, level: e.target.value as "fastest" | "default" | "best" } })}>
+                  <option value="fastest">fastest</option>
+                  <option value="default">default</option>
+                  <option value="best">best</option>
+                </Select>
+              </Field>
+              <Field label="Min length (bytes)">
+                <Input type="number" value={http.compression.min_length ?? 1024} onChange={(e) => setHttp({ compression: { ...http.compression, min_length: parseInt(e.target.value) || 0 } })} mono />
+              </Field>
+              {(["gzip_level", "brotli_level", "zstd_level"] as const).map((k) => (
+                <Field key={k} label={k} hint="empty = use Level">
+                  <Input type="number" value={http.compression![k] ?? ""} onChange={(e) => setHttp({ compression: { ...http.compression, [k]: e.target.value === "" ? null : parseInt(e.target.value) } })} mono />
+                </Field>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Field label="Algorithms" hint="in order of preference: zstd br gzip">
+                <Input value={(http.compression.algorithms ?? ["zstd", "br", "gzip"]).join(" ")} onChange={(e) => setHttp({ compression: { ...http.compression, algorithms: e.target.value.split(/[\s,]+/).filter(Boolean) } })} mono className="text-xs" />
+              </Field>
+              <Field label="MIME types" hint="space-separated; text/* style prefixes allowed">
+                <Input value={(http.compression.types ?? []).join(" ")} onChange={(e) => setHttp({ compression: { ...http.compression, types: e.target.value.split(/[\s,]+/).filter(Boolean) } })} mono className="text-xs" />
+              </Field>
+            </div>
+          </>
+        )}
+      </Section>
+
       <Section title="Connection limits and shutdown" hint="keepalive_requests, keepalive_time, etag, if_modified_since, max_ranges, worker_shutdown_timeout">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <Field label="Keep-alive requests" hint="0 = no limit">

@@ -656,6 +656,12 @@ pub struct CompressionConfig {
     pub algorithms: Vec<CompressionAlgorithm>,
     #[serde(default = "default_compression_types")]
     pub types: Vec<String>,
+    #[serde(default)]
+    pub gzip_level: Option<u8>,
+    #[serde(default)]
+    pub brotli_level: Option<u8>,
+    #[serde(default)]
+    pub zstd_level: Option<u8>,
 }
 
 fn default_compression_min_length() -> u64 {
@@ -696,6 +702,9 @@ impl Default for CompressionConfig {
             min_length: default_compression_min_length(),
             algorithms: default_compression_algorithms(),
             types: default_compression_types(),
+            gzip_level: None,
+            brotli_level: None,
+            zstd_level: None,
         }
     }
 }

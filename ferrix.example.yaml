@@ -68,6 +68,9 @@ http:
   # compression:
   #   enabled: true
   #   level: default              ## fastest, default or best
+  #   gzip_level: 6               ## exact levels, instead of `level`: gzip 1-9,
+  #   brotli_level: 4             ## brotli 0-11,
+  #   zstd_level: 3               ## zstd 1-22
   #   min_length: 1024            ## smaller responses are sent as-is
   #   algorithms: [zstd, br, gzip]
   #   types: [text/*, application/json, application/javascript, application/xml, image/svg+xml]
