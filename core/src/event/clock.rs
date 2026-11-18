@@ -216,8 +216,17 @@ pub fn enable_local_timers() {
 
 enum Registration {
     None,
-    Local(std::thread::ThreadId, (u64, u64)),
+    Local(u64, (u64, u64)),
     Tokio(Pin<Box<tokio::time::Sleep>>),
+}
+
+fn thread_tag() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static TAG: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
+    TAG.with(|t| *t)
 }
 
 pub struct CoarseSleep {
@@ -249,7 +258,7 @@ impl CoarseSleep {
         if let Registration::Local(owner, key) =
             std::mem::replace(&mut self.reg, Registration::None)
         {
-            if owner == std::thread::current().id() {
+            if owner == thread_tag() {
                 WHEEL.with(|w| {
                     if let Some(wheel) = w.borrow_mut().as_mut() {
                         wheel.entries.remove(&key);
@@ -291,7 +300,7 @@ impl Future for CoarseSleep {
                     wheel.next_id += 1;
                     let key = (deadline, wheel.next_id);
                     wheel.insert(key, cx.waker().clone());
-                    this.reg = Registration::Local(std::thread::current().id(), key);
+                    this.reg = Registration::Local(thread_tag(), key);
                 }
             }
             Some(())

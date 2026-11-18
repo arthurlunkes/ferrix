@@ -336,6 +336,30 @@ pub fn upstream_path(route: &RouteRule, path_and_query: &str) -> String {
         Some((p, q)) => (p, Some(q)),
         None => (path_and_query, None),
     };
+    let plain = |p: &str| {
+        !p.contains("//")
+            && !p.contains("/.")
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || URI_SAFE.contains(&b))
+    };
+    if route.strip_prefix && plain(path) {
+        let stripped = path
+            .strip_prefix(route.path_prefix.as_str())
+            .unwrap_or(path);
+        let mut out = String::with_capacity(path_and_query.len() + 1);
+        if !stripped.starts_with('/') {
+            out.push('/');
+        }
+        out.push_str(stripped);
+        if let Some(q) = query {
+            out.push('?');
+            out.push_str(q);
+        }
+        return out;
+    }
+    if !route.strip_prefix {
+        return path_and_query.to_string();
+    }
     let base = if route.strip_prefix {
         let normalized = super::uri_path::normalize(path).ok().map(|p| {
             let mut merged = String::with_capacity(p.len());
