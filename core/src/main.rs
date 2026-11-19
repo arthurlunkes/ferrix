@@ -179,7 +179,7 @@ fn trim_heap() {
 fn main() -> ExitCode {
     ferrix::os::set_trim_hook(trim_heap);
     if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
-        unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+        unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 10) };
     }
 
     #[cfg(unix)]

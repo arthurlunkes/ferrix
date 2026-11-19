@@ -446,6 +446,9 @@ fn dropped_response_header(name: &[u8]) -> bool {
     {
         return true;
     }
+    if !matches!(name.len(), 2 | 6..=19) {
+        return false;
+    }
     const DROPPED: [&[u8]; 11] = [
         b"connection",
         b"keep-alive",
