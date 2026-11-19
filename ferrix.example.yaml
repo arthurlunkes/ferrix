@@ -181,6 +181,9 @@ admin:
   ## Serve Prometheus /metrics without authentication.
   # metrics_public: false
   ## Folder with the built dashboard; served at the admin address.
+  ## The dashboard's files (HTML/JS/CSS, no secrets) are public in token mode so the
+  ## login screen can load; in basic mode the browser asks for the password first.
+  ## Keep the admin port off the internet (firewall, VPN or 127.0.0.1).
   # dashboard_dir: /usr/share/ferrix/dashboard
 
 ## Request metrics and the live request log (dashboard, /metrics). Off by default

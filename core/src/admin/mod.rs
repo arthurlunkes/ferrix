@@ -94,8 +94,16 @@ pub async fn handle(state: &AdminState, req: Request<Body>, _peer: SocketAddr) -
             unauthorized(cfg.admin.auth.mode)
         }
     } else if let Some(dir) = cfg.admin.dashboard_dir.as_deref() {
-        let (parts, _) = req.into_parts();
-        dashboard(dir, &parts).await
+        if cfg.admin.auth.mode == AdminAuthMode::Basic
+            && !authorized(state, req.headers(), req.uri())
+        {
+            unauthorized(cfg.admin.auth.mode)
+        } else {
+            let (parts, _) = req.into_parts();
+            let mut resp = dashboard(dir, &parts).await;
+            dashboard_headers(resp.headers_mut());
+            resp
+        }
     } else if path == "/" {
         Json(serde_json::json!({
             "service": "Ferrix Core Control Plane",
@@ -230,6 +238,23 @@ async fn text_body(req: Request<Body>) -> Result<String, Box<Response>> {
     let bytes = read_body(req).await?;
     String::from_utf8(bytes.to_vec())
         .map_err(|_| Box::new((StatusCode::BAD_REQUEST, "body must be UTF-8 text").into_response()))
+}
+
+fn dashboard_headers(h: &mut HeaderMap) {
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert(
+        "content-security-policy",
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+             object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+        ),
+    );
 }
 
 async fn dashboard(dir: &str, req: &axum::http::request::Parts) -> Response {
@@ -392,6 +417,56 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_state(cfg: crate::config::FerrixConfig) -> AdminState {
+        AdminState {
+            store: std::sync::Arc::new(crate::config::store::ConfigStore::new(cfg, "ferrix.yaml")),
+            metrics: crate::metrics::MetricsCollector::new(16),
+            health_checker: std::sync::Arc::new(crate::health::HealthChecker::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_needs_basic_auth_and_sends_security_headers() {
+        let dir = std::env::temp_dir().join(format!("ferrix-dash-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        let mut cfg = crate::config::FerrixConfig::default();
+        cfg.admin.dashboard_dir = Some(dir.to_string_lossy().into_owned());
+        cfg.admin.auth = crate::config::AdminAuthConfig {
+            mode: AdminAuthMode::Basic,
+            token: None,
+            username: Some("ana".into()),
+            password: Some("pw".into()),
+        };
+        let state = test_state(cfg.clone());
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let get = |auth: Option<&str>| {
+            let mut b = Request::builder().uri("/");
+            if let Some(a) = auth {
+                b = b.header(header::AUTHORIZATION, a);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let r = handle(&state, get(None), peer).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert!(r.headers().contains_key(header::WWW_AUTHENTICATE));
+        let r = handle(&state, get(Some("Basic YW5hOnB3")), peer).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-frame-options"], "DENY");
+
+        cfg.admin.auth.mode = AdminAuthMode::Token;
+        cfg.admin.auth.token = Some("t".into());
+        let state = test_state(cfg);
+        let r = handle(&state, get(None), peer).await;
+        assert_eq!(
+            r.status(),
+            StatusCode::OK,
+            "token mode serves the login page"
+        );
+        assert!(r.headers().contains_key("content-security-policy"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn constant_time_eq_matches_string_equality() {

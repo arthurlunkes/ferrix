@@ -16,6 +16,14 @@ admin:
   dashboard_dir: /usr/share/ferrix/dashboard   # or frontend/dist in a checkout
 ```
 
+**Security.** The API, metrics and live logs always require the admin credentials. The dashboard's own files are the open-source React build, with no secrets in them:
+
+- `auth.mode: token`: the files are served without credentials, because the page itself shows the login screen that asks for the token.
+- `auth.mode: basic`: the browser asks for the user and password before loading the page.
+
+Every dashboard page is sent with `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Keep the admin port reachable only from trusted networks: bind it to `127.0.0.1`, or put it behind a firewall or VPN. The Docker "full" image listens on `0.0.0.0:8080`, so publish that port only where you need it.
+
+
 ---
 
 ## 🧭 Top Navigation Bar (Navbar)
