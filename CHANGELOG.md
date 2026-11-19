@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Admin dashboard: in `basic` auth mode the dashboard files now require the password too; every dashboard page carries `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options` and `Referrer-Policy`. Reported in GHSA-vwj4-jv47-vm3j by EitaPreulaJhol.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added
