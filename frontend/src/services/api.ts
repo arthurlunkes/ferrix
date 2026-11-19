@@ -625,6 +625,19 @@ export function setAdminToken(token: string | null): void {
   }
 }
 
+function takeTokenFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get("token");
+  if (!token) return null;
+  url.searchParams.delete("token");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  return token;
+}
+
+const urlToken = takeTokenFromUrl();
+if (urlToken) setAdminToken(urlToken);
+
 async function authFetch(
   input: string,
   init?: RequestInit,

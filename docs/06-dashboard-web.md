@@ -5,7 +5,9 @@
 The dashboard is a static React build served by Ferrix itself from `admin.dashboard_dir`, on the admin port, so production needs no Node.js or separate web server environments to run the web UI.
 
 Access the dashboard by navigating to:
-👉 **http://localhost:8081** (the `admin.listen` address; `8080` in the Docker "full" image)
+👉 **`http://localhost:8081/?token=<admin token>`** (the `admin.listen` address; `8080` in the Docker "full" image)
+
+The dashboard uses the same authentication as the `/api/*` and `/metrics` endpoints on the admin port. In `token` mode the `token` query parameter is validated once and exchanged for a short-lived `HttpOnly` cookie so the dashboard's scripts and styles load; the dashboard keeps the token for API calls and removes it from the address bar. In `basic` mode the browser prompts for the credentials. In `none` mode (allowed only on a loopback listener) the token is not required.
 
 Enable it with:
 
@@ -13,6 +15,9 @@ Enable it with:
 metrics:
   enabled: true
 admin:
+  auth:
+    mode: token
+    token: replace-with-a-long-random-token
   dashboard_dir: /usr/share/ferrix/dashboard   # or frontend/dist in a checkout
 ```
 

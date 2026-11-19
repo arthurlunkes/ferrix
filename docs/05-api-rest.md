@@ -1,6 +1,6 @@
 # 05. REST API Reference
 
-Ferrix exposes a modern REST API on its administrative port (`admin.listen`, default `127.0.0.1:8081`; `8080` in the Docker "full" image) for telemetry metrics, historical request audits, real-time logs, and dynamic zero-downtime configuration management.
+Ferrix exposes a modern REST API on its administrative port (`admin.listen`, default `127.0.0.1:8081`; `8080` in the Docker "full" image) for telemetry metrics, historical request audits, real-time logs, and dynamic zero-downtime configuration management. All `/api/*` endpoints, `/metrics` and the dashboard served from `admin.dashboard_dir` use the same `admin.auth` settings: send `Authorization: Bearer <token>` (or `?token=<token>`) in token mode, or use HTTP Basic in basic mode.
 
 ---
 

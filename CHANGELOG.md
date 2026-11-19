@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- The dashboard served from `admin.dashboard_dir` now requires the same authentication as `/api` and `/metrics`; unauthenticated requests receive `401`. In token mode, `/?token=<token>` sets a short-lived `HttpOnly` cookie so the dashboard assets load, and the token is removed from the address bar.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

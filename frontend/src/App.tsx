@@ -62,6 +62,8 @@ export function App() {
       setUpstreams(up);
       setConfig(cfg);
       setLiveLogs(historicalLogs);
+      setIsAuthenticated(true);
+      setShowAuthModal(false);
     } catch (err: any) {
       if (err?.status !== 401) {
         toast.error(`Failed to load Ferrix data: ${err.message || err}`);

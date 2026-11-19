@@ -180,7 +180,9 @@ admin:
   # cors_origins: [http://localhost:5173]
   ## Serve Prometheus /metrics without authentication.
   # metrics_public: false
-  ## Folder with the built dashboard; served at the admin address.
+  ## Folder with the built dashboard; served at the admin address under the same
+  ## authentication as the API. With token mode, open it as
+  ## http://<admin listen>/?token=<token>; in basic mode the browser prompts.
   # dashboard_dir: /usr/share/ferrix/dashboard
 
 ## Request metrics and the live request log (dashboard, /metrics). Off by default
