@@ -120,8 +120,8 @@ node test_backends.js
 
 Then:
 
-1. To serve the dashboard, set `admin.dashboard_dir: frontend/dist` and `metrics: { enabled: true }` in `ferrix.yaml`, run `ferrix reload` (or restart), and open **`http://localhost:8081`**. There is no separate web server: Ferrix serves the dashboard and its API itself.
-2. Enter the admin token (the `admin.auth.token` field Ferrix generated in `ferrix.yaml`).
+1. To serve the dashboard, set `admin.dashboard_dir: frontend/dist` and `metrics: { enabled: true }` in `ferrix.yaml`, run `ferrix reload` (or restart), and open **`http://localhost:8081/?token=<admin token>`** (`admin.auth.token` in `ferrix.yaml`). There is no separate web server: Ferrix serves the dashboard and its API itself.
+2. The token query parameter is exchanged for a short-lived `HttpOnly` cookie so the dashboard's scripts and styles load; the dashboard keeps the token for `/api/*` calls and removes it from the address bar. With `auth.mode: basic`, open `http://localhost:8081` and let the browser prompt. With `auth.mode: none` (only allowed on a loopback listener), no token is needed.
 3. Send requests to `http://localhost/api` and watch the balanced traffic live on the dashboard!
 
 ### 🐳 3. Running with Docker (GitHub Packages)
@@ -154,6 +154,8 @@ docker run -d \
   ghcr.io/arthurlunkes/ferrix:full
 docker logs ferrix-full   # shows the admin token
 ```
+
+Open the dashboard at `http://localhost:8080/?token=<token>`; the log prints the full URL.
 
 Or using Docker Compose:
 

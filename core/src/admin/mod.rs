@@ -11,11 +11,13 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 
-use crate::config::AdminAuthMode;
+use crate::config::{AdminAuthMode, FerrixConfig};
 use crate::http::access::AccessControl;
 use handlers::AdminState;
 
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+const DASHBOARD_COOKIE: &str = "ferrix_admin";
+const DASHBOARD_COOKIE_MAX_AGE: u32 = 86_400;
 
 pub struct Json<T>(pub T);
 
@@ -94,8 +96,18 @@ pub async fn handle(state: &AdminState, req: Request<Body>, _peer: SocketAddr) -
             unauthorized(cfg.admin.auth.mode)
         }
     } else if let Some(dir) = cfg.admin.dashboard_dir.as_deref() {
-        let (parts, _) = req.into_parts();
-        dashboard(dir, &parts).await
+        if !dashboard_authorized(&cfg, req.headers(), req.uri()) {
+            unauthorized(cfg.admin.auth.mode)
+        } else {
+            let bootstrap = dashboard_bootstrap_token(&cfg, req.uri());
+            let (parts, _) = req.into_parts();
+            let mut resp = dashboard(dir, &parts).await;
+            if let Some(token) = bootstrap {
+                set_dashboard_cookie(&mut resp, &token);
+            }
+            protect_dashboard_response(&mut resp, cfg.admin.auth.mode);
+            resp
+        }
     } else if path == "/" {
         Json(serde_json::json!({
             "service": "Ferrix Core Control Plane",
@@ -315,7 +327,10 @@ fn prometheus_metrics(state: &AdminState) -> Response {
 }
 
 fn authorized(state: &AdminState, headers: &HeaderMap, uri: &Uri) -> bool {
-    let cfg = state.store.config();
+    authorized_with_config(&state.store.config(), headers, uri)
+}
+
+fn authorized_with_config(cfg: &FerrixConfig, headers: &HeaderMap, uri: &Uri) -> bool {
     let auth = &cfg.admin.auth;
     match auth.mode {
         AdminAuthMode::None => true,
@@ -338,12 +353,102 @@ fn authorized(state: &AdminState, headers: &HeaderMap, uri: &Uri) -> bool {
     }
 }
 
+fn dashboard_authorized(cfg: &FerrixConfig, headers: &HeaderMap, uri: &Uri) -> bool {
+    if authorized_with_config(cfg, headers, uri) {
+        return true;
+    }
+    if cfg.admin.auth.mode != AdminAuthMode::Token {
+        return false;
+    }
+    let expected = cfg.admin.auth.token.as_deref().unwrap_or("");
+    !expected.is_empty()
+        && cookie_value(headers, DASHBOARD_COOKIE)
+            .is_some_and(|value| constant_time_eq(value, &dashboard_cookie_value(expected)))
+}
+
+fn dashboard_bootstrap_token(cfg: &FerrixConfig, uri: &Uri) -> Option<String> {
+    if cfg.admin.auth.mode != AdminAuthMode::Token {
+        return None;
+    }
+    let expected = cfg.admin.auth.token.as_deref().unwrap_or("");
+    if expected.is_empty() {
+        return None;
+    }
+    query_token(uri)
+        .filter(|token| constant_time_eq(token, expected))
+        .map(|_| expected.to_string())
+}
+
+fn query_token(uri: &Uri) -> Option<String> {
+    url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+        .find(|(key, value)| key == "token" && !value.is_empty())
+        .map(|(_, value)| value.trim().to_string())
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    for header in headers.get_all(header::COOKIE) {
+        let Ok(raw) = header.to_str() else { continue };
+        for pair in raw.split(';') {
+            let Some((key, value)) = pair.trim().split_once('=') else {
+                continue;
+            };
+            if key == name {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn dashboard_cookie_value(token: &str) -> String {
+    use std::fmt::Write as _;
+    let digest = ring::digest::digest(&ring::digest::SHA256, token.as_bytes());
+    let mut value = String::with_capacity(3 + digest.as_ref().len() * 2);
+    value.push_str("v1.");
+    for byte in digest.as_ref() {
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
+}
+
+fn set_dashboard_cookie(resp: &mut Response, token: &str) {
+    let value = dashboard_cookie_value(token);
+    let cookie = format!(
+        "{DASHBOARD_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={DASHBOARD_COOKIE_MAX_AGE}"
+    );
+    if let Ok(header_value) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, header_value);
+    }
+}
+
+fn protect_dashboard_response(resp: &mut Response, mode: AdminAuthMode) {
+    if mode == AdminAuthMode::None {
+        return;
+    }
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("Cookie"));
+    headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+}
+
 fn unauthorized(mode: AdminAuthMode) -> Response {
     let mut resp = (
         StatusCode::UNAUTHORIZED,
         "401 Unauthorized - The Ferrix Admin API requires authentication",
     )
         .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if mode == AdminAuthMode::Basic {
         resp.headers_mut().insert(
             header::WWW_AUTHENTICATE,
@@ -392,6 +497,14 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::config::store::ConfigStore;
+    use crate::config::AdminAuthConfig;
+    use crate::health::HealthChecker;
+    use crate::metrics::MetricsCollector;
+    use base64::Engine as _;
+    use std::path::Path;
+    use std::sync::Arc;
 
     #[test]
     fn constant_time_eq_matches_string_equality() {
@@ -454,5 +567,222 @@ mod tests {
         assert_eq!(q.status, Some(404));
         assert_eq!(q.q.as_deref(), Some("/api x"));
         assert_eq!(decode("my%20host"), "my host");
+    }
+
+    fn dashboard_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferrix-admin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>dashboard</html>").unwrap();
+        std::fs::write(dir.join("assets/app.js"), "console.log('ok')").unwrap();
+        dir
+    }
+
+    fn admin_state(mode: AdminAuthMode, dashboard: Option<&Path>) -> AdminState {
+        let mut cfg = FerrixConfig::default();
+        cfg.admin.auth = AdminAuthConfig {
+            mode,
+            token: Some("segredo".to_string()),
+            username: Some("admin".to_string()),
+            password: Some("pw".to_string()),
+        };
+        cfg.admin.dashboard_dir = dashboard.map(|dir| dir.to_string_lossy().into_owned());
+        AdminState {
+            store: Arc::new(ConfigStore::new(cfg, "ferrix.yaml")),
+            metrics: MetricsCollector::new(1000),
+            health_checker: Arc::new(HealthChecker::new()),
+        }
+    }
+
+    fn peer() -> SocketAddr {
+        "127.0.0.1:1234".parse().unwrap()
+    }
+
+    fn admin_request(method: Method, target: &str, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut request = Request::builder().method(method).uri(target);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    fn cookie_header(resp: &Response) -> String {
+        resp.headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn body_text(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dashboard_requires_authentication() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Token, Some(&dir));
+        for path in ["/", "/index.html", "/assets/app.js", "/missing"] {
+            let resp = handle(&state, admin_request(Method::GET, path, &[]), peer()).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{path}");
+            assert_eq!(
+                resp.headers()
+                    .get(header::CACHE_CONTROL)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "no-store"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dashboard_is_served_with_a_bearer_token() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Token, Some(&dir));
+        let resp = handle(
+            &state,
+            admin_request(Method::GET, "/", &[("authorization", "Bearer segredo")]),
+            peer(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "private, no-store"
+        );
+        assert_eq!(body_text(resp).await, "<html>dashboard</html>");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn query_token_sets_a_cookie_for_the_dashboard_assets() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Token, Some(&dir));
+        let resp = handle(
+            &state,
+            admin_request(Method::GET, "/?token=segredo", &[]),
+            peer(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
+        let cookie = cookie_header(&resp);
+
+        let asset = handle(
+            &state,
+            admin_request(
+                Method::GET,
+                "/assets/app.js",
+                &[("cookie", cookie.as_str())],
+            ),
+            peer(),
+        )
+        .await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(body_text(asset).await, "console.log('ok')");
+
+        let api = handle(
+            &state,
+            admin_request(Method::GET, "/api/status", &[("cookie", cookie.as_str())]),
+            peer(),
+        )
+        .await;
+        assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wrong_query_token_is_rejected_without_a_cookie() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Token, Some(&dir));
+        let resp = handle(
+            &state,
+            admin_request(Method::GET, "/?token=errado", &[]),
+            peer(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(resp.headers().get(header::SET_COOKIE).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn basic_mode_protects_the_dashboard() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Basic, Some(&dir));
+        let denied = handle(&state, admin_request(Method::GET, "/", &[]), peer()).await;
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        assert!(denied.headers().get(header::WWW_AUTHENTICATE).is_some());
+
+        let creds = base64::engine::general_purpose::STANDARD.encode("admin:pw");
+        let auth = format!("Basic {creds}");
+        let allowed = handle(
+            &state,
+            admin_request(Method::GET, "/", &[("authorization", auth.as_str())]),
+            peer(),
+        )
+        .await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert!(allowed.headers().get(header::SET_COOKIE).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dashboard_is_public_when_auth_is_disabled() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::None, Some(&dir));
+        let resp = handle(&state, admin_request(Method::GET, "/", &[]), peer()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rotating_the_token_invalidates_the_dashboard_cookie() {
+        let dir = dashboard_dir();
+        let state = admin_state(AdminAuthMode::Token, Some(&dir));
+        let resp = handle(
+            &state,
+            admin_request(Method::GET, "/?token=segredo", &[]),
+            peer(),
+        )
+        .await;
+        let cookie = cookie_header(&resp);
+
+        let mut next = (*state.store.config()).clone();
+        next.admin.auth.token = Some("novo".to_string());
+        state.store.apply(next);
+
+        let asset = handle(
+            &state,
+            admin_request(
+                Method::GET,
+                "/assets/app.js",
+                &[("cookie", cookie.as_str())],
+            ),
+            peer(),
+        )
+        .await;
+        assert_eq!(asset.status(), StatusCode::UNAUTHORIZED);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

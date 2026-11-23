@@ -218,7 +218,7 @@ An existing `/etc/ferrix/ferrix.yaml` is never overwritten. To start from the ne
 
 By default:
 - The configuration is always `/etc/ferrix/ferrix.yaml` (like nginx's `/etc/nginx/nginx.conf`), whatever directory you run `ferrix` from; `--config <file>` uses another one. If the file does not exist, Ferrix writes the documented default there, with a random admin token. Every command (`run`, `reload`, `stop`, `status`, `test`) uses the same file, so they always find the running server.
-- The control plane API and web dashboard listen at: `http://127.0.0.1:8081`.
+- The control plane API and web dashboard listen at: `http://127.0.0.1:8081`. With the default token authentication, open the dashboard as `http://127.0.0.1:8081/?token=<admin.auth.token>`.
 - The proxy listens on `http://0.0.0.0:80` (and on 443 for hosts with `tls:`), like nginx. Ports below 1024 need root or `CAP_NET_BIND_SERVICE`; the systemd unit and the packages grant it. To run by hand as a normal user, either allow the binary once (`sudo setcap cap_net_bind_service=+ep $(which ferrix)`) or use another port: `ferrix run --http-listen 0.0.0.0:8080`.
 - Open `http://localhost/` and you should see the **Ferrix is running** page.
 - The generated `ferrix.yaml` lists every option, commented out: uncomment what you need.
@@ -314,7 +314,7 @@ In terminal 2, start Ferrix:
 
 Send requests to `http://localhost/api` and verify:
 1. Responses alternating between `Backend-1` and `Backend-2`.
-2. Live metrics and request logs appearing in real time on the web dashboard at `http://localhost:8081`.
+2. Live metrics and request logs appearing in real time on the web dashboard at `http://localhost:8081/?token=<admin token>`.
 
 ---
 
@@ -349,6 +349,8 @@ docker run -d \
   ghcr.io/arthurlunkes/ferrix:full
 docker logs ferrix-full
 ```
+
+Open the dashboard at `http://localhost:8080/?token=<token>`; the log prints the full URL.
 
 ### Using Docker Compose
 

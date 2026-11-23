@@ -13,7 +13,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
     mv "$CONFIG_PATH.tmp" "$CONFIG_PATH"
     echo "================================================================"
     echo " Created $CONFIG_PATH"
-    echo " Dashboard: http://<host>:8080   admin token: $TOKEN"
+    echo " Dashboard: http://<host>:8080/?token=$TOKEN"
     echo "================================================================"
 fi
 

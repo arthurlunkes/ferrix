@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"       # Reverse Proxy traffic
-      - "8080:8080"   # Admin REST API and web dashboard
+      - "8080:8080"   # Admin REST API and web dashboard (open /?token=<token>)
     volumes:
       - ./ferrix-data:/etc/ferrix
 

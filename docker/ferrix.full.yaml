@@ -7,7 +7,8 @@ metrics:
   enabled: true
 
 admin:
-  # The admin API and the dashboard share this port.
+  # The admin API and the dashboard share this port. The dashboard is protected by
+  # the same token: open it as http://<host>:8080/?token=<token>.
   listen: 0.0.0.0:8080
   auth:
     mode: token

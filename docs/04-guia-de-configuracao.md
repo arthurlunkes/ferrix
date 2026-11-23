@@ -233,7 +233,7 @@ When enabled:
 - `GET /metrics` on the admin port serves Prometheus text format (`ferrix_requests_total`, `ferrix_request_duration_seconds` histogram, `ferrix_response_bytes_total`, `ferrix_active_requests`, `ferrix_upstream_up`). It uses the admin authentication unless `admin.metrics_public` is `true`.
 - `/api/metrics`, `/api/logs` and `/api/logs/stream` feed the dashboard.
 
-Turning metrics on costs roughly 4–9% of throughput in the benchmarks. The control plane itself can be switched off with `admin: { enabled: false }`; Ferrix is then configured only through `ferrix.yaml` and `ferrix reload`. The web dashboard is optional: it's served by the admin server from `admin.dashboard_dir` when that is set, with no extra process.
+Turning metrics on costs roughly 4–9% of throughput in the benchmarks. The control plane itself can be switched off with `admin: { enabled: false }`; Ferrix is then configured only through `ferrix.yaml` and `ferrix reload`. The web dashboard is optional: it's served by the admin server from `admin.dashboard_dir` when that is set, under the same authentication as the API (open it with `/?token=<token>` in token mode), with no extra process.
 
 ## 🗜️ Compression
 
