@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import {
-  FileCode,
   Save,
   RotateCcw,
   Download,
@@ -12,6 +11,7 @@ import {
 import { api, ApiError, FerrixConfig, ValidationIssue } from "../services/api";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
+import { YamlEditor } from "../components/YamlEditor";
 
 interface ConfigEditorProps {
   config: FerrixConfig | null;
@@ -126,6 +126,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onRefreshCon
       }
     };
     reader.readAsText(file);
+    e.target.value = "";
   };
 
   return (
@@ -208,16 +209,9 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = ({ config, onRefreshCon
         </div>
       )}
 
-      <div className="bg-surface-0 border border-border rounded-2xl p-4 shadow-card">
-        <textarea
-          value={yamlText}
-          onChange={(e) => setYamlText(e.target.value)}
-          spellCheck={false}
-          rows={28}
-          className="w-full bg-transparent font-mono text-xs text-content-primary resize-y focus:outline-none leading-relaxed"
-        />
+      <div className="rounded-2xl border border-border bg-surface-0 p-4 shadow-card">
+        <YamlEditor value={yamlText} onChange={setYamlText} />
       </div>
     </div>
   );
 };
-
